@@ -26,6 +26,8 @@ class LPStepResponse(BaseModel):
     animation_type: Optional[str] = None
     step_views: int = 0
     step_exits: int = 0
+    block_type: Optional[str] = None
+    content_data: Optional[dict] = None
     created_at: datetime
     
     class Config:
@@ -90,6 +92,8 @@ class StepCreateRequest(BaseModel):
     image_url: str = Field(..., description="画像URL")
     video_url: Optional[str] = Field(None, description="動画URL（オプション）")
     animation_type: Optional[str] = Field(None, description="アニメーションタイプ")
+    block_type: Optional[str] = Field(None, description="ブロックタイプ")
+    content_data: Optional[dict] = Field(None, description="ブロックコンテンツデータ")
 
 # ステップ更新リクエスト
 class StepUpdateRequest(BaseModel):
@@ -97,6 +101,8 @@ class StepUpdateRequest(BaseModel):
     image_url: Optional[str] = None
     video_url: Optional[str] = None
     animation_type: Optional[str] = None
+    block_type: Optional[str] = None
+    content_data: Optional[dict] = None
 
 # CTA追加リクエスト
 class CTACreateRequest(BaseModel):
