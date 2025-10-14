@@ -385,6 +385,15 @@ async def create_step(
             exclude_none=True,
             exclude={"step_order"}
         )
+
+        block_type = optional_fields.pop("block_type", None)
+        content_data = optional_fields.get("content_data") or {}
+        if block_type:
+            content_data = dict(content_data)
+            content_data.setdefault("meta", {})
+            content_data["meta"]["block_type"] = block_type
+        optional_fields["content_data"] = content_data
+
         step_data.update(optional_fields)
 
         if "image_url" not in step_data:
@@ -452,6 +461,14 @@ async def update_step(
         
         # 更新データ準備
         update_data = data.model_dump(exclude_unset=True, exclude_none=True)
+
+        block_type = update_data.pop("block_type", None)
+        if block_type is not None:
+            content_data = update_data.get("content_data") or step_response.data.get("content_data") or {}
+            content_data = dict(content_data)
+            content_data.setdefault("meta", {})
+            content_data["meta"]["block_type"] = block_type
+            update_data["content_data"] = content_data
         
         if not update_data:
             raise HTTPException(
