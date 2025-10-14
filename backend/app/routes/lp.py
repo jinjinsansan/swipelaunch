@@ -54,8 +54,7 @@ def normalize_slug(value: str) -> str:
         value = secrets.token_hex(3)
     return value[:100]
 
-def generate_unique_slug(supabase: Client, requested_slug: str) -> str:
-    base_slug = normalize_slug(requested_slug)
+def generate_unique_slug(supabase: Client, base_slug: str) -> str:
     slug = base_slug
     for _ in range(10):
         existing = supabase.table("landing_pages").select("id").eq("slug", slug).execute()
@@ -85,14 +84,32 @@ async def create_lp(
     try:
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
+        normalized_slug = normalize_slug(data.slug)
 
-        unique_slug = generate_unique_slug(supabase, data.slug)
+        existing_response = supabase.table("landing_pages").select("*").eq("slug", normalized_slug).execute()
+
+        if existing_response.data:
+            existing_lp = existing_response.data[0]
+            if existing_lp.get("seller_id") == user_id:
+                update_payload = {
+                    "title": data.title,
+                    "swipe_direction": data.swipe_direction,
+                    "is_fullscreen": data.is_fullscreen
+                }
+                updated = supabase.table("landing_pages").update(update_payload).eq("id", existing_lp["id"]).execute()
+                if not updated.data:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="既存LPの更新に失敗しました"
+                    )
+                return LPResponse(**updated.data[0])
+            normalized_slug = generate_unique_slug(supabase, normalized_slug)
         
         # LP作成
         lp_data = {
             "seller_id": user_id,
             "title": data.title,
-            "slug": unique_slug,
+            "slug": normalized_slug,
             "swipe_direction": data.swipe_direction,
             "is_fullscreen": data.is_fullscreen,
             "status": "draft"
