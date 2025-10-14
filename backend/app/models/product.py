@@ -46,7 +46,6 @@ class ProductListResponse(BaseModel):
 
 # 商品購入リクエスト
 class ProductPurchaseRequest(BaseModel):
-    product_id: str = Field(..., description="購入する商品のID")
     quantity: int = Field(default=1, ge=1, description="購入数量")
 
 # 商品購入レスポンス
