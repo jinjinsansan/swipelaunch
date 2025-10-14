@@ -413,6 +413,13 @@ async def purchase_product(
         
         transaction = transaction_response.data[0]
         
+        # thanks_lp_idからslugを取得
+        thanks_lp_slug = None
+        if product.get("thanks_lp_id"):
+            thanks_lp_response = supabase.table("landing_pages").select("slug").eq("id", product["thanks_lp_id"]).single().execute()
+            if thanks_lp_response.data:
+                thanks_lp_slug = thanks_lp_response.data.get("slug")
+        
         return ProductPurchaseResponse(
             purchase_id=transaction["id"],
             product_id=product_id,
@@ -422,7 +429,7 @@ async def purchase_product(
             remaining_points=new_balance,
             purchased_at=transaction["created_at"],
             redirect_url=product.get("redirect_url"),
-            thanks_lp_id=product.get("thanks_lp_id")
+            thanks_lp_slug=thanks_lp_slug
         )
         
     except HTTPException:

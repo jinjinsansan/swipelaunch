@@ -64,4 +64,4 @@ class ProductPurchaseResponse(BaseModel):
     remaining_points: int
     purchased_at: datetime
     redirect_url: Optional[str] = None
-    thanks_lp_id: Optional[str] = None
+    thanks_lp_slug: Optional[str] = None
