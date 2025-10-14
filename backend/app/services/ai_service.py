@@ -34,24 +34,33 @@ class AIService:
 - 返金保証・リスクフリー訴求
 - 複数のCTA配置
 
+業種に応じた推奨配色：
+- 投資・FX・副業: 緊急レッド系（primary: #DC2626）
+- ダイエット・筋トレ: エネルギーオレンジ系（primary: #EA580C）
+- 高額商品: ゴールドプレミアム系（primary: #B45309）
+- 学習・資格: パワーブルー系（primary: #1E40AF）
+- 恋愛・美容: パッションピンク系（primary: #BE185D）
+
 以下の形式でJSON形式で回答してください：
 {{
-  "recommended_blocks": ["hero-impact", "problem", "result-proof", "testimonial-detailed", "pricing-special", "guarantee", "cta-urgent"],
+  "recommended_blocks": ["countdown-1", "problem-1", "before-after-1", "special-price-1", "bonus-list-1", "guarantee-1", "author-profile-1", "scarcity-1", "sticky-cta-1"],
   "color_scheme": {{
-    "primary": "#EF4444",
-    "secondary": "#F59E0B",
-    "accent": "#FBBF24",
+    "primary": "#DC2626",
+    "secondary": "#EF4444",
+    "accent": "#F59E0B",
     "background": "#111827",
     "text": "#FFFFFF"
   }},
   "structure": [
-    {{"block": "hero-impact", "title": "【実績訴求】インパクトある見出し", "subtitle": "緊急性を含むサブタイトル"}},
-    {{"block": "problem", "title": "こんなお悩みありませんか？", "items": ["悩み1", "悩み2", "悩み3"]}},
-    {{"block": "result-proof", "title": "驚きの変化", "beforeText": "ビフォー", "afterText": "アフター"}},
-    {{"block": "testimonial-detailed", "title": "実践者の声", "count": 6}},
-    {{"block": "pricing-special", "title": "特別価格", "originalPrice": "通常価格", "specialPrice": "今だけ価格", "discount": "割引率"}},
-    {{"block": "guarantee", "title": "100%返金保証", "text": "リスクフリー訴求"}},
-    {{"block": "cta-urgent", "title": "今すぐ申し込む", "buttonText": "限定〇名で締切", "urgency": "残りわずか"}}
+    {{"block": "countdown-1", "title": "⏰ 特別価格は残りわずか！", "urgencyText": "今すぐ申し込まないと、この価格では二度と手に入りません"}},
+    {{"block": "problem-1", "title": "こんなお悩みありませんか？", "problems": ["悩み1", "悩み2", "悩み3", "悩み4", "悩み5"]}},
+    {{"block": "before-after-1", "title": "驚きの変化", "beforeText": "実践前の状態", "afterText": "実践後の変化"}},
+    {{"block": "author-profile-1", "name": "著者名", "title": "肩書き", "bio": "経歴・実績", "achievements": ["実績1", "実績2", "実績3"]}},
+    {{"block": "special-price-1", "title": "今だけ特別価格", "originalPrice": "298000", "specialPrice": "98000", "discountBadge": "67% OFF"}},
+    {{"block": "bonus-list-1", "title": "豪華特典プレゼント", "bonuses": [{{"title": "特典1", "value": "29800円相当"}}, {{"title": "特典2", "value": "50000円相当"}}], "totalValue": "189600円"}},
+    {{"block": "guarantee-1", "title": "100%満足保証", "guaranteeType": "90日間 全額返金保証", "description": "リスクフリー訴求"}},
+    {{"block": "scarcity-1", "title": "募集枠残りわずか", "remainingCount": 3, "totalCount": 50}},
+    {{"block": "sticky-cta-1", "buttonText": "今すぐ申し込む", "subText": "残り3名で募集終了"}}
   ],
   "reasoning": "この構成で高いコンバージョンが期待できる理由"
 }}
