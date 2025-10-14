@@ -390,8 +390,7 @@ async def create_step(
         content_data = optional_fields.get("content_data") or {}
         if block_type:
             content_data = dict(content_data)
-            content_data.setdefault("meta", {})
-            content_data["meta"]["block_type"] = block_type
+            content_data["block_type"] = block_type
         optional_fields["content_data"] = content_data
 
         step_data.update(optional_fields)
@@ -466,8 +465,7 @@ async def update_step(
         if block_type is not None:
             content_data = update_data.get("content_data") or step_response.data.get("content_data") or {}
             content_data = dict(content_data)
-            content_data.setdefault("meta", {})
-            content_data["meta"]["block_type"] = block_type
+            content_data["block_type"] = block_type
             update_data["content_data"] = content_data
         
         if not update_data:
