@@ -207,7 +207,12 @@ async def get_lp(
         
         # ステップ取得
         steps_response = supabase.table("lp_steps").select("*").eq("lp_id", lp_id).order("step_order").execute()
-        steps = [LPStepResponse(**step) for step in steps_response.data] if steps_response.data else []
+        steps = []
+        if steps_response.data:
+            for step in steps_response.data:
+                if not step.get("block_type"):
+                    step["block_type"] = (step.get("content_data") or {}).get("block_type")
+                steps.append(LPStepResponse(**step))
         
         # CTA取得
         ctas_response = supabase.table("lp_ctas").select("*").eq("lp_id", lp_id).execute()
@@ -416,7 +421,11 @@ async def create_step(
                 detail="ステップ作成に失敗しました"
             )
 
-        return LPStepResponse(**response.data[0])
+        created_step = response.data[0]
+        if not created_step.get("block_type"):
+            created_step["block_type"] = (created_step.get("content_data") or {}).get("block_type")
+
+        return LPStepResponse(**created_step)
         
     except HTTPException:
         raise
@@ -487,7 +496,11 @@ async def update_step(
                 detail=f"ステップ更新に失敗しました: {message or str(error)}"
             )
 
-        return LPStepResponse(**response.data[0])
+        updated_step = response.data[0]
+        if not updated_step.get("block_type"):
+            updated_step["block_type"] = (updated_step.get("content_data") or {}).get("block_type")
+
+        return LPStepResponse(**updated_step)
         
     except HTTPException:
         raise
