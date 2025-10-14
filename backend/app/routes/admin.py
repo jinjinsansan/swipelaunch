@@ -48,9 +48,16 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
     """管理者権限チェック"""
     user = get_current_user(credentials)
     
+    # 管理者メールアドレスのホワイトリスト
+    ADMIN_EMAILS = [
+        "admin@swipelaunch.com",
+        "goldbenchan@gmail.com",
+        "kusanokiyoshi1@gmail.com"
+    ]
+    
     # 管理者フラグをチェック（usersテーブルにis_adminカラムがある想定）
     # または特定のメールアドレスをハードコード
-    if not user.get("is_admin") and user.get("email") not in ["admin@swipelaunch.com"]:
+    if not user.get("is_admin") and user.get("email") not in ADMIN_EMAILS:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="管理者権限が必要です"
