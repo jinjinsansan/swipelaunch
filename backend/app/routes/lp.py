@@ -16,6 +16,8 @@ from app.models.landing_page import (
     CTAResponse
 )
 from typing import Optional, List
+import re
+import secrets
 import jwt
 
 router = APIRouter(prefix="/lp", tags=["landing_pages"])
@@ -44,6 +46,29 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials) -> str:
             detail="トークンの検証に失敗しました"
         )
 
+def normalize_slug(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9-]+", "-", value)
+    value = re.sub(r"-+", "-", value).strip("-")
+    if not value:
+        value = secrets.token_hex(3)
+    return value[:100]
+
+def generate_unique_slug(supabase: Client, requested_slug: str) -> str:
+    base_slug = normalize_slug(requested_slug)
+    slug = base_slug
+    for _ in range(10):
+        existing = supabase.table("landing_pages").select("id").eq("slug", slug).execute()
+        if not existing.data:
+            return slug
+        suffix = secrets.token_hex(2)
+        trimmed = base_slug[: (100 - len(suffix) - 1)] if len(base_slug) + len(suffix) + 1 > 100 else base_slug
+        slug = f"{trimmed}-{suffix}"
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="スラッグの生成に失敗しました"
+    )
+
 @router.post("", response_model=LPResponse, status_code=status.HTTP_201_CREATED)
 async def create_lp(
     data: LPCreateRequest,
@@ -60,20 +85,14 @@ async def create_lp(
     try:
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
-        
-        # スラッグの重複チェック
-        existing = supabase.table("landing_pages").select("id").eq("slug", data.slug).execute()
-        if existing.data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"スラッグ '{data.slug}' は既に使用されています"
-            )
+
+        unique_slug = generate_unique_slug(supabase, data.slug)
         
         # LP作成
         lp_data = {
             "seller_id": user_id,
             "title": data.title,
-            "slug": data.slug,
+            "slug": unique_slug,
             "swipe_direction": data.swipe_direction,
             "is_fullscreen": data.is_fullscreen,
             "status": "draft"
