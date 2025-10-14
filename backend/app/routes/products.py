@@ -420,7 +420,9 @@ async def purchase_product(
             quantity=data.quantity,
             total_points=total_points,
             remaining_points=new_balance,
-            purchased_at=transaction["created_at"]
+            purchased_at=transaction["created_at"],
+            redirect_url=product.get("redirect_url"),
+            thanks_lp_id=product.get("thanks_lp_id")
         )
         
     except HTTPException:

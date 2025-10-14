@@ -10,6 +10,8 @@ class ProductCreateRequest(BaseModel):
     price_in_points: int = Field(..., ge=0, description="ポイント価格")
     stock_quantity: Optional[int] = Field(None, ge=0, description="在庫数（nullで無制限）")
     is_available: bool = Field(default=True, description="販売可能か")
+    redirect_url: Optional[str] = Field(None, description="購入完了後のリダイレクトURL（外部URL）")
+    thanks_lp_id: Optional[str] = Field(None, description="購入完了後のサンクスページLP ID（サイト内）")
 
 # 商品更新リクエスト
 class ProductUpdateRequest(BaseModel):
@@ -19,6 +21,8 @@ class ProductUpdateRequest(BaseModel):
     price_in_points: Optional[int] = Field(None, ge=0)
     stock_quantity: Optional[int] = Field(None, ge=0)
     is_available: Optional[bool] = None
+    redirect_url: Optional[str] = None
+    thanks_lp_id: Optional[str] = None
 
 # 商品レスポンス
 class ProductResponse(BaseModel):
@@ -31,6 +35,8 @@ class ProductResponse(BaseModel):
     stock_quantity: Optional[int] = None
     is_available: bool
     total_sales: int = 0
+    redirect_url: Optional[str] = None
+    thanks_lp_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     
@@ -57,3 +63,5 @@ class ProductPurchaseResponse(BaseModel):
     total_points: int
     remaining_points: int
     purchased_at: datetime
+    redirect_url: Optional[str] = None
+    thanks_lp_id: Optional[str] = None
