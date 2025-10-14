@@ -319,9 +319,11 @@ async def create_step(
     LPステップ追加
     
     - **step_order**: ステップ順序（0から開始）
-    - **image_url**: 画像URL
+    - **image_url**: 画像URL（テンプレートブロックでは省略可）
     - **video_url**: 動画URL（オプション）
     - **animation_type**: アニメーションタイプ（オプション）
+    - **block_type**: ブロックタイプ（例: countdown-1）
+    - **content_data**: ブロックコンテンツ（JSON）
     """
     try:
         user_id = get_current_user_id(credentials)
@@ -339,11 +341,11 @@ async def create_step(
         # ステップ作成
         step_data = {
             "lp_id": lp_id,
-            "step_order": data.step_order,
-            "image_url": data.image_url,
-            "video_url": data.video_url,
-            "animation_type": data.animation_type
+            "step_order": data.step_order
         }
+
+        optional_fields = data.model_dump(exclude_unset=True, exclude={"step_order"})
+        step_data.update(optional_fields)
         
         response = supabase.table("lp_steps").insert(step_data).execute()
         

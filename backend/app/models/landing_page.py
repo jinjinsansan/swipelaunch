@@ -21,7 +21,7 @@ class LPStepResponse(BaseModel):
     id: str
     lp_id: str
     step_order: int
-    image_url: str
+    image_url: Optional[str] = None
     video_url: Optional[str] = None
     animation_type: Optional[str] = None
     step_views: int = 0
@@ -89,7 +89,7 @@ class LPDetailResponse(BaseModel):
 # ステップ追加リクエスト
 class StepCreateRequest(BaseModel):
     step_order: int = Field(..., ge=0, description="ステップ順序（0から開始）")
-    image_url: str = Field(..., description="画像URL")
+    image_url: Optional[str] = Field(None, description="画像URL")
     video_url: Optional[str] = Field(None, description="動画URL（オプション）")
     animation_type: Optional[str] = Field(None, description="アニメーションタイプ")
     block_type: Optional[str] = Field(None, description="ブロックタイプ")
