@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
+from supabase import create_client, Client
 
 class Settings(BaseSettings):
     # Supabase
@@ -25,6 +26,9 @@ class Settings(BaseSettings):
     jwt_secret: str = "your-super-secret-jwt-key-change-this-in-production"
     api_key: str = "your-api-key-for-internal-calls"
     
+    # OpenAI
+    openai_api_key: Optional[str] = None
+    
     class Config:
         env_file = ".env"
         case_sensitive = False
@@ -33,3 +37,7 @@ def get_settings():
     return Settings()
 
 settings = Settings()
+
+def get_supabase_client() -> Client:
+    """Supabaseクライアントを取得"""
+    return create_client(settings.supabase_url, settings.supabase_key)
