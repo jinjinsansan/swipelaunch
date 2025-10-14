@@ -344,17 +344,34 @@ async def create_step(
             "step_order": data.step_order
         }
 
-        optional_fields = data.model_dump(exclude_unset=True, exclude={"step_order"})
+        optional_fields = data.model_dump(
+            exclude_unset=True,
+            exclude_none=True,
+            exclude={"step_order"}
+        )
         step_data.update(optional_fields)
+
+        if "image_url" not in step_data:
+            step_data["image_url"] = ""
         
         response = supabase.table("lp_steps").insert(step_data).execute()
-        
+
+        error = getattr(response, "error", None)
+        if error:
+            message = getattr(error, "message", None)
+            if isinstance(error, dict):
+                message = error.get("message")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"ステップ作成に失敗しました: {message or str(error)}"
+            )
+
         if not response.data:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="ステップ作成に失敗しました"
             )
-        
+
         return LPStepResponse(**response.data[0])
         
     except HTTPException:
@@ -398,7 +415,7 @@ async def update_step(
             )
         
         # 更新データ準備
-        update_data = data.model_dump(exclude_unset=True)
+        update_data = data.model_dump(exclude_unset=True, exclude_none=True)
         
         if not update_data:
             raise HTTPException(
@@ -408,7 +425,17 @@ async def update_step(
         
         # 更新
         response = supabase.table("lp_steps").update(update_data).eq("id", step_id).execute()
-        
+
+        error = getattr(response, "error", None)
+        if error:
+            message = getattr(error, "message", None)
+            if isinstance(error, dict):
+                message = error.get("message")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"ステップ更新に失敗しました: {message or str(error)}"
+            )
+
         return LPStepResponse(**response.data[0])
         
     except HTTPException:
