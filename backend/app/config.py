@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # App
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    frontend_url: str = "http://localhost:3000"
+    frontend_url: str = "https://swipe.dlogicai.in"
     
     # Security
     jwt_secret: str = "your-super-secret-jwt-key-change-this-in-production"
