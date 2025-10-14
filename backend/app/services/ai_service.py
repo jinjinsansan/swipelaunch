@@ -70,7 +70,21 @@ class AIService:
         response = client.chat.completions.create(
             model="gpt-4-turbo-preview",
             messages=[
-                {"role": "system", "content": "あなたは情報商材LPのコンバージョン最適化の専門家です。高額商品を売るための心理学、緊急性訴求、社会的証明を駆使した売れるLP構成を提案します。必ずJSON形式で回答してください。"},
+                {"role": "system", "content": """あなたは情報商材LPのコンバージョン最適化の専門家です。高額商品を売るための心理学、緊急性訴求、社会的証明を駆使した売れるLP構成を提案します。
+
+**重要**: 必ず以下のブロックタイプのみを使用してください：
+- countdown-1: カウントダウンタイマー
+- problem-1: 問題提起リスト
+- before-after-1: ビフォーアフター比較
+- special-price-1: 特別価格表示
+- bonus-list-1: ボーナス特典リスト
+- guarantee-1: 返金保証
+- author-profile-1: 著者プロフィール
+- urgency-1: 緊急性バナー
+- scarcity-1: 限定枠表示
+- sticky-cta-1: 固定CTAバー
+
+これ以外のブロックタイプ（testimonial-1など）は使用しないでください。必ずJSON形式で回答してください。"""},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
