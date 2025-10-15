@@ -94,7 +94,11 @@ async def create_lp(
                 update_payload = {
                     "title": data.title,
                     "swipe_direction": data.swipe_direction,
-                    "is_fullscreen": data.is_fullscreen
+                    "is_fullscreen": data.is_fullscreen,
+                    "show_swipe_hint": data.show_swipe_hint,
+                    "fullscreen_media": data.fullscreen_media,
+                    "floating_cta": data.floating_cta,
+                    "product_id": data.product_id,
                 }
                 updated = supabase.table("landing_pages").update(update_payload).eq("id", existing_lp["id"]).execute()
                 if not updated.data:
@@ -113,7 +117,10 @@ async def create_lp(
             "swipe_direction": data.swipe_direction,
             "is_fullscreen": data.is_fullscreen,
             "status": "draft",
-            "product_id": data.product_id
+            "product_id": data.product_id,
+            "show_swipe_hint": data.show_swipe_hint,
+            "fullscreen_media": data.fullscreen_media,
+            "floating_cta": data.floating_cta,
         }
         
         response = supabase.table("landing_pages").insert(lp_data).execute()

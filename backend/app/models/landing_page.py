@@ -9,6 +9,9 @@ class LPCreateRequest(BaseModel):
     swipe_direction: Literal["vertical", "horizontal"] = Field(default="vertical", description="スワイプ方向")
     is_fullscreen: bool = Field(default=False, description="全画面表示")
     product_id: Optional[str] = Field(None, description="紐づける商品ID")
+    show_swipe_hint: bool = Field(default=False, description="スワイプヒントを表示するか")
+    fullscreen_media: bool = Field(default=False, description="メディアを全画面表示するか")
+    floating_cta: bool = Field(default=False, description="CTAをフローティング表示するか")
 
 # LP更新リクエスト
 class LPUpdateRequest(BaseModel):
@@ -17,6 +20,9 @@ class LPUpdateRequest(BaseModel):
     is_fullscreen: Optional[bool] = None
     status: Optional[Literal["draft", "published", "archived"]] = None
     product_id: Optional[str] = None
+    show_swipe_hint: Optional[bool] = None
+    fullscreen_media: Optional[bool] = None
+    floating_cta: Optional[bool] = None
 
 # LPステップモデル
 class LPStepResponse(BaseModel):
@@ -60,6 +66,9 @@ class LPResponse(BaseModel):
     status: str
     swipe_direction: str
     is_fullscreen: bool
+    show_swipe_hint: bool = False
+    fullscreen_media: bool = False
+    floating_cta: bool = False
     total_views: int = 0
     total_cta_clicks: int = 0
     product_id: Optional[str] = None
@@ -78,6 +87,9 @@ class LPDetailResponse(BaseModel):
     status: str
     swipe_direction: str
     is_fullscreen: bool
+    show_swipe_hint: bool = False
+    fullscreen_media: bool = False
+    floating_cta: bool = False
     total_views: int = 0
     total_cta_clicks: int = 0
     product_id: Optional[str] = None
