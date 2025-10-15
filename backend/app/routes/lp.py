@@ -112,7 +112,8 @@ async def create_lp(
             "slug": normalized_slug,
             "swipe_direction": data.swipe_direction,
             "is_fullscreen": data.is_fullscreen,
-            "status": "draft"
+            "status": "draft",
+            "product_id": data.product_id
         }
         
         response = supabase.table("landing_pages").insert(lp_data).execute()

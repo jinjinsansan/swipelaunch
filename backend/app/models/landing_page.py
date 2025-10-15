@@ -8,6 +8,7 @@ class LPCreateRequest(BaseModel):
     slug: str = Field(..., min_length=1, max_length=100, description="URL用スラッグ")
     swipe_direction: Literal["vertical", "horizontal"] = Field(default="vertical", description="スワイプ方向")
     is_fullscreen: bool = Field(default=False, description="全画面表示")
+    product_id: Optional[str] = Field(None, description="紐づける商品ID")
 
 # LP更新リクエスト
 class LPUpdateRequest(BaseModel):
@@ -15,6 +16,7 @@ class LPUpdateRequest(BaseModel):
     swipe_direction: Optional[Literal["vertical", "horizontal"]] = None
     is_fullscreen: Optional[bool] = None
     status: Optional[Literal["draft", "published", "archived"]] = None
+    product_id: Optional[str] = None
 
 # LPステップモデル
 class LPStepResponse(BaseModel):
@@ -60,6 +62,7 @@ class LPResponse(BaseModel):
     is_fullscreen: bool
     total_views: int = 0
     total_cta_clicks: int = 0
+    product_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     
@@ -77,6 +80,7 @@ class LPDetailResponse(BaseModel):
     is_fullscreen: bool
     total_views: int = 0
     total_cta_clicks: int = 0
+    product_id: Optional[str] = None
     steps: List[LPStepResponse] = []
     ctas: List[CTAResponse] = []
     created_at: datetime
