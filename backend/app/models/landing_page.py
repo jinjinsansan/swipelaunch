@@ -12,6 +12,12 @@ class LPCreateRequest(BaseModel):
     show_swipe_hint: bool = Field(default=False, description="スワイプヒントを表示するか")
     fullscreen_media: bool = Field(default=False, description="メディアを全画面表示するか")
     floating_cta: bool = Field(default=False, description="CTAをフローティング表示するか")
+    meta_title: Optional[str] = Field(None, description="OGPタイトル")
+    meta_description: Optional[str] = Field(None, description="OGPディスクリプション")
+    meta_image_url: Optional[str] = Field(None, description="OGP画像URL")
+    meta_site_name: Optional[str] = Field(None, description="OGPサイト名")
+    custom_theme_hex: Optional[str] = Field(None, description="カスタムテーマのベースカラー（HEX）")
+    custom_theme_shades: Optional[dict] = Field(None, description="カスタムテーマの11段階シェード")
 
 # LP更新リクエスト
 class LPUpdateRequest(BaseModel):
@@ -23,6 +29,12 @@ class LPUpdateRequest(BaseModel):
     show_swipe_hint: Optional[bool] = None
     fullscreen_media: Optional[bool] = None
     floating_cta: Optional[bool] = None
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
+    meta_image_url: Optional[str] = None
+    meta_site_name: Optional[str] = None
+    custom_theme_hex: Optional[str] = None
+    custom_theme_shades: Optional[dict] = None
 
 # LPステップモデル
 class LPStepResponse(BaseModel):
@@ -72,6 +84,12 @@ class LPResponse(BaseModel):
     total_views: int = 0
     total_cta_clicks: int = 0
     product_id: Optional[str] = None
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
+    meta_image_url: Optional[str] = None
+    meta_site_name: Optional[str] = None
+    custom_theme_hex: Optional[str] = None
+    custom_theme_shades: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
     
@@ -93,6 +111,12 @@ class LPDetailResponse(BaseModel):
     total_views: int = 0
     total_cta_clicks: int = 0
     product_id: Optional[str] = None
+    meta_title: Optional[str] = None
+    meta_description: Optional[str] = None
+    meta_image_url: Optional[str] = None
+    meta_site_name: Optional[str] = None
+    custom_theme_hex: Optional[str] = None
+    custom_theme_shades: Optional[dict] = None
     steps: List[LPStepResponse] = []
     ctas: List[CTAResponse] = []
     created_at: datetime

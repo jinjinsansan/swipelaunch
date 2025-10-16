@@ -99,6 +99,12 @@ async def create_lp(
                     "fullscreen_media": data.fullscreen_media,
                     "floating_cta": data.floating_cta,
                     "product_id": data.product_id,
+                    "meta_title": data.meta_title,
+                    "meta_description": data.meta_description,
+                    "meta_image_url": data.meta_image_url,
+                    "meta_site_name": data.meta_site_name,
+                    "custom_theme_hex": data.custom_theme_hex,
+                    "custom_theme_shades": data.custom_theme_shades,
                 }
                 updated = supabase.table("landing_pages").update(update_payload).eq("id", existing_lp["id"]).execute()
                 if not updated.data:
@@ -121,6 +127,12 @@ async def create_lp(
             "show_swipe_hint": data.show_swipe_hint,
             "fullscreen_media": data.fullscreen_media,
             "floating_cta": data.floating_cta,
+            "meta_title": data.meta_title,
+            "meta_description": data.meta_description,
+            "meta_image_url": data.meta_image_url,
+            "meta_site_name": data.meta_site_name,
+            "custom_theme_hex": data.custom_theme_hex,
+            "custom_theme_shades": data.custom_theme_shades,
         }
         
         response = supabase.table("landing_pages").insert(lp_data).execute()
