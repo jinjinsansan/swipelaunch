@@ -52,15 +52,27 @@ async def get_public_lp(slug: str):
         lp_data = lp_response.data
         lp_id = lp_data["id"]
         
-        # ステップ取得
+        # ステップ取得・フィルタリング
         steps_response = supabase.table("lp_steps").select("*").eq("lp_id", lp_id).order("step_order").execute()
         steps = []
         if steps_response.data:
             for step in steps_response.data:
-                # block_typeがない場合、content_dataから抽出
+                # block_typeを正規化：content_dataから抽出を試みる
                 if not step.get("block_type"):
                     step["block_type"] = (step.get("content_data") or {}).get("block_type")
-                steps.append(LPStepResponse(**step))
+                
+                # ステップの有効性をチェック
+                block_type = step.get("block_type")
+                image_url = step.get("image_url")
+                
+                # 有効なblock_type: 空でない文字列
+                has_valid_block = isinstance(block_type, str) and len(block_type.strip()) > 0
+                # 有効なimage_url: 空でない文字列
+                has_valid_image = isinstance(image_url, str) and len(image_url.strip()) > 0
+                
+                # block_typeか image_urlのいずれかが有効なステップのみを追加
+                if has_valid_block or has_valid_image:
+                    steps.append(LPStepResponse(**step))
         
         # CTA取得
         ctas_response = supabase.table("lp_ctas").select("*").eq("lp_id", lp_id).execute()
