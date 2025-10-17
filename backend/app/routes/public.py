@@ -74,6 +74,13 @@ async def get_public_lp(slug: str):
                 if has_valid_block or has_valid_image:
                     steps.append(LPStepResponse(**step))
         
+        has_sticky_cta = any(
+            isinstance(step.block_type, str) and step.block_type.strip() == "sticky-cta-1"
+            for step in steps
+        )
+        if has_sticky_cta and not lp_data.get("floating_cta"):
+            lp_data["floating_cta"] = True
+
         # CTA取得
         ctas_response = supabase.table("lp_ctas").select("*").eq("lp_id", lp_id).execute()
         ctas = [CTAResponse(**cta) for cta in ctas_response.data] if ctas_response.data else []
