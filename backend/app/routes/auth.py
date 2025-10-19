@@ -7,7 +7,8 @@ from app.models.user import (
     UserRegisterRequest,
     UserLoginRequest,
     UserResponse,
-    AuthResponse
+    AuthResponse,
+    ProfileUpdateRequest
 )
 from datetime import datetime
 
@@ -223,4 +224,88 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"ログアウトエラー: {str(e)}"
+        )
+
+@router.put("/profile", response_model=UserResponse)
+async def update_profile(
+    data: ProfileUpdateRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    プロフィール更新
+    
+    - **username**: 新しいユーザー名（3-20文字、英数字とアンダースコアのみ）
+    
+    Authorizationヘッダーに Bearer トークンを指定してください
+    """
+    try:
+        token = credentials.credentials
+        supabase = get_supabase()
+        
+        # JWTトークンをデコードしてユーザーIDを取得
+        import jwt
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+        user_id = payload.get("sub")
+        
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="無効なトークンです"
+            )
+        
+        # 現在のユーザー情報を取得
+        user_response = supabase.table("users").select("*").eq("id", user_id).single().execute()
+        
+        if not user_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="ユーザーが見つかりません"
+            )
+        
+        update_data = {}
+        
+        # ユーザー名の更新
+        if data.username:
+            # ユーザー名の重複チェック
+            existing_user = supabase.table("users").select("id").eq("username", data.username).execute()
+            
+            if existing_user.data and existing_user.data[0]["id"] != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="このユーザー名は既に使用されています"
+                )
+            
+            update_data["username"] = data.username
+        
+        # 更新がある場合のみ実行
+        if update_data:
+            updated_user = supabase.table("users").update(update_data).eq("id", user_id).execute()
+            
+            if not updated_user.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="プロフィールの更新に失敗しました"
+                )
+            
+            return UserResponse(**updated_user.data[0])
+        else:
+            # 更新がない場合は現在の情報を返す
+            return UserResponse(**user_response.data)
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="トークンの有効期限が切れています"
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="無効なトークンです"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"プロフィール更新エラー: {str(e)}"
         )
