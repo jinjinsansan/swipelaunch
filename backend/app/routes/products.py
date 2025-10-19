@@ -207,73 +207,39 @@ async def get_public_products(
         supabase = get_supabase()
         
         # 販売中の商品を取得（seller情報をJOIN）
-        query = """
-            SELECT 
-                p.id,
-                p.seller_id,
-                u.username as seller_username,
-                p.lp_id,
-                p.title,
-                p.description,
-                p.price_in_points,
-                p.stock_quantity,
-                p.is_available,
-                p.total_sales,
-                p.created_at,
-                p.updated_at
-            FROM products p
-            INNER JOIN users u ON p.seller_id = u.id
-            WHERE p.is_available = true
-        """
+        products_response = supabase.table("products").select("*, seller:users!seller_id(username)").eq("is_available", True)
         
         # ソート順を決定
         if sort == "popular":
-            query += " ORDER BY p.total_sales DESC, p.created_at DESC"
+            products_response = products_response.order("total_sales", desc=True).order("created_at", desc=True)
         else:  # latest
-            query += " ORDER BY p.created_at DESC"
+            products_response = products_response.order("created_at", desc=True)
         
-        query += f" LIMIT {limit} OFFSET {offset}"
+        # ページネーション
+        products_response = products_response.range(offset, offset + limit - 1).execute()
         
-        # RPC実行
-        response = supabase.rpc('exec_sql', {'query': query}).execute()
+        # レスポンス構築
+        products = []
+        for product in (products_response.data or []):
+            seller_data = product.get("seller", {})
+            products.append(ProductWithSellerResponse(
+                id=product["id"],
+                seller_id=product["seller_id"],
+                seller_username=seller_data.get("username", "Unknown"),
+                lp_id=product.get("lp_id"),
+                title=product["title"],
+                description=product.get("description"),
+                price_in_points=product["price_in_points"],
+                stock_quantity=product.get("stock_quantity"),
+                is_available=product["is_available"],
+                total_sales=product.get("total_sales", 0),
+                created_at=product["created_at"],
+                updated_at=product["updated_at"]
+            ))
         
-        if response.data is None:
-            # RPC関数が存在しない場合は通常のクエリで代替
-            products_response = supabase.table("products").select("*, seller:users!seller_id(username)").eq("is_available", True)
-            
-            if sort == "popular":
-                products_response = products_response.order("total_sales", desc=True).order("created_at", desc=True)
-            else:
-                products_response = products_response.order("created_at", desc=True)
-            
-            products_response = products_response.range(offset, offset + limit - 1).execute()
-            
-            products = []
-            for product in (products_response.data or []):
-                seller_data = product.get("seller", {})
-                products.append(ProductWithSellerResponse(
-                    id=product["id"],
-                    seller_id=product["seller_id"],
-                    seller_username=seller_data.get("username", "Unknown"),
-                    lp_id=product.get("lp_id"),
-                    title=product["title"],
-                    description=product.get("description"),
-                    price_in_points=product["price_in_points"],
-                    stock_quantity=product.get("stock_quantity"),
-                    is_available=product["is_available"],
-                    total_sales=product.get("total_sales", 0),
-                    created_at=product["created_at"],
-                    updated_at=product["updated_at"]
-                ))
-            
-            # 総数取得
-            count_response = supabase.table("products").select("id", count="exact").eq("is_available", True).execute()
-            total = count_response.count or 0
-        else:
-            products = [ProductWithSellerResponse(**p) for p in response.data]
-            # 総数取得
-            count_response = supabase.table("products").select("id", count="exact").eq("is_available", True).execute()
-            total = count_response.count or 0
+        # 総数取得
+        count_response = supabase.table("products").select("id", count="exact").eq("is_available", True).execute()
+        total = count_response.count or 0
         
         return PublicProductListResponse(
             data=products,
