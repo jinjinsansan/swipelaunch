@@ -317,6 +317,7 @@ async def get_public_products(
                 lp_slug=lp_info.get("slug") if lp_info else None,
                 lp_title=lp_info.get("title") if lp_info else None,
                 lp_thumbnail_url=selected_thumbnail,
+                hero_image_url=selected_thumbnail,
                 title=product["title"],
                 description=product.get("description"),
                 price_in_points=product["price_in_points"],

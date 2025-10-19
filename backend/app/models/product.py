@@ -75,6 +75,7 @@ class ProductWithSellerResponse(BaseModel):
     lp_slug: Optional[str] = None
     lp_title: Optional[str] = None
     lp_thumbnail_url: Optional[str] = None
+    hero_image_url: Optional[str] = Field(default=None, alias="heroImage")
     title: str
     description: Optional[str] = None
     price_in_points: int
@@ -83,6 +84,10 @@ class ProductWithSellerResponse(BaseModel):
     total_sales: int = 0
     created_at: datetime
     updated_at: datetime
+
+    class Config:
+        from_attributes = True
+        allow_population_by_field_name = True
 
 # パブリック商品一覧レスポンス
 class PublicProductListResponse(BaseModel):
