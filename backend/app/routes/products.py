@@ -12,7 +12,7 @@ from app.models.product import (
     ProductWithSellerResponse,
     PublicProductListResponse
 )
-from typing import Optional
+from typing import Optional, Dict, Any, List
 import jwt
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -205,28 +205,118 @@ async def get_public_products(
         # 認証チェック（BuyerもSellerもOK）
         user = get_current_user(credentials)
         supabase = get_supabase()
-        
+
+        def extract_thumbnail_from_step(step: Dict[str, Any]) -> Optional[str]:
+            """ステップ情報から最適なサムネイルURLを抽出"""
+            image_candidates: List[Optional[str]] = []
+
+            image_url = step.get("image_url")
+            if isinstance(image_url, str):
+                image_candidates.append(image_url)
+
+            content_data = step.get("content_data") or {}
+            if isinstance(content_data, dict):
+                image_candidates.extend([
+                    content_data.get("imageUrl"),
+                    content_data.get("image_url"),
+                    content_data.get("thumbnailUrl"),
+                    content_data.get("thumbnail_url"),
+                    content_data.get("heroImage"),
+                    content_data.get("hero_image"),
+                ])
+
+                nested_content = content_data.get("content")
+                if isinstance(nested_content, dict):
+                    image_candidates.extend([
+                        nested_content.get("imageUrl"),
+                        nested_content.get("image_url"),
+                        nested_content.get("thumbnailUrl"),
+                        nested_content.get("thumbnail_url"),
+                        nested_content.get("heroImage"),
+                        nested_content.get("hero_image"),
+                    ])
+                elif isinstance(nested_content, list):
+                    for item in nested_content:
+                        if isinstance(item, dict):
+                            candidate = item.get("imageUrl") or item.get("image_url") or item.get("thumbnailUrl") or item.get("thumbnail_url") or item.get("heroImage") or item.get("hero_image")
+                            if isinstance(candidate, str) and candidate.strip():
+                                return candidate.strip()
+
+            for candidate in image_candidates:
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+
+            return None
+
         # 販売中の商品を取得（seller情報をJOIN）
         products_response = supabase.table("products").select("*, seller:users!seller_id(username)").eq("is_available", True)
-        
+
         # ソート順を決定
         if sort == "popular":
             products_response = products_response.order("total_sales", desc=True).order("created_at", desc=True)
         else:  # latest
             products_response = products_response.order("created_at", desc=True)
-        
+
         # ページネーション
         products_response = products_response.range(offset, offset + limit - 1).execute()
-        
+
+        raw_products = products_response.data or []
+        lp_ids = {product.get("lp_id") for product in raw_products if product.get("lp_id")}
+
+        lp_metadata: Dict[str, Dict[str, Optional[str]]] = {}
+        lp_thumbnails: Dict[str, Optional[str]] = {}
+
+        if lp_ids:
+            lp_id_list = list(lp_ids)
+            # LPメタデータ取得
+            lp_meta_response = supabase.table("landing_pages").select("id, slug, title, meta_image_url").in_("id", lp_id_list).execute()
+            for lp in (lp_meta_response.data or []):
+                lp_metadata[lp["id"]] = {
+                    "slug": lp.get("slug"),
+                    "title": lp.get("title"),
+                    "meta_image_url": lp.get("meta_image_url"),
+                }
+
+            # LPステップからサムネイル候補取得
+            steps_response = (
+                supabase
+                .table("lp_steps")
+                .select("lp_id, image_url, content_data, block_type, step_order")
+                .in_("lp_id", lp_id_list)
+                .order("lp_id")
+                .order("step_order")
+                .execute()
+            )
+
+            for step in (steps_response.data or []):
+                lp_id = step.get("lp_id")
+                if not lp_id or lp_id in lp_thumbnails:
+                    continue
+                thumbnail = extract_thumbnail_from_step(step)
+                if thumbnail:
+                    lp_thumbnails[lp_id] = thumbnail
+
         # レスポンス構築
         products = []
-        for product in (products_response.data or []):
+        for product in raw_products:
             seller_data = product.get("seller", {})
+            lp_id = product.get("lp_id")
+            lp_info = lp_metadata.get(lp_id or "", {}) if lp_id else {}
+            raw_meta_image = lp_info.get("meta_image_url") if lp_info else None
+            meta_image = raw_meta_image.strip() if isinstance(raw_meta_image, str) and raw_meta_image.strip() else None
+            thumbnail_url = lp_thumbnails.get(lp_id) if lp_id else None
+            selected_thumbnail = thumbnail_url or meta_image
+            if isinstance(selected_thumbnail, str):
+                selected_thumbnail = selected_thumbnail.strip() or None
+
             products.append(ProductWithSellerResponse(
                 id=product["id"],
                 seller_id=product["seller_id"],
                 seller_username=seller_data.get("username", "Unknown"),
-                lp_id=product.get("lp_id"),
+                lp_id=lp_id,
+                lp_slug=lp_info.get("slug") if lp_info else None,
+                lp_title=lp_info.get("title") if lp_info else None,
+                lp_thumbnail_url=selected_thumbnail,
                 title=product["title"],
                 description=product.get("description"),
                 price_in_points=product["price_in_points"],

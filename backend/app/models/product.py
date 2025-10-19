@@ -72,6 +72,9 @@ class ProductWithSellerResponse(BaseModel):
     seller_id: str
     seller_username: str
     lp_id: Optional[str] = None
+    lp_slug: Optional[str] = None
+    lp_title: Optional[str] = None
+    lp_thumbnail_url: Optional[str] = None
     title: str
     description: Optional[str] = None
     price_in_points: int
