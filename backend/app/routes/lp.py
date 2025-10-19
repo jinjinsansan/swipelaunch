@@ -15,7 +15,7 @@ from app.models.landing_page import (
     CTAUpdateRequest,
     CTAResponse
 )
-from typing import Optional, List
+from typing import Optional, List, Dict
 import re
 import secrets
 import jwt
@@ -366,6 +366,165 @@ async def publish_lp(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"LP公開エラー: {str(e)}"
+        )
+
+@router.post("/{lp_id}/duplicate", response_model=LPDetailResponse, status_code=status.HTTP_201_CREATED)
+async def duplicate_lp(
+    lp_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """既存LPを複製してドラフトとして作成"""
+    try:
+        user_id = get_current_user_id(credentials)
+        supabase = get_supabase()
+
+        # 元のLPを取得（本人のもののみ）
+        lp_response = supabase.table("landing_pages").select("*").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
+
+        original_lp = lp_response.data
+
+        # 新しいスラッグとタイトルを生成
+        base_slug = f"{original_lp.get('slug', '')}-copy" if original_lp.get("slug") else secrets.token_hex(3)
+        new_slug = generate_unique_slug(supabase, base_slug)
+
+        original_title = original_lp.get("title") or "コピーLP"
+        new_title = f"{original_title} (コピー)"
+        if len(new_title) > 255:
+            new_title = new_title[:255]
+
+        # 新しいLPレコードを作成
+        new_lp_data = {
+            "seller_id": user_id,
+            "title": new_title,
+            "slug": new_slug,
+            "swipe_direction": original_lp.get("swipe_direction", "vertical"),
+            "is_fullscreen": original_lp.get("is_fullscreen", False),
+            "status": "draft",
+            "product_id": None,
+            "show_swipe_hint": original_lp.get("show_swipe_hint", False),
+            "fullscreen_media": original_lp.get("fullscreen_media", False),
+            "floating_cta": original_lp.get("floating_cta", False),
+            "meta_title": original_lp.get("meta_title"),
+            "meta_description": original_lp.get("meta_description"),
+            "meta_image_url": original_lp.get("meta_image_url"),
+            "meta_site_name": original_lp.get("meta_site_name"),
+            "custom_theme_hex": original_lp.get("custom_theme_hex"),
+            "custom_theme_shades": original_lp.get("custom_theme_shades"),
+            "total_views": 0,
+            "total_cta_clicks": 0,
+        }
+
+        insert_response = supabase.table("landing_pages").insert(new_lp_data).execute()
+
+        if not insert_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="LPの複製に失敗しました"
+            )
+
+        new_lp = insert_response.data[0]
+        new_lp_id = new_lp["id"]
+
+        # ステップを複製
+        steps_response = supabase.table("lp_steps").select("*").eq("lp_id", lp_id).order("step_order").execute()
+        old_step_ids: List[str] = []
+        new_steps_payload: List[dict] = []
+
+        for step in steps_response.data or []:
+            old_step_ids.append(step["id"])
+            new_steps_payload.append({
+                "lp_id": new_lp_id,
+                "step_order": step.get("step_order", 0),
+                "image_url": step.get("image_url"),
+                "video_url": step.get("video_url"),
+                "animation_type": step.get("animation_type"),
+                "block_type": step.get("block_type"),
+                "content_data": step.get("content_data"),
+                "step_views": 0,
+                "step_exits": 0,
+            })
+
+        step_id_map: Dict[str, str] = {}
+        inserted_steps: List[dict] = []
+
+        if new_steps_payload:
+            new_steps_response = supabase.table("lp_steps").insert(new_steps_payload).execute()
+            inserted_steps = new_steps_response.data or []
+            if len(inserted_steps) != len(old_step_ids):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="ステップの複製に失敗しました"
+                )
+            for old_id, new_step in zip(old_step_ids, inserted_steps):
+                step_id_map[old_id] = new_step["id"]
+
+        # CTAを複製
+        ctas_response = supabase.table("lp_ctas").select("*").eq("lp_id", lp_id).execute()
+        new_ctas_payload: List[dict] = []
+
+        for cta in ctas_response.data or []:
+            original_step_id = cta.get("step_id")
+            new_step_id = step_id_map.get(original_step_id) if original_step_id else None
+            new_ctas_payload.append({
+                "lp_id": new_lp_id,
+                "step_id": new_step_id,
+                "cta_type": cta.get("cta_type"),
+                "button_image_url": cta.get("button_image_url"),
+                "button_position": cta.get("button_position"),
+                "link_url": cta.get("link_url"),
+                "is_required": cta.get("is_required", False),
+                "click_count": 0,
+            })
+
+        inserted_ctas: List[dict] = []
+        if new_ctas_payload:
+            new_ctas_response = supabase.table("lp_ctas").insert(new_ctas_payload).execute()
+            inserted_ctas = new_ctas_response.data or []
+
+        # 最新のLP情報を取得しレスポンスを組み立て
+        latest_lp_response = supabase.table("landing_pages").select("*").eq("id", new_lp_id).single().execute()
+        latest_lp = latest_lp_response.data or new_lp
+
+        steps_for_response = inserted_steps if inserted_steps else []
+        if not steps_for_response and new_steps_payload:
+            # 返却が空の場合は再取得
+            steps_refresh = supabase.table("lp_steps").select("*").eq("lp_id", new_lp_id).order("step_order").execute()
+            steps_for_response = steps_refresh.data or []
+
+        ctas_for_response = inserted_ctas if inserted_ctas else []
+        if not ctas_for_response and new_ctas_payload:
+            ctas_refresh = supabase.table("lp_ctas").select("*").eq("lp_id", new_lp_id).execute()
+            ctas_for_response = ctas_refresh.data or []
+
+        steps_models: List[LPStepResponse] = []
+        for step in steps_for_response:
+            if not step.get("block_type"):
+                step["block_type"] = (step.get("content_data") or {}).get("block_type")
+            steps_models.append(LPStepResponse(**step))
+
+        cta_models = [CTAResponse(**cta) for cta in ctas_for_response]
+
+        public_url = f"{settings.frontend_url}/{latest_lp.get('slug', new_slug)}"
+
+        return LPDetailResponse(
+            **latest_lp,
+            steps=steps_models,
+            ctas=cta_models,
+            public_url=public_url
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"LP複製エラー: {str(e)}"
         )
 
 # ==================== ステップ管理 ====================
