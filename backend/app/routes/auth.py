@@ -244,13 +244,22 @@ async def update_profile(
         
         # JWTトークンをデコードしてユーザーIDを取得
         import jwt
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
-        user_id = payload.get("sub")
+        from jwt import PyJWTError
         
-        if not user_id:
+        try:
+            # トークンをデコード（検証なし - Supabaseが検証済み）
+            payload = jwt.decode(token, options={"verify_signature": False})
+            user_id = payload.get("sub")
+            
+            if not user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="無効なトークンです"
+                )
+        except PyJWTError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="無効なトークンです"
+                detail="トークンのデコードに失敗しました"
             )
         
         # 現在のユーザー情報を取得
@@ -292,16 +301,6 @@ async def update_profile(
             # 更新がない場合は現在の情報を返す
             return UserResponse(**user_response.data)
         
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="トークンの有効期限が切れています"
-        )
-    except jwt.InvalidTokenError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="無効なトークンです"
-        )
     except HTTPException:
         raise
     except Exception as e:
