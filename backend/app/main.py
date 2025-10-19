@@ -38,16 +38,16 @@ def health_check():
 
 # ルート追加
 from app.routes import test, auth, lp, media, public, analytics, products, points, ai, admin
-app.include_router(test.router)
-app.include_router(auth.router)
-app.include_router(lp.router)
-app.include_router(media.router)
-app.include_router(public.router)
-app.include_router(analytics.router)
-app.include_router(products.router)
-app.include_router(points.router)
-app.include_router(ai.router)
-app.include_router(admin.router)
+app.include_router(test.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
+app.include_router(lp.router, prefix="/api")
+app.include_router(media.router, prefix="/api")
+app.include_router(public.router, prefix="/api")
+app.include_router(analytics.router, prefix="/api")
+app.include_router(products.router, prefix="/api")
+app.include_router(points.router, prefix="/api")
+app.include_router(ai.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn
