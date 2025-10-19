@@ -65,3 +65,25 @@ class ProductPurchaseResponse(BaseModel):
     purchased_at: datetime
     redirect_url: Optional[str] = None
     thanks_lp_slug: Optional[str] = None
+
+# 販売者情報付き商品レスポンス
+class ProductWithSellerResponse(BaseModel):
+    id: str
+    seller_id: str
+    seller_username: str
+    lp_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    price_in_points: int
+    stock_quantity: Optional[int] = None
+    is_available: bool
+    total_sales: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+# パブリック商品一覧レスポンス
+class PublicProductListResponse(BaseModel):
+    data: List[ProductWithSellerResponse]
+    total: int
+    limit: int
+    offset: int

@@ -8,7 +8,9 @@ from app.models.product import (
     ProductResponse,
     ProductListResponse,
     ProductPurchaseRequest,
-    ProductPurchaseResponse
+    ProductPurchaseResponse,
+    ProductWithSellerResponse,
+    PublicProductListResponse
 )
 from typing import Optional
 import jwt
@@ -438,4 +440,110 @@ async def purchase_product(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"商品購入エラー: {str(e)}"
+        )
+
+@router.get("/public", response_model=PublicProductListResponse)
+async def get_public_products(
+    sort: str = Query("latest", description="ソート順: 'popular' (人気順) または 'latest' (新着順)"),
+    limit: int = Query(5, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+):
+    """
+    全ての販売中商品を取得（認証必須、全ユーザー可能）
+    
+    - **sort**: 'popular' (total_salesでソート) または 'latest' (created_atでソート)
+    - **limit**: 取得件数（デフォルト: 5）
+    - **offset**: オフセット
+    
+    Returns:
+        販売者情報を含む商品一覧
+    """
+    try:
+        # 認証チェック（BuyerもSellerもOK）
+        user = get_current_user(credentials)
+        supabase = get_supabase()
+        
+        # 販売中の商品を取得（seller情報をJOIN）
+        query = """
+            SELECT 
+                p.id,
+                p.seller_id,
+                u.username as seller_username,
+                p.lp_id,
+                p.title,
+                p.description,
+                p.price_in_points,
+                p.stock_quantity,
+                p.is_available,
+                p.total_sales,
+                p.created_at,
+                p.updated_at
+            FROM products p
+            INNER JOIN users u ON p.seller_id = u.id
+            WHERE p.is_available = true
+        """
+        
+        # ソート順を決定
+        if sort == "popular":
+            query += " ORDER BY p.total_sales DESC, p.created_at DESC"
+        else:  # latest
+            query += " ORDER BY p.created_at DESC"
+        
+        query += f" LIMIT {limit} OFFSET {offset}"
+        
+        # RPC実行
+        response = supabase.rpc('exec_sql', {'query': query}).execute()
+        
+        if response.data is None:
+            # RPC関数が存在しない場合は通常のクエリで代替
+            products_response = supabase.table("products").select("*, seller:users!seller_id(username)").eq("is_available", True)
+            
+            if sort == "popular":
+                products_response = products_response.order("total_sales", desc=True).order("created_at", desc=True)
+            else:
+                products_response = products_response.order("created_at", desc=True)
+            
+            products_response = products_response.range(offset, offset + limit - 1).execute()
+            
+            products = []
+            for product in (products_response.data or []):
+                seller_data = product.get("seller", {})
+                products.append(ProductWithSellerResponse(
+                    id=product["id"],
+                    seller_id=product["seller_id"],
+                    seller_username=seller_data.get("username", "Unknown"),
+                    lp_id=product.get("lp_id"),
+                    title=product["title"],
+                    description=product.get("description"),
+                    price_in_points=product["price_in_points"],
+                    stock_quantity=product.get("stock_quantity"),
+                    is_available=product["is_available"],
+                    total_sales=product.get("total_sales", 0),
+                    created_at=product["created_at"],
+                    updated_at=product["updated_at"]
+                ))
+            
+            # 総数取得
+            count_response = supabase.table("products").select("id", count="exact").eq("is_available", True).execute()
+            total = count_response.count or 0
+        else:
+            products = [ProductWithSellerResponse(**p) for p in response.data]
+            # 総数取得
+            count_response = supabase.table("products").select("id", count="exact").eq("is_available", True).execute()
+            total = count_response.count or 0
+        
+        return PublicProductListResponse(
+            data=products,
+            total=total,
+            limit=limit,
+            offset=offset
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"公開商品一覧取得エラー: {str(e)}"
         )
