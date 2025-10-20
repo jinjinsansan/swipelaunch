@@ -1087,16 +1087,15 @@ async def create_admin_announcement(
             supabase
             .table("announcements")
             .insert(insert_data)
-            .select("*")
-            .single()
             .execute()
         )
-        if not response.data:
+        rows = response.data or []
+        if not rows:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="お知らせの作成に失敗しました",
             )
-        announcement = build_admin_announcement(response.data)
+        announcement = build_admin_announcement(rows[0])
         create_moderation_event(
             supabase,
             action="announcement_create",
@@ -1146,16 +1145,15 @@ async def update_admin_announcement(
             .table("announcements")
             .update(update_data)
             .eq("id", announcement_id)
-            .select("*")
-            .single()
             .execute()
         )
-        if not response.data:
+        rows = response.data or []
+        if not rows:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="指定されたお知らせが見つかりません",
             )
-        announcement = build_admin_announcement(response.data)
+        announcement = build_admin_announcement(rows[0])
         create_moderation_event(
             supabase,
             action="announcement_update",
