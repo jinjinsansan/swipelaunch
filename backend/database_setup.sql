@@ -1,4 +1,4 @@
--- SwipeLaunch データベーステーブル作成
+-- Ｄ－swipe データベーステーブル作成
 -- Supabase SQL Editorで実行してください
 
 -- 1. users テーブル（Supabase Authと連携）
@@ -9,8 +9,15 @@ CREATE TABLE IF NOT EXISTS users (
   user_type VARCHAR(20) NOT NULL CHECK (user_type IN ('seller', 'buyer')),
   point_balance INTEGER DEFAULT 0,
   created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
+  updated_at TIMESTAMP DEFAULT NOW(),
+  is_blocked BOOLEAN DEFAULT FALSE,
+  blocked_reason TEXT,
+  blocked_at TIMESTAMP
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS blocked_at TIMESTAMP;
 
 -- 2. landing_pages テーブル
 CREATE TABLE IF NOT EXISTS landing_pages (
@@ -118,6 +125,17 @@ CREATE INDEX IF NOT EXISTS idx_lp_ctas_lp_id ON lp_ctas(lp_id);
 CREATE INDEX IF NOT EXISTS idx_products_seller ON products(seller_id);
 CREATE INDEX IF NOT EXISTS idx_products_lp ON products(lp_id);
 CREATE INDEX IF NOT EXISTS idx_point_transactions_user ON point_transactions(user_id);
+CREATE TABLE IF NOT EXISTS moderation_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  action VARCHAR(100) NOT NULL,
+  performed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  target_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  target_lp_id UUID REFERENCES landing_pages(id) ON DELETE SET NULL,
+  reason TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_moderation_events_created_at ON moderation_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_lp_analytics_lp_date ON lp_analytics(lp_id, date);
 
 -- Row Level Security (RLS) 設定
@@ -216,6 +234,6 @@ CREATE POLICY "Sellers can manage own AB tests" ON ab_tests
 -- 完了メッセージ
 DO $$
 BEGIN
-  RAISE NOTICE 'SwipeLaunch データベーステーブルの作成が完了しました！';
+  RAISE NOTICE 'Ｄ－swipe データベーステーブルの作成が完了しました！';
   RAISE NOTICE '8つのテーブルとインデックス、RLSポリシーが設定されました。';
 END $$;
