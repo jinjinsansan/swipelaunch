@@ -45,6 +45,20 @@ def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_published_at(value: Optional[str]) -> str:
+    if not value:
+        return now_utc_iso()
+    dt = parse_iso_datetime(value)
+    if not dt:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="公開日時の形式が正しくありません",
+        )
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 def get_current_user(credentials: HTTPAuthorizationCredentials) -> dict:
     try:
         token = credentials.credentials
@@ -287,6 +301,61 @@ class ModerationEventSchema(BaseModel):
 
 class ModerationLogListResponse(BaseModel):
     data: List[ModerationEventSchema]
+
+
+class AnnouncementCreateRequest(BaseModel):
+    title: str = Field(..., max_length=200)
+    summary: str = Field(..., max_length=255)
+    body: str = Field(..., max_length=10000)
+    published_at: Optional[str] = None
+    is_published: bool = True
+    highlight: bool = False
+
+
+class AnnouncementUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=200)
+    summary: Optional[str] = Field(default=None, max_length=255)
+    body: Optional[str] = Field(default=None, max_length=10000)
+    published_at: Optional[str] = None
+    is_published: Optional[bool] = None
+    highlight: Optional[bool] = None
+
+
+class AdminAnnouncementSchema(BaseModel):
+    id: str
+    title: str
+    summary: str
+    body: str
+    is_published: bool
+    highlight: bool
+    published_at: str
+    created_at: str
+    updated_at: str
+    created_by: Optional[str] = None
+    created_by_email: Optional[str] = None
+    created_by_username: Optional[str] = None
+
+
+class AdminAnnouncementListResponse(BaseModel):
+    data: List[AdminAnnouncementSchema]
+    total: int
+
+
+def build_admin_announcement(row: Dict[str, Any]) -> AdminAnnouncementSchema:
+    return AdminAnnouncementSchema(
+        id=str(row.get("id")),
+        title=row.get("title", ""),
+        summary=row.get("summary", ""),
+        body=row.get("body", ""),
+        is_published=bool(row.get("is_published", True)),
+        highlight=bool(row.get("highlight", False)),
+        published_at=row.get("published_at") or row.get("created_at") or now_utc_iso(),
+        created_at=row.get("created_at") or now_utc_iso(),
+        updated_at=row.get("updated_at") or row.get("created_at") or now_utc_iso(),
+        created_by=row.get("created_by"),
+        created_by_email=row.get("created_by_email"),
+        created_by_username=row.get("created_by_username"),
+    )
 
 
 def build_admin_user_summaries(
@@ -957,6 +1026,188 @@ async def get_moderation_logs(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"モデレーションログの取得に失敗しました: {exc}",
+        )
+
+
+@router.get("/announcements", response_model=AdminAnnouncementListResponse)
+async def list_admin_announcements(
+    include_unpublished: bool = Query(True),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        query = (
+            supabase
+            .table("announcements")
+            .select("*", count="exact")
+            .order("published_at", desc=True)
+            .range(offset, offset + limit - 1)
+        )
+        if not include_unpublished:
+            query = query.eq("is_published", True)
+        response = query.execute()
+        rows, total = handle_supabase_response(response, "admin announcements list")
+        announcements = [build_admin_announcement(row) for row in rows]
+        return AdminAnnouncementListResponse(
+            data=announcements,
+            total=total if total is not None else len(announcements),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to list announcements")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"お知らせ一覧の取得に失敗しました: {exc}",
+        )
+
+
+@router.post("/announcements", response_model=AdminAnnouncementSchema, status_code=status.HTTP_201_CREATED)
+async def create_admin_announcement(
+    request: AnnouncementCreateRequest,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        published_at = normalize_published_at(request.published_at)
+        insert_data = {
+            "title": request.title.strip(),
+            "summary": request.summary.strip(),
+            "body": request.body,
+            "is_published": request.is_published,
+            "highlight": request.highlight,
+            "published_at": published_at,
+            "created_by": admin.get("id"),
+            "created_by_email": admin.get("email"),
+            "created_by_username": admin.get("username"),
+        }
+        response = (
+            supabase
+            .table("announcements")
+            .insert(insert_data)
+            .select("*")
+            .single()
+            .execute()
+        )
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="お知らせの作成に失敗しました",
+            )
+        announcement = build_admin_announcement(response.data)
+        create_moderation_event(
+            supabase,
+            action="announcement_create",
+            performed_by=admin.get("id"),
+            reason=f"{announcement.title} を公開",
+        )
+        return announcement
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to create announcement")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"お知らせの作成に失敗しました: {exc}",
+        )
+
+
+@router.put("/announcements/{announcement_id}", response_model=AdminAnnouncementSchema)
+async def update_admin_announcement(
+    announcement_id: str,
+    request: AnnouncementUpdateRequest,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        update_data: Dict[str, Any] = {}
+        if request.title is not None:
+            update_data["title"] = request.title.strip()
+        if request.summary is not None:
+            update_data["summary"] = request.summary.strip()
+        if request.body is not None:
+            update_data["body"] = request.body
+        if request.is_published is not None:
+            update_data["is_published"] = request.is_published
+        if request.highlight is not None:
+            update_data["highlight"] = request.highlight
+        if request.published_at is not None:
+            update_data["published_at"] = normalize_published_at(request.published_at)
+        if not update_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="更新内容がありません",
+            )
+        update_data["updated_at"] = now_utc_iso()
+        response = (
+            supabase
+            .table("announcements")
+            .update(update_data)
+            .eq("id", announcement_id)
+            .select("*")
+            .single()
+            .execute()
+        )
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="指定されたお知らせが見つかりません",
+            )
+        announcement = build_admin_announcement(response.data)
+        create_moderation_event(
+            supabase,
+            action="announcement_update",
+            performed_by=admin.get("id"),
+            reason=f"{announcement.title} を更新",
+        )
+        return announcement
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to update announcement")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"お知らせの更新に失敗しました: {exc}",
+        )
+
+
+@router.delete("/announcements/{announcement_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_admin_announcement(
+    announcement_id: str,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        existing = (
+            supabase
+            .table("announcements")
+            .select("id, title")
+            .eq("id", announcement_id)
+            .single()
+            .execute()
+        )
+        if not existing.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="指定されたお知らせが見つかりません",
+            )
+        supabase.table("announcements").delete().eq("id", announcement_id).execute()
+        create_moderation_event(
+            supabase,
+            action="announcement_delete",
+            performed_by=admin.get("id"),
+            reason=f"{existing.data.get('title', '')} を削除",
+        )
+        return None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to delete announcement")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"お知らせの削除に失敗しました: {exc}",
         )
 
 

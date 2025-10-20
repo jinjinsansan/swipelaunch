@@ -6,7 +6,7 @@ from app.config import settings
 security = HTTPBearer()
 
 app = FastAPI(
-    title="SwipeLaunch API",
+    title="Ｄ－swipe API",
     version="1.0.0",
     description="スワイプ型LP制作プラットフォームAPI",
     swagger_ui_parameters={"persistAuthorization": True}
@@ -24,7 +24,7 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     return {
-        "message": "SwipeLaunch API is running",
+        "message": "Ｄ－swipe API is running",
         "version": "1.0.0",
         "docs": "/docs"
     }
@@ -37,7 +37,7 @@ def health_check():
     }
 
 # ルート追加
-from app.routes import test, auth, lp, media, public, analytics, products, points, ai, admin
+from app.routes import test, auth, lp, media, public, analytics, products, points, ai, admin, announcements
 app.include_router(test.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(lp.router, prefix="/api")
@@ -48,6 +48,7 @@ app.include_router(products.router, prefix="/api")
 app.include_router(points.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(announcements.router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn

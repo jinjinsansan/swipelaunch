@@ -138,6 +138,24 @@ CREATE TABLE IF NOT EXISTS moderation_events (
 CREATE INDEX IF NOT EXISTS idx_moderation_events_created_at ON moderation_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_lp_analytics_lp_date ON lp_analytics(lp_id, date);
 
+CREATE TABLE IF NOT EXISTS announcements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title VARCHAR(200) NOT NULL,
+  summary VARCHAR(255) NOT NULL,
+  body TEXT NOT NULL,
+  is_published BOOLEAN DEFAULT TRUE,
+  highlight BOOLEAN DEFAULT FALSE,
+  published_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_by_email VARCHAR(255),
+  created_by_username VARCHAR(100),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_announcements_published_at ON announcements(published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_announcements_published ON announcements(is_published);
+
 -- Row Level Security (RLS) 設定
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE landing_pages ENABLE ROW LEVEL SECURITY;
@@ -147,6 +165,7 @@ ALTER TABLE products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE point_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE lp_analytics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ab_tests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE announcements ENABLE ROW LEVEL SECURITY;
 
 -- RLS ポリシー: users
 CREATE POLICY "Users can view own data" ON users
@@ -230,6 +249,13 @@ CREATE POLICY "Sellers can manage own AB tests" ON ab_tests
       AND landing_pages.seller_id = auth.uid()
     )
   );
+
+CREATE POLICY "Announcements are viewable" ON announcements
+  FOR SELECT USING (true);
+
+CREATE POLICY "Announcements are manageable by service" ON announcements
+  FOR ALL USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');
 
 -- 完了メッセージ
 DO $$
