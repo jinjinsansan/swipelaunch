@@ -108,6 +108,20 @@ def create_moderation_event(
         logger.warning("Failed to record moderation event: %s", exc)
 
 
+def handle_supabase_response(response, context: str) -> Tuple[Any, Optional[int]]:
+    error = getattr(response, "error", None)
+    if error:
+        message = getattr(error, "message", None) or str(error)
+        logger.error("Supabase error in %s: %s", context, message)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"{context}: {message}",
+        )
+    data = response.data or []
+    count = getattr(response, "count", None)
+    return data, count
+
+
 class GrantPointsRequest(BaseModel):
     user_id: str
     amount: int
@@ -279,10 +293,7 @@ def build_admin_user_summaries(
     offset: int = 0,
     user_ids_filter: Optional[List[str]] = None,
 ) -> Tuple[List[AdminUserSummarySchema], int]:
-    query = supabase.table("users").select(
-        "id, username, email, user_type, point_balance, created_at, is_blocked, blocked_reason, blocked_at",
-        count="exact",
-    )
+    query = supabase.table("users").select("*", count="exact")
     if user_ids_filter:
         query = query.in_("id", user_ids_filter)
     elif search:
@@ -291,8 +302,7 @@ def build_admin_user_summaries(
         query = query.eq("user_type", user_type)
     query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
     response = query.execute()
-    users_raw = response.data or []
-    total = getattr(response, "count", None)
+    users_raw, total = handle_supabase_response(response, "users query")
     if total is None:
         total = len(users_raw)
     user_ids = [user.get("id") for user in users_raw if user.get("id")]
@@ -332,7 +342,8 @@ def build_admin_user_summaries(
         .in_("seller_id", user_ids)
         .execute()
     )
-    for lp in lp_response.data or []:
+    lp_rows, _ = handle_supabase_response(lp_response, "landing_pages seller lookup")
+    for lp in lp_rows:
         seller_id = lp.get("seller_id")
         if seller_id:
             lp_counts[seller_id] += 1
@@ -344,7 +355,8 @@ def build_admin_user_summaries(
         .in_("seller_id", user_ids)
         .execute()
     )
-    for product in product_response.data or []:
+    product_rows, _ = handle_supabase_response(product_response, "products seller lookup")
+    for product in product_rows:
         seller_id = product.get("seller_id")
         if seller_id:
             product_counts[seller_id] += 1
@@ -358,7 +370,8 @@ def build_admin_user_summaries(
         .limit(5000)
         .execute()
     )
-    for tx in transactions_response.data or []:
+    transaction_rows, _ = handle_supabase_response(transactions_response, "point_transactions lookup")
+    for tx in transaction_rows:
         user_id = tx.get("user_id")
         if not user_id:
             continue
@@ -516,11 +529,12 @@ async def get_admin_user_detail(
         landing_pages_response = (
             supabase
             .table("landing_pages")
-            .select("id, title, status, slug, total_views, total_cta_clicks, created_at, updated_at")
+            .select("*")
             .eq("seller_id", user_id)
             .order("created_at", desc=True)
             .execute()
         )
+        landing_page_rows, _ = handle_supabase_response(landing_pages_response, "user landing pages lookup")
         landing_pages = [
             AdminUserLandingPageSchema(
                 id=lp.get("id"),
@@ -532,7 +546,7 @@ async def get_admin_user_detail(
                 created_at=lp.get("created_at", now_utc_iso()),
                 updated_at=lp.get("updated_at", now_utc_iso()),
             )
-            for lp in (landing_pages_response.data or [])
+            for lp in landing_page_rows
         ]
 
         return AdminUserDetailResponse(
@@ -659,20 +673,16 @@ async def list_marketplace_lps(
 ):
     try:
         supabase = get_supabase()
-        query = supabase.table("landing_pages").select(
-            "id, seller_id, title, slug, status, total_views, total_cta_clicks, created_at, updated_at",
-            count="exact",
-        )
+        query = supabase.table("landing_pages").select("*", count="exact")
         if status_filter:
             query = query.eq("status", status_filter)
         else:
-            query = query.in_("status", ["published", "archived"])
+            query = query.in_("status", ["draft", "published", "archived"])
         if search:
             query = query.ilike("title", f"%{search}%")
         query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
         response = query.execute()
-        lps = response.data or []
-        total = getattr(response, "count", None)
+        lps, total = handle_supabase_response(response, "landing_pages admin list")
         if total is None:
             total = len(lps)
         seller_ids = {lp.get("seller_id") for lp in lps if lp.get("seller_id")}
@@ -685,7 +695,8 @@ async def list_marketplace_lps(
                 .in_("id", list(seller_ids))
                 .execute()
             )
-            for seller in sellers_response.data or []:
+            seller_rows, _ = handle_supabase_response(sellers_response, "users lookup for marketplace")
+            for seller in seller_rows:
                 seller_map[seller.get("id")] = seller
         lp_ids = [lp.get("id") for lp in lps if lp.get("id")]
         product_counts: Dict[str, int] = defaultdict(int)
@@ -697,7 +708,8 @@ async def list_marketplace_lps(
                 .in_("lp_id", lp_ids)
                 .execute()
             )
-            for product in products_response.data or []:
+            product_rows, _ = handle_supabase_response(products_response, "products lookup for marketplace")
+            for product in product_rows:
                 lp_id = product.get("lp_id")
                 if lp_id:
                     product_counts[lp_id] += 1
