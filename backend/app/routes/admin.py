@@ -308,7 +308,7 @@ def build_admin_user_summaries(
     response = query.execute()
     users_raw, total = handle_supabase_response(response, "users query")
     if not user_ids_filter:
-        users_raw = [user for user in users_raw if user.get("email") not in ADMIN_EMAIL_SET]
+        users_raw = [user for user in users_raw if user.get("email") not in EXCLUDED_EMAILS]
     if not user_ids_filter:
         users_raw = [user for user in users_raw if user.get("email") not in EXCLUDED_EMAILS]
     if total is None or not user_ids_filter:
