@@ -23,6 +23,7 @@ ADMIN_EMAILS = {
 EXCLUDED_EMAILS = {
     "seller1@example.com",
     "testuser1234@example.com",
+    "factorybot@example.com",
 }
 
 
@@ -808,12 +809,26 @@ async def get_point_analytics(
         transactions_response = (
             supabase
             .table("point_transactions")
-            .select("transaction_type, amount, created_at")
+            .select("user_id, transaction_type, amount, created_at")
             .order("created_at", desc=True)
             .limit(5000)
             .execute()
         )
-        transactions = transactions_response.data or []
+        transactions, _ = handle_supabase_response(transactions_response, "point transactions for analytics")
+        user_ids = {tx.get("user_id") for tx in transactions if tx.get("user_id")}
+        user_email_map: Dict[str, str] = {}
+        if user_ids:
+            users_response = (
+                supabase
+                .table("users")
+                .select("id, email")
+                .in_("id", list(user_ids))
+                .execute()
+            )
+            user_rows, _ = handle_supabase_response(users_response, "user email lookup for analytics")
+            for row in user_rows:
+                if row.get("id") and row.get("email"):
+                    user_email_map[row["id"]] = row["email"]
         cutoff = datetime.now(timezone.utc) - timedelta(days=limit_days)
         totals = {"purchased": 0, "spent": 0, "granted": 0, "other": 0, "net": 0}
         daily: Dict[str, Dict[str, int]] = defaultdict(lambda: {"purchased": 0, "spent": 0, "granted": 0, "other": 0, "net": 0})
@@ -821,6 +836,9 @@ async def get_point_analytics(
         for tx in transactions:
             dt = parse_iso_datetime(tx.get("created_at"))
             if not dt:
+                continue
+            user_email = user_email_map.get(tx.get("user_id"))
+            if user_email and user_email in EXCLUDED_EMAILS:
                 continue
             amount = int(tx.get("amount") or 0)
             tx_type = tx.get("transaction_type")
