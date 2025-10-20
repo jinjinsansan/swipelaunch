@@ -20,7 +20,10 @@ ADMIN_EMAILS = {
     "goldbenchan@gmail.com",
     "kusanokiyoshi1@gmail.com",
 }
-ADMIN_EMAIL_SET = set(ADMIN_EMAILS)
+EXCLUDED_EMAILS = {
+    "seller1@example.com",
+    "testuser1234@example.com",
+}
 
 
 def get_supabase() -> Client:
@@ -295,9 +298,6 @@ def build_admin_user_summaries(
     user_ids_filter: Optional[List[str]] = None,
 ) -> Tuple[List[AdminUserSummarySchema], int]:
     query = supabase.table("users").select("*", count="exact")
-    if not user_ids_filter:
-        for email in ADMIN_EMAILS:
-            query = query.neq("email", email)
     if user_ids_filter:
         query = query.in_("id", user_ids_filter)
     elif search:
@@ -309,6 +309,8 @@ def build_admin_user_summaries(
     users_raw, total = handle_supabase_response(response, "users query")
     if not user_ids_filter:
         users_raw = [user for user in users_raw if user.get("email") not in ADMIN_EMAIL_SET]
+    if not user_ids_filter:
+        users_raw = [user for user in users_raw if user.get("email") not in EXCLUDED_EMAILS]
     if total is None or not user_ids_filter:
         total = len(users_raw)
     user_ids = [user.get("id") for user in users_raw if user.get("id")]
@@ -736,7 +738,7 @@ async def list_marketplace_lps(
                 product_count=product_counts.get(lp.get("id"), 0),
             )
             for lp in lps
-            if seller_map.get(lp.get("seller_id"), {}).get("email") not in ADMIN_EMAIL_SET
+            if seller_map.get(lp.get("seller_id"), {}).get("email") not in EXCLUDED_EMAILS
         ]
         return AdminMarketplaceResponse(data=items, total=len(items))
     except HTTPException:
