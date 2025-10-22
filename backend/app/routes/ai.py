@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.models.ai import (
     AIWizardInput,
-    AIStructureSuggestion,
     AITextGenerationRequest,
     AITextGenerationResponse,
     AIImprovementSuggestion,
@@ -21,12 +20,7 @@ async def ai_wizard(
     AIウィザード: ユーザー入力に基づいてLP構成を提案
     """
     try:
-        result = await AIService.generate_lp_structure(
-            business=input_data.business,
-            target=input_data.target,
-            goal=input_data.goal,
-            description=input_data.description
-        )
+        result = await AIService.generate_lp_structure(input_data)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI生成エラー: {str(e)}")
