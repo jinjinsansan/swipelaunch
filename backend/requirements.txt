@@ -14,3 +14,4 @@ python-jose[cryptography]>=3.3.0
 email-validator>=2.1.0
 openai>=1.0.0
 google-auth>=2.35.0
+requests>=2.31.0
