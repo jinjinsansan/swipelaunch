@@ -1,4 +1,4 @@
-# SwipeLaunch 開発環境セットアップガイド
+# Ｄ－swipe 開発環境セットアップガイド
 
 ## 目次
 1. [前提条件](#前提条件)
@@ -215,7 +215,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 # アプリケーション
 NEXT_PUBLIC_APP_URL=http://localhost:3000
-NEXT_PUBLIC_APP_NAME=SwipeLaunch
+NEXT_PUBLIC_APP_NAME=Ｄ－swipe
 
 # Redis (Upstash)
 UPSTASH_REDIS_REST_URL=https://xxx.upstash.io
@@ -394,7 +394,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 
-app = FastAPI(title="SwipeLaunch API", version="1.0.0")
+app = FastAPI(title="Ｄ－swipe API", version="1.0.0")
 
 # CORS設定
 app.add_middleware(
@@ -407,7 +407,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "SwipeLaunch API is running"}
+    return {"message": "Ｄ－swipe API is running"}
 
 @app.get("/health")
 def health_check():

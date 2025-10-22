@@ -1,4 +1,4 @@
-# SwipeLaunch API仕様書
+# Ｄ－swipe API仕様書
 
 ## 目次
 1. [概要](#概要)

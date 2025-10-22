@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -288,7 +288,8 @@ class AIService:
             content.setdefault("title", "申込締切まで残りわずか")
             urgency = content.get("urgencyText") or scarcity_text or (deadline_text and f"{deadline_text}までの申込で特典適用") or "枠が埋まり次第、募集を終了します。"
             content["urgencyText"] = urgency
-            default_target = (datetime.utcnow() + timedelta(days=3)).replace(microsecond=0).isoformat() + "Z"
+            # Use timezone-aware datetime to avoid deprecated datetime.utcnow()
+            default_target = (datetime.now(timezone.utc) + timedelta(days=7)).replace(microsecond=0).isoformat()
             content["targetDate"] = content.get("targetDate") or default_target
             content.setdefault("showDays", True)
             content.setdefault("showHours", True)

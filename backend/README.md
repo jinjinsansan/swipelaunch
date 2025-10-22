@@ -1,4 +1,4 @@
-# SwipeLaunch Backend API
+# Ｄ－swipe Backend API
 
 スワイプ型LP制作プラットフォームのバックエンドAPI
 
