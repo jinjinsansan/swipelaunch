@@ -42,3 +42,7 @@ class TokenPayload(BaseModel):
 # プロフィール更新リクエスト
 class ProfileUpdateRequest(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=20, pattern="^[a-zA-Z0-9_]+$", description="ユーザー名（3-20文字、英数字とアンダースコアのみ）")
+
+
+class GoogleAuthRequest(BaseModel):
+    credential: str = Field(..., description="Google IDトークン（credential）")

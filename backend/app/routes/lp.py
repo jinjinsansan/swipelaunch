@@ -18,7 +18,7 @@ from app.models.landing_page import (
 from typing import Optional, List, Dict
 import re
 import secrets
-import jwt
+from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/lp", tags=["landing_pages"])
 security = HTTPBearer()
@@ -31,16 +31,18 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials) -> str:
     """トークンから現在のユーザーIDを取得"""
     try:
         token = credentials.credentials
-        payload = jwt.decode(token, options={"verify_signature": False})
+        payload = decode_access_token(token)
         user_id = payload.get("sub")
-        
+
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="無効なトークンです"
             )
         return user_id
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="トークンの検証に失敗しました"

@@ -1,16 +1,23 @@
+import re
+from datetime import datetime
+from uuid import uuid4
+
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from supabase import create_client, Client
-from typing import Optional
+
 from app.config import settings
 from app.models.user import (
     UserRegisterRequest,
     UserLoginRequest,
     UserResponse,
     AuthResponse,
-    ProfileUpdateRequest
+    ProfileUpdateRequest,
+    GoogleAuthRequest
 )
-from datetime import datetime
+from app.utils.auth import create_access_token, decode_access_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer()
@@ -18,6 +25,32 @@ security = HTTPBearer()
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
     return create_client(settings.supabase_url, settings.supabase_key)
+
+
+def generate_unique_username(supabase: Client, base_name: str) -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9_]", "", base_name) or "user"
+    candidate = sanitized[:20] or "user"
+    suffix = 1
+
+    while True:
+        existing = supabase.table("users").select("id").eq("username", candidate).limit(1).execute()
+        if not existing.data:
+            return candidate
+        trimmed = sanitized[: max(1, 20 - len(str(suffix)))]
+        candidate = f"{trimmed}{suffix}"
+        suffix += 1
+
+
+def build_user_response(user_info: dict) -> UserResponse:
+    created_at = user_info.get("created_at") or user_info.get("updated_at") or datetime.utcnow().isoformat()
+    return UserResponse(
+        id=user_info["id"],
+        email=user_info["email"],
+        username=user_info["username"],
+        user_type=user_info.get("user_type", "seller"),
+        point_balance=user_info.get("point_balance", 0),
+        created_at=created_at
+    )
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register(data: UserRegisterRequest):
@@ -70,17 +103,11 @@ async def register(data: UserRegisterRequest):
         # 3. レスポンス作成
         user_info = db_response.data[0]
         
+        user = build_user_response(user_info)
         return AuthResponse(
-            user=UserResponse(
-                id=user_info["id"],
-                email=user_info["email"],
-                username=user_info["username"],
-                user_type=user_info["user_type"],
-                point_balance=user_info["point_balance"],
-                created_at=user_info["created_at"]
-            ),
-            access_token=auth_response.session.access_token,
-            refresh_token=auth_response.session.refresh_token
+            user=user,
+            access_token=create_access_token(user.id),
+            refresh_token=""
         )
         
     except HTTPException:
@@ -125,17 +152,11 @@ async def login(data: UserLoginRequest):
         
         user_info = user_response.data
         
+        user = build_user_response(user_info)
         return AuthResponse(
-            user=UserResponse(
-                id=user_info["id"],
-                email=user_info["email"],
-                username=user_info["username"],
-                user_type=user_info["user_type"],
-                point_balance=user_info["point_balance"],
-                created_at=user_info["created_at"]
-            ),
-            access_token=auth_response.session.access_token,
-            refresh_token=auth_response.session.refresh_token
+            user=user,
+            access_token=create_access_token(user.id),
+            refresh_token=""
         )
         
     except HTTPException:
@@ -146,6 +167,78 @@ async def login(data: UserLoginRequest):
             detail=f"ログインエラー: {str(e)}"
         )
 
+
+@router.post("/google", response_model=AuthResponse)
+async def login_with_google(payload: GoogleAuthRequest):
+    """Google OAuth credentialでログイン/登録"""
+    if not settings.google_client_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Google OAuthの設定が完了していません"
+        )
+
+    try:
+        id_info = google_id_token.verify_oauth2_token(
+            payload.credential,
+            google_requests.Request(),
+            settings.google_client_id
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Google認証に失敗しました"
+        ) from exc
+
+    email = id_info.get("email")
+    email_verified = id_info.get("email_verified", False)
+
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Googleアカウントのメールアドレスを取得できませんでした"
+        )
+
+    if not email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="メールアドレスが確認済みのGoogleアカウントを利用してください"
+        )
+
+    supabase = get_supabase()
+
+    user_response = supabase.table("users").select("*").eq("email", email).limit(1).execute()
+
+    if user_response.data:
+        user_info = user_response.data[0]
+    else:
+        display_name = id_info.get("name") or email.split("@")[0]
+        username = generate_unique_username(supabase, display_name)
+        new_user = {
+            "id": str(uuid4()),
+            "email": email,
+            "username": username,
+            "user_type": "seller",
+            "point_balance": 0,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+
+        created = supabase.table("users").insert(new_user).execute()
+        if not created.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="ユーザー情報の作成に失敗しました"
+            )
+        user_info = created.data[0]
+
+    user = build_user_response(user_info)
+    access_token = create_access_token(user.id)
+
+    return AuthResponse(
+        user=user,
+        access_token=access_token,
+        refresh_token=""
+    )
+
 @router.get("/me", response_model=UserResponse)
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
@@ -155,25 +248,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     """
     try:
         token = credentials.credentials
-        
-        # JWTトークンをデコードしてユーザーIDを取得
-        import jwt
-        from jwt import PyJWTError
-        
-        try:
-            # トークンをデコード（検証なし - Supabaseが検証済み）
-            payload = jwt.decode(token, options={"verify_signature": False})
-            user_id = payload.get("sub")
-            
-            if not user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="無効なトークンです"
-                )
-        except PyJWTError:
+        payload = decode_access_token(token)
+        user_id = payload.get("sub")
+        if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="トークンのデコードに失敗しました"
+                detail="無効なトークンです"
             )
         
         # service_role keyでSupabaseクライアントを取得（RLSバイパス）
@@ -189,15 +269,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             )
         
         user_info = user_response.data
-        
-        return UserResponse(
-            id=user_info["id"],
-            email=user_info["email"],
-            username=user_info["username"],
-            user_type=user_info["user_type"],
-            point_balance=user_info["point_balance"],
-            created_at=user_info["created_at"]
-        )
+        return build_user_response(user_info)
         
     except HTTPException:
         raise
@@ -215,11 +287,8 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
     Authorizationヘッダーに Bearer トークンを指定してください
     """
     try:
-        supabase = get_supabase()
-        supabase.auth.sign_out()
-        
+        # 署名付きトークンのクライアント側破棄で完了
         return {"message": "ログアウトしました"}
-        
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -241,25 +310,13 @@ async def update_profile(
     try:
         token = credentials.credentials
         supabase = get_supabase()
-        
-        # JWTトークンをデコードしてユーザーIDを取得
-        import jwt
-        from jwt import PyJWTError
-        
-        try:
-            # トークンをデコード（検証なし - Supabaseが検証済み）
-            payload = jwt.decode(token, options={"verify_signature": False})
-            user_id = payload.get("sub")
-            
-            if not user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="無効なトークンです"
-                )
-        except PyJWTError:
+
+        payload = decode_access_token(token)
+        user_id = payload.get("sub")
+        if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="トークンのデコードに失敗しました"
+                detail="無効なトークンです"
             )
         
         # 現在のユーザー情報を取得
@@ -296,10 +353,10 @@ async def update_profile(
                     detail="プロフィールの更新に失敗しました"
                 )
             
-            return UserResponse(**updated_user.data[0])
+            return build_user_response(updated_user.data[0])
         else:
             # 更新がない場合は現在の情報を返す
-            return UserResponse(**user_response.data)
+            return build_user_response(user_response.data)
         
     except HTTPException:
         raise

@@ -4,13 +4,13 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple, Literal
 
-import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from supabase import Client, create_client
 
 from app.config import settings
+from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 security = HTTPBearer()
@@ -62,7 +62,7 @@ def normalize_published_at(value: Optional[str]) -> str:
 def get_current_user(credentials: HTTPAuthorizationCredentials) -> dict:
     try:
         token = credentials.credentials
-        payload = jwt.decode(token, options={"verify_signature": False})
+        payload = decode_access_token(token)
         user_id = payload.get("sub")
         if not user_id:
             raise HTTPException(

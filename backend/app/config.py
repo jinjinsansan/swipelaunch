@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Security
     jwt_secret: str = "your-super-secret-jwt-key-change-this-in-production"
     api_key: str = "your-api-key-for-internal-calls"
+    access_token_expires_minutes: int = 60 * 24
+
+    # Google OAuth
+    google_client_id: str = ""
+    google_client_secret: str = ""
     
     # OpenAI
     openai_api_key: Optional[str] = None
