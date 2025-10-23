@@ -172,33 +172,40 @@ async def login(data: UserLoginRequest):
 async def login_with_google(payload: GoogleAuthRequest):
     """Google OAuth credentialでログイン/登録"""
     if not settings.google_client_id:
+        print("❌ GOOGLE_CLIENT_ID が設定されていません")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Google OAuthの設定が完了していません"
         )
 
+    print(f"🔐 Google認証開始 - Client ID: {settings.google_client_id[:20]}...")
+    
     try:
         id_info = google_id_token.verify_oauth2_token(
             payload.credential,
             google_requests.Request(),
             settings.google_client_id
         )
+        print(f"✅ IDトークン検証成功 - Email: {id_info.get('email')}, Verified: {id_info.get('email_verified')}")
     except ValueError as exc:
+        print(f"❌ IDトークン検証失敗: {str(exc)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Google認証に失敗しました"
+            detail=f"Google認証に失敗しました: {str(exc)}"
         ) from exc
 
     email = id_info.get("email")
     email_verified = id_info.get("email_verified", False)
 
     if not email:
+        print("❌ メールアドレスが取得できませんでした")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Googleアカウントのメールアドレスを取得できませんでした"
         )
 
     if not email_verified:
+        print(f"❌ メールアドレス未確認: {email}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="メールアドレスが確認済みのGoogleアカウントを利用してください"
