@@ -184,10 +184,14 @@ class AIService:
 ### top-before-after-1 (ビフォーアフター)
 {
   "title": "導入前と導入後の変化",
-  "beforeTitle": "導入前",
-  "beforeText": "課題の状態（50-80文字）",
-  "afterTitle": "導入後",
-  "afterText": "解決後の状態（50-80文字）",
+  "before": {
+    "label": "Before",
+    "description": "課題の状態（50-80文字）"
+  },
+  "after": {
+    "label": "After",
+    "description": "解決後の状態（50-80文字）"
+  },
   "textColor": "#0F172A",
   "backgroundColor": "#FFFFFF"
 }
@@ -198,14 +202,25 @@ class AIService:
   "subtitle": "導入企業や受講生のリアルな成果をご紹介します。",
   "testimonials": [
     {
-      "name": "山田太郎",
+      "name": "受講者A",
       "role": "マーケター / 年間売上1.2億円",
+      "quote": "コメント文（60-100文字）"
+    },
+    {
+      "name": "受講者B",
+      "role": "副業スタート / 20代",
+      "quote": "コメント文（60-100文字）"
+    },
+    {
+      "name": "受講者C",
+      "role": "コミュニティ運営 / 40代",
       "quote": "コメント文（60-100文字）"
     }
   ],
   "textColor": "#0F172A",
   "backgroundColor": "#F8FAFC"
 }
+【重要】testimonialsは必ず3つ以上生成してください。実績や成果が異なる多様な受講者の声を含めてください。
 
 ### top-bonus-1 (特典)
 {
@@ -530,13 +545,31 @@ class AIService:
             reason = "導入前後のギャップを可視化し、成果のイメージを明確にするため。"
             content.setdefault("title", "導入前と導入後の変化")
             
+            # AIが生成したbeforeText/afterTextを取得（後方互換性のため）
             before_text = content.get("beforeText") or (pain_points[0] if pain_points else "時間も労力も投資したのに成果が出ない状態")
             after_text = content.get("afterText") or product.transformation or desired_outcome or "売上と時間の両立が実現"
             
-            content.setdefault("beforeTitle", "導入前")
-            content.setdefault("afterTitle", "導入後")
-            content["beforeText"] = before_text
-            content["afterText"] = after_text
+            # フロントエンドが期待するbefore/after構造に変換
+            before = content.get("before", {})
+            if not isinstance(before, dict):
+                before = {}
+            before.setdefault("label", "Before")
+            before.setdefault("description", before_text)
+            
+            after = content.get("after", {})
+            if not isinstance(after, dict):
+                after = {}
+            after.setdefault("label", "After")
+            after.setdefault("description", after_text)
+            
+            content["before"] = before
+            content["after"] = after
+            
+            # 古いフィールドを削除
+            content.pop("beforeText", None)
+            content.pop("afterText", None)
+            content.pop("beforeTitle", None)
+            content.pop("afterTitle", None)
             
             content.setdefault("textColor", "#0F172A")
             content.setdefault("backgroundColor", "#FFFFFF")
