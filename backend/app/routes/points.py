@@ -7,14 +7,21 @@ from app.models.points import (
     PointPurchaseResponse,
     PointBalanceResponse,
     TransactionResponse,
-    TransactionListResponse
+    TransactionListResponse,
+    JPYCPurchaseRequest,
+    JPYCPurchaseResponse,
+    JPYCTransactionStatus
 )
 from typing import Optional
 from datetime import datetime
 
 from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
+from app.services.jpyc_service import JPYCService, jpyc_to_wei
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/points", tags=["points"])
 security = HTTPBearer()
@@ -127,6 +134,175 @@ async def purchase_points_one_lat(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"ONE.lat決済エラー: {str(e)}"
+        )
+
+
+@router.post("/purchase/jpyc", response_model=JPYCPurchaseResponse)
+async def purchase_points_jpyc(
+    data: JPYCPurchaseRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    JPYC決済でポイント購入
+    
+    ガスレス決済（EIP-3009 transferWithAuthorization）
+    
+    Args:
+        data: JPYC購入リクエスト（署名データ含む）
+        credentials: 認証情報
+        
+    Returns:
+        JPYCPurchaseResponse: 決済情報
+    """
+    try:
+        user_id = get_current_user_id(credentials)
+        supabase = get_supabase()
+        
+        logger.info(f"🔷 JPYC purchase request from user {user_id}")
+        logger.info(f"   Points: {data.points_amount}, Chain: {data.chain_id}")
+        
+        # JPYCサービス初期化
+        try:
+            jpyc_service = JPYCService(chain_id=data.chain_id)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"サポートされていないブロックチェーンです: {str(e)}"
+            )
+        
+        # JPYC金額（1ポイント = 1 JPYC）
+        jpyc_amount = data.points_amount
+        jpyc_amount_wei = jpyc_to_wei(jpyc_amount)
+        
+        # プラットフォームのアドレス取得
+        to_address = jpyc_service.PLATFORM_ADDRESS
+        
+        # 署名検証
+        logger.info(f"🔐 Verifying signature...")
+        is_valid = jpyc_service.verify_signature(
+            from_address=data.from_address,
+            to_address=to_address,
+            value=jpyc_amount_wei,
+            valid_after=data.valid_after,
+            valid_before=data.valid_before,
+            nonce=data.nonce,
+            signature_v=data.signature_v,
+            signature_r=data.signature_r,
+            signature_s=data.signature_s,
+        )
+        
+        if not is_valid:
+            logger.error(f"❌ Invalid signature")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="署名が無効です"
+            )
+        
+        logger.info(f"✅ Signature verified")
+        
+        # トランザクション記録作成
+        transaction_id = str(uuid.uuid4())
+        transaction_data = {
+            "id": transaction_id,
+            "user_id": user_id,
+            "from_address": data.from_address,
+            "to_address": to_address,
+            "amount": jpyc_amount,
+            "points_amount": data.points_amount,
+            "chain_id": data.chain_id,
+            "status": "pending",
+            "nonce": data.nonce,
+            "signature_v": data.signature_v,
+            "signature_r": data.signature_r,
+            "signature_s": data.signature_s,
+            "valid_after": data.valid_after,
+            "valid_before": data.valid_before,
+        }
+        
+        supabase.table("jpyc_transactions").insert(transaction_data).execute()
+        logger.info(f"📝 Transaction record created: {transaction_id}")
+        
+        # TODO: トランザクション実行（リレイヤーの秘密鍵が設定されたら）
+        # tx_hash = jpyc_service.execute_transfer_with_authorization(...)
+        # if tx_hash:
+        #     supabase.table("jpyc_transactions").update({
+        #         "status": "submitted",
+        #         "tx_hash": tx_hash
+        #     }).eq("id", transaction_id).execute()
+        
+        logger.warning(f"⚠️ Transaction execution is not implemented yet")
+        logger.warning(f"⚠️ Manual processing required for transaction: {transaction_id}")
+        
+        # レスポンス
+        return JPYCPurchaseResponse(
+            transaction_id=transaction_id,
+            status="pending",
+            points_amount=data.points_amount,
+            jpyc_amount=jpyc_amount,
+            from_address=data.from_address,
+            to_address=to_address,
+            chain_id=data.chain_id,
+            estimated_confirmation_time=30,  # Polygon: 約30秒
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"❌ JPYC purchase error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"JPYC決済エラー: {str(e)}"
+        )
+
+
+@router.get("/purchase/jpyc/{transaction_id}", response_model=JPYCTransactionStatus)
+async def get_jpyc_transaction_status(
+    transaction_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    JPYC決済のステータス確認
+    
+    Args:
+        transaction_id: トランザクションID
+        credentials: 認証情報
+        
+    Returns:
+        JPYCTransactionStatus: トランザクションステータス
+    """
+    try:
+        user_id = get_current_user_id(credentials)
+        supabase = get_supabase()
+        
+        # トランザクション取得
+        response = supabase.table("jpyc_transactions").select("*").eq("id", transaction_id).eq("user_id", user_id).single().execute()
+        
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="トランザクションが見つかりません"
+            )
+        
+        tx = response.data
+        
+        return JPYCTransactionStatus(
+            transaction_id=tx["id"],
+            status=tx["status"],
+            tx_hash=tx.get("tx_hash"),
+            block_number=tx.get("block_number"),
+            points_amount=tx["points_amount"],
+            jpyc_amount=tx["amount"],
+            created_at=tx["created_at"],
+            confirmed_at=tx.get("confirmed_at"),
+            completed_at=tx.get("completed_at"),
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"ステータス取得エラー: {str(e)}"
         )
 
 
