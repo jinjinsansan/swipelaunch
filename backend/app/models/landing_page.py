@@ -69,6 +69,14 @@ class CTAResponse(BaseModel):
     class Config:
         from_attributes = True
 
+# Owner情報（seller情報を表示するため）
+class OwnerInfo(BaseModel):
+    username: str
+    email: str
+    
+    class Config:
+        from_attributes = True
+
 # LPレスポンス（基本情報のみ）
 class LPResponse(BaseModel):
     id: str
@@ -90,6 +98,7 @@ class LPResponse(BaseModel):
     meta_site_name: Optional[str] = None
     custom_theme_hex: Optional[str] = None
     custom_theme_shades: Optional[dict] = None
+    owner: Optional[OwnerInfo] = None  # seller情報（JOINで取得）
     created_at: datetime
     updated_at: datetime
     
@@ -117,6 +126,7 @@ class LPDetailResponse(BaseModel):
     meta_site_name: Optional[str] = None
     custom_theme_hex: Optional[str] = None
     custom_theme_shades: Optional[dict] = None
+    owner: Optional[OwnerInfo] = None  # seller情報（JOINで取得）
     steps: List[LPStepResponse] = []
     ctas: List[CTAResponse] = []
     created_at: datetime
