@@ -107,7 +107,8 @@ async def purchase_points_one_lat(
             "amount": amount_usd,
             "currency": "USD",
             "status": "PENDING",
-            "title": f"Point Purchase - {data.amount} points"
+            "title": f"Point Purchase - {data.amount} points",
+            "points_amount": data.amount  # ポイント数を保存
         }
         
         supabase.table("one_lat_transactions").insert(transaction_data).execute()

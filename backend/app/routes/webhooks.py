@@ -112,9 +112,14 @@ async def handle_payment_success(transaction: dict, payment_order: dict):
         logger.info(f"🔍 Transaction title: '{title}'")
         
         if "Point" in title or "point" in title:
-            # ユーザーのポイント残高を更新
-            # 為替レート: 1 USD = 145円（ポイント）
-            points_to_add = int(amount * 145)
+            # トランザクションに保存されたポイント数を使用（正確な付与のため）
+            points_to_add = transaction.get("points_amount")
+            
+            if not points_to_add:
+                # フォールバック: USD金額から計算（為替レート: 1 USD = 145円）
+                points_to_add = int(amount * 145)
+                logger.warning(f"⚠️ points_amount not found, calculated from amount: {points_to_add}")
+            
             logger.info(f"💰 Attempting to add {points_to_add} points to user {user_id}")
             
             # ユーザー情報取得
