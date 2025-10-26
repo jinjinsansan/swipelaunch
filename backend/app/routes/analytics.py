@@ -81,17 +81,20 @@ async def get_lp_analytics(
         # ステップファネル計算
         step_funnel = []
         for i, step in enumerate(steps):
-            step_views = step.get("step_views", 0)
-            step_exits = step.get("step_exits", 0)
+            step_views = max(0, step.get("step_views", 0))
+            step_exits = max(0, step.get("step_exits", 0))
             
             # 次のステップへの遷移率を計算
             if i < len(steps) - 1:
-                next_step_views = steps[i + 1].get("step_views", 0)
+                next_step_views = max(0, steps[i + 1].get("step_views", 0))
                 conversion_rate = (next_step_views / step_views * 100) if step_views > 0 else 0
             else:
                 # 最後のステップはCTAクリック率
-                cta_clicks = lp_data.get("total_cta_clicks", 0)
+                cta_clicks = max(0, lp_data.get("total_cta_clicks", 0))
                 conversion_rate = (cta_clicks / step_views * 100) if step_views > 0 else 0
+            
+            # conversion_rateを0-100の範囲にクランプ
+            conversion_rate = max(0.0, min(100.0, conversion_rate))
             
             step_funnel.append(StepFunnelData(
                 step_id=step["id"],
