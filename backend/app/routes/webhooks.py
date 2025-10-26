@@ -107,23 +107,33 @@ async def handle_payment_success(transaction: dict, payment_order: dict):
         user_id = transaction["user_id"]
         amount = float(payment_order.get("amount", 0))
         
-        # ポイント購入の場合（titleに"Point Purchase"が含まれる）
-        if "Point" in transaction.get("title", ""):
+        # ポイント購入の場合（titleに"Point"が含まれる）
+        title = transaction.get("title", "")
+        logger.info(f"🔍 Transaction title: '{title}'")
+        
+        if "Point" in title or "point" in title:
             # ユーザーのポイント残高を更新
-            # 為替レート: 1 USD = 100 ポイント（仮）
-            points_to_add = int(amount * 100)
+            # 為替レート: 1 USD = 145円（ポイント）
+            points_to_add = int(amount * 145)
+            logger.info(f"💰 Attempting to add {points_to_add} points to user {user_id}")
             
             # ユーザー情報取得
-            user_response = supabase.table("users").select("points").eq("id", user_id).execute()
+            user_response = supabase.table("users").select("point_balance").eq("id", user_id).execute()
+            logger.info(f"👤 User query result: {user_response.data}")
             
             if user_response.data:
-                current_points = user_response.data[0].get("points", 0)
+                current_points = user_response.data[0].get("point_balance", 0)
                 new_points = current_points + points_to_add
                 
                 # ポイント更新
-                supabase.table("users").update({"points": new_points}).eq("id", user_id).execute()
+                update_response = supabase.table("users").update({"point_balance": new_points}).eq("id", user_id).execute()
+                logger.info(f"📝 Update response: {update_response.data}")
                 
                 logger.info(f"✅ Points added to user {user_id}: +{points_to_add} (Total: {new_points})")
+            else:
+                logger.error(f"❌ User not found: {user_id}")
+        else:
+            logger.warning(f"⚠️ Transaction title '{title}' does not contain 'Point' - skipping point addition")
             
         # LP購入の場合（別途処理）
         # TODO: LP購入処理を実装

@@ -72,8 +72,8 @@ async def purchase_points_one_lat(
         
         user = user_response.data
         
-        # 金額計算（1 USD = 100 ポイント）
-        amount_usd = data.amount / 100.0
+        # 金額計算（1 USD = 145円（ポイント））
+        amount_usd = data.amount / 145.0
         
         # 一意のExternal ID生成
         external_id = f"point_purchase_{user_id}_{uuid.uuid4().hex[:8]}"
