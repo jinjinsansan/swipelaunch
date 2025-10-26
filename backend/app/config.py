@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: Optional[str] = None
     
+    # ONE.lat Payment Gateway
+    one_lat_api_key: str = ""
+    one_lat_api_secret: str = ""
+    one_lat_api_base_url: str = "https://api.one.lat"
+    one_lat_checkout_base_url: str = "https://one.lat/checkout"
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

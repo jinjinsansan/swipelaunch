@@ -13,6 +13,8 @@ from typing import Optional
 from datetime import datetime
 
 from app.utils.auth import decode_access_token
+from app.services.one_lat import one_lat_client
+import uuid
 
 router = APIRouter(prefix="/points", tags=["points"])
 security = HTTPBearer()
@@ -41,6 +43,91 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials) -> str:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="トークンの検証に失敗しました"
         )
+
+@router.post("/purchase/one-lat")
+async def purchase_points_one_lat(
+    data: PointPurchaseRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    ONE.latでポイント購入（USDT決済）
+    
+    - **amount**: 購入するポイント数（最低100ポイント）
+    
+    Returns:
+        checkout_url: ONE.latの決済ページURL
+    """
+    try:
+        user_id = get_current_user_id(credentials)
+        supabase = get_supabase()
+        
+        # ユーザー情報取得
+        user_response = supabase.table("users").select("email, username").eq("id", user_id).single().execute()
+        
+        if not user_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="ユーザーが見つかりません"
+            )
+        
+        user = user_response.data
+        
+        # 金額計算（1 USD = 100 ポイント）
+        amount_usd = data.amount / 100.0
+        
+        # 一意のExternal ID生成
+        external_id = f"point_purchase_{user_id}_{uuid.uuid4().hex[:8]}"
+        
+        # Webhook URL（本番環境では実際のURLに変更）
+        # TODO: 本番環境では環境変数から取得
+        backend_url = "https://swipelaunch-backend.onrender.com"
+        frontend_url = "https://d-swipe.com"
+        webhook_url = f"{backend_url}/api/webhooks/one-lat"
+        success_url = f"{frontend_url}/points/purchase/success"
+        error_url = f"{frontend_url}/points/purchase/error"
+        
+        # Checkout Preference作成
+        checkout_data = await one_lat_client.create_checkout_preference(
+            amount=amount_usd,
+            currency="USD",
+            title=f"Point Purchase - {data.amount} points",
+            external_id=external_id,
+            webhook_url=webhook_url,
+            success_url=success_url,
+            error_url=error_url,
+            payer_email=user["email"],
+            payer_name=user["username"]
+        )
+        
+        # トランザクション記録（PENDING状態で保存）
+        transaction_data = {
+            "user_id": user_id,
+            "checkout_preference_id": checkout_data.get("id"),
+            "external_id": external_id,
+            "amount": amount_usd,
+            "currency": "USD",
+            "status": "PENDING",
+            "title": f"Point Purchase - {data.amount} points"
+        }
+        
+        supabase.table("one_lat_transactions").insert(transaction_data).execute()
+        
+        return {
+            "checkout_url": checkout_data.get("checkout_url"),
+            "checkout_preference_id": checkout_data.get("id"),
+            "external_id": external_id,
+            "amount_usd": amount_usd,
+            "points": data.amount
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"ONE.lat決済エラー: {str(e)}"
+        )
+
 
 @router.post("/purchase", response_model=PointPurchaseResponse, status_code=status.HTTP_201_CREATED)
 async def purchase_points(
