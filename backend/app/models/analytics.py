@@ -10,6 +10,13 @@ class StepFunnelData(BaseModel):
     step_exits: int
     conversion_rate: float  # 次のステップへの遷移率
 
+# CTA別クリックデータ
+class CTAClickData(BaseModel):
+    cta_id: Optional[str] = None
+    step_id: Optional[str] = None
+    cta_type: Optional[str] = None
+    click_count: int
+
 # LP分析レスポンス
 class LPAnalyticsResponse(BaseModel):
     lp_id: str
@@ -29,7 +36,7 @@ class LPAnalyticsResponse(BaseModel):
     step_funnel: List[StepFunnelData]
     
     # CTA別クリック数
-    cta_clicks: List[dict]  # [{"cta_id": "...", "cta_type": "...", "click_count": 123}]
+    cta_clicks: List[CTAClickData]
     
     # 期間
     period_start: Optional[datetime] = None

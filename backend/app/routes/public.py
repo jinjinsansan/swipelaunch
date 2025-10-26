@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from supabase import create_client, Client
 from app.config import settings
 from app.models.landing_page import LPDetailResponse, LPStepResponse, CTAResponse
@@ -19,16 +19,26 @@ def get_supabase() -> Client:
     """Supabaseクライアント取得"""
     return create_client(settings.supabase_url, settings.supabase_key)
 
+class ViewRecordRequest(BaseModel):
+    session_id: Optional[str] = None
+
+
 class StepViewRequest(BaseModel):
     step_id: str
     session_id: Optional[str] = None
 
+
 class CTAClickRequest(BaseModel):
-    cta_id: str
+    cta_id: Optional[str] = None
+    step_id: Optional[str] = None
     session_id: Optional[str] = None
 
 @router.get("/{slug}", response_model=LPDetailResponse)
-async def get_public_lp(slug: str):
+async def get_public_lp(
+    slug: str,
+    track_view: bool = Query(False, description="閲覧数をトラッキングし、ビューイベントを記録するか"),
+    session_id: Optional[str] = Query(None, description="ビューイベントに紐づけるセッションID"),
+):
     """
     公開LP取得（認証不要）
     
@@ -84,26 +94,42 @@ async def get_public_lp(slug: str):
         # CTA取得
         ctas_response = supabase.table("lp_ctas").select("*").eq("lp_id", lp_id).execute()
         ctas = [CTAResponse(**cta) for cta in ctas_response.data] if ctas_response.data else []
-        
-        # 閲覧数を+1
-        current_views = lp_data.get("total_views", 0)
-        supabase.table("landing_pages").update({"total_views": current_views + 1}).eq("id", lp_id).execute()
-        
-        # lp_event_logsテーブルに閲覧記録を追加
-        analytics_data = {
-            "lp_id": lp_id,
-            "event_type": "view",
-            "session_id": None,  # フロントエンドから送信される場合に使用
-            "user_agent": None,  # 必要に応じて追加
-            "ip_address": None,  # 必要に応じて追加
-        }
-        supabase.table("lp_event_logs").insert(analytics_data).execute()
-        
+
+        if track_view:
+            should_track_view = True
+            if session_id:
+                existing_view = (
+                    supabase
+                    .table("lp_event_logs")
+                    .select("id")
+                    .eq("lp_id", lp_id)
+                    .eq("event_type", "view")
+                    .eq("session_id", session_id)
+                    .limit(1)
+                    .execute()
+                )
+                if existing_view.data:
+                    should_track_view = False
+
+            if should_track_view:
+                current_views = lp_data.get("total_views", 0)
+                updated = supabase.table("landing_pages").update({"total_views": current_views + 1}).eq("id", lp_id).execute()
+                if updated.data:
+                    lp_data["total_views"] = updated.data[0].get("total_views", current_views + 1)
+                else:
+                    lp_data["total_views"] = current_views + 1
+
+                analytics_data = {
+                    "lp_id": lp_id,
+                    "event_type": "view",
+                    "session_id": session_id,
+                    "user_agent": None,
+                    "ip_address": None,
+                }
+                supabase.table("lp_event_logs").insert(analytics_data).execute()
+
         # 公開URL生成
         public_url = f"{settings.frontend_url}/{lp_data['slug']}"
-        
-        # total_viewsを更新
-        lp_data["total_views"] = current_views + 1
         
         return LPDetailResponse(
             **lp_data,
@@ -152,6 +178,21 @@ async def record_step_view(slug: str, data: StepViewRequest):
                 detail="ステップが見つかりません"
             )
         
+        if data.session_id:
+            existing_event = (
+                supabase
+                .table("lp_event_logs")
+                .select("id")
+                .eq("lp_id", lp_id)
+                .eq("step_id", data.step_id)
+                .eq("event_type", "step_view")
+                .eq("session_id", data.session_id)
+                .limit(1)
+                .execute()
+            )
+            if existing_event.data:
+                return None
+
         # ステップの閲覧数を+1
         current_views = step_response.data.get("step_views", 0)
         supabase.table("lp_steps").update({"step_views": current_views + 1}).eq("id", data.step_id).execute()
@@ -207,6 +248,21 @@ async def record_step_exit(slug: str, data: StepViewRequest):
                 detail="ステップが見つかりません"
             )
         
+        if data.session_id:
+            existing_event = (
+                supabase
+                .table("lp_event_logs")
+                .select("id")
+                .eq("lp_id", lp_id)
+                .eq("step_id", data.step_id)
+                .eq("event_type", "step_exit")
+                .eq("session_id", data.session_id)
+                .limit(1)
+                .execute()
+            )
+            if existing_event.data:
+                return None
+
         # ステップの離脱数を+1
         current_exits = step_response.data.get("step_exits", 0)
         supabase.table("lp_steps").update({"step_exits": current_exits + 1}).eq("id", data.step_id).execute()
@@ -236,7 +292,8 @@ async def record_cta_click(slug: str, data: CTAClickRequest):
     CTAクリックを記録
     
     - **slug**: LPのスラッグ
-    - **cta_id**: クリックされたCTAのID
+    - **cta_id**: クリックされたCTAのID（存在しない場合は省略可）
+    - **step_id**: CTAが配置されているステップID（cta_idが無い場合に必須）
     - **session_id**: セッションID（オプション）
     """
     try:
@@ -253,27 +310,79 @@ async def record_cta_click(slug: str, data: CTAClickRequest):
         
         lp_id = lp_response.data["id"]
         
-        # CTA存在確認
-        cta_response = supabase.table("lp_ctas").select("click_count").eq("id", data.cta_id).eq("lp_id", lp_id).single().execute()
-        
-        if not cta_response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="CTAが見つかりません"
+        resolved_cta_id: Optional[str] = None
+        resolved_step_id: Optional[str] = data.step_id
+
+        if data.cta_id:
+            cta_response = (
+                supabase
+                .table("lp_ctas")
+                .select("id, step_id, click_count")
+                .eq("id", data.cta_id)
+                .eq("lp_id", lp_id)
+                .single()
+                .execute()
             )
-        
-        # CTAのクリック数を+1
-        current_clicks = cta_response.data.get("click_count", 0)
-        supabase.table("lp_ctas").update({"click_count": current_clicks + 1}).eq("id", data.cta_id).execute()
-        
-        # LPの合計クリック数を+1
+
+            if not cta_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="CTAが見つかりません"
+                )
+
+            resolved_cta_id = cta_response.data.get("id")
+            if not resolved_step_id:
+                resolved_step_id = cta_response.data.get("step_id")
+
+            current_clicks = cta_response.data.get("click_count", 0)
+            supabase.table("lp_ctas").update({"click_count": current_clicks + 1}).eq("id", resolved_cta_id).execute()
+
+        elif resolved_step_id:
+            step_check = (
+                supabase
+                .table("lp_steps")
+                .select("id")
+                .eq("id", resolved_step_id)
+                .eq("lp_id", lp_id)
+                .single()
+                .execute()
+            )
+            if not step_check.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="ステップが見つかりません"
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="cta_id もしくは step_id のいずれかを指定してください"
+            )
+
+        if data.session_id:
+            duplicate_query = (
+                supabase
+                .table("lp_event_logs")
+                .select("id")
+                .eq("lp_id", lp_id)
+                .eq("event_type", "cta_click")
+                .eq("session_id", data.session_id)
+            )
+            if resolved_cta_id:
+                duplicate_query = duplicate_query.eq("cta_id", resolved_cta_id)
+            if resolved_step_id:
+                duplicate_query = duplicate_query.eq("step_id", resolved_step_id)
+
+            duplicate_event = duplicate_query.limit(1).execute()
+            if duplicate_event.data:
+                return None
+
         current_total_clicks = lp_response.data.get("total_cta_clicks", 0)
         supabase.table("landing_pages").update({"total_cta_clicks": current_total_clicks + 1}).eq("id", lp_id).execute()
-        
-        # lp_event_logsテーブルに記録
+
         analytics_data = {
             "lp_id": lp_id,
-            "cta_id": data.cta_id,
+            "cta_id": resolved_cta_id,
+            "step_id": resolved_step_id,
             "event_type": "cta_click",
             "session_id": data.session_id,
         }

@@ -5,6 +5,7 @@ from app.config import settings
 from app.models.analytics import (
     LPAnalyticsResponse,
     StepFunnelData,
+    CTAClickData,
     EventLogResponse,
     EventLogListResponse
 )
@@ -101,15 +102,57 @@ async def get_lp_analytics(
             ))
         
         # CTA別クリック数取得
-        ctas_response = supabase.table("lp_ctas").select("id, cta_type, click_count").eq("lp_id", lp_id).execute()
-        cta_clicks = [
-            {
-                "cta_id": cta["id"],
-                "cta_type": cta["cta_type"],
-                "click_count": cta.get("click_count", 0)
-            }
-            for cta in (ctas_response.data if ctas_response.data else [])
-        ]
+        ctas_response = supabase.table("lp_ctas").select("id, step_id, cta_type, click_count").eq("lp_id", lp_id).execute()
+        cta_lookup = {cta["id"]: cta for cta in (ctas_response.data or [])}
+
+        cta_events_query = (
+            supabase
+            .table("lp_event_logs")
+            .select("cta_id, step_id")
+            .eq("lp_id", lp_id)
+            .eq("event_type", "cta_click")
+        )
+
+        if date_from:
+            cta_events_query = cta_events_query.gte("created_at", date_from)
+        if date_to:
+            cta_events_query = cta_events_query.lte("created_at", date_to)
+
+        cta_events_response = cta_events_query.execute()
+
+        aggregated_cta: dict[str, dict] = {}
+        for event in (cta_events_response.data or []):
+            event_cta_id = event.get("cta_id")
+            event_step_id = event.get("step_id")
+            key = event_cta_id or f"step:{event_step_id or 'unknown'}"
+            entry = aggregated_cta.setdefault(key, {
+                "cta_id": event_cta_id,
+                "step_id": event_step_id,
+                "cta_type": None,
+                "click_count": 0,
+            })
+            entry["click_count"] += 1
+
+        for cta_id, cta in cta_lookup.items():
+            entry = aggregated_cta.get(cta_id)
+            if entry:
+                entry["cta_type"] = entry.get("cta_type") or cta.get("cta_type")
+                if entry.get("step_id") is None:
+                    entry["step_id"] = cta.get("step_id")
+            else:
+                aggregated_cta[cta_id] = {
+                    "cta_id": cta_id,
+                    "step_id": cta.get("step_id"),
+                    "cta_type": cta.get("cta_type"),
+                    "click_count": cta.get("click_count", 0) if not date_from and not date_to else 0,
+                }
+
+        for value in aggregated_cta.values():
+            if not value.get("cta_type"):
+                value["cta_type"] = "inferred"
+
+        cta_clicks_raw = sorted(aggregated_cta.values(), key=lambda item: item.get("click_count", 0), reverse=True)
+        cta_clicks = [CTAClickData(**item) for item in cta_clicks_raw]
         
         # ユニークセッション数を計算（session_idが記録されている場合）
         events_query = supabase.table("lp_event_logs").select("session_id").eq("lp_id", lp_id).eq("event_type", "view")
