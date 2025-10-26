@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 import uuid
 import logging
-from eth_account.messages import encode_structured_data
+try:
+    from eth_account.messages import encode_structured_data
+except ImportError:
+    # eth-account v0.9.0+ uses different import
+    from eth_account.messages import encode_typed_data as encode_structured_data
 from eth_account import Account
 from web3 import Web3
 
