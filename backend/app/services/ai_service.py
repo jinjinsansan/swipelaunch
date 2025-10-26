@@ -6,6 +6,11 @@ from openai import OpenAI
 
 from app.config import settings
 from app.models.ai import AIWizardInput, BonusItem, Testimonial
+from app.services.template_mapper import (
+    select_hero_for_business,
+    get_hero_metadata,
+    HERO_VIDEO_TEMPLATES,
+)
 
 
 COLOR_THEMES: Dict[str, Dict[str, str]] = {
@@ -49,33 +54,34 @@ COLOR_THEMES: Dict[str, Dict[str, str]] = {
 
 DEFAULT_THEME = "urgent_red"
 
+# 新しいテンプレートライブラリに対応したブロックシーケンス
 ALLOWED_BLOCK_SEQUENCE = [
-    "hero-aurora",
-    "countdown-1",
-    "problem-1",
-    "before-after-1",
-    "testimonial-1",
-    "special-price-1",
-    "bonus-list-1",
-    "guarantee-1",
-    "author-profile-1",
-    "scarcity-1",
-    "sticky-cta-1",
+    "top-hero-1",          # ヒーロー（動画背景） - 動的に選択
+    "top-problem-1",       # 問題提起
+    "top-highlights-1",    # ハイライト・特徴
+    "top-before-after-1",  # ビフォーアフター
+    "top-testimonials-1",  # お客様の声
+    "top-bonus-1",         # 特典
+    "top-pricing-1",       # 価格表
+    "top-faq-1",           # FAQ
+    "top-guarantee-1",     # 保証
+    "top-countdown-1",     # カウントダウン
+    "top-cta-1",           # CTA
 ]
 
 
 OUTLINE_FALLBACK_LABELS = {
-    "hero-aurora": "ヒーローセクション",
-    "countdown-1": "締切カウントダウン",
-    "problem-1": "共感・問題提起",
-    "before-after-1": "ビフォーアフター",
-    "testimonial-1": "導入事例",
-    "special-price-1": "特別価格",
-    "bonus-list-1": "豪華特典",
-    "guarantee-1": "返金保証",
-    "author-profile-1": "監修者・権威",
-    "scarcity-1": "残席・限定性",
-    "sticky-cta-1": "固定CTA",
+    "top-hero-1": "ヒーローセクション",
+    "top-problem-1": "課題の共感",
+    "top-highlights-1": "選ばれる理由",
+    "top-before-after-1": "導入前後の変化",
+    "top-testimonials-1": "お客様の声",
+    "top-bonus-1": "申込特典",
+    "top-pricing-1": "料金プラン",
+    "top-faq-1": "よくある質問",
+    "top-guarantee-1": "返金保証",
+    "top-countdown-1": "締切カウントダウン",
+    "top-cta-1": "今すぐ申し込む",
 }
 
 
@@ -94,42 +100,198 @@ class AIService:
         theme_key = input_data.theme or DEFAULT_THEME
         palette = COLOR_THEMES.get(theme_key, COLOR_THEMES[DEFAULT_THEME])
 
+        # ビジネス情報から最適なヒーローブロックを選択
+        selected_hero_id = select_hero_for_business(
+            business=input_data.business,
+            target=input_data.target,
+            goal=input_data.goal,
+            theme=theme_key
+        )
+        hero_metadata = get_hero_metadata(selected_hero_id)
+        
         context_json = json.dumps(input_data.dict(), ensure_ascii=False, indent=2)
+
+        # ヒーローブロックのメタデータをプロンプトに含める
+        hero_descriptions = []
+        for hero in HERO_VIDEO_TEMPLATES:
+            hero_descriptions.append(
+                f"- {hero['id']}: {hero['name']}\n"
+                f"  説明: {hero['description']}\n"
+                f"  動画: {hero['videoUrl']}\n"
+                f"  適合ジャンル: {', '.join(hero['suitable_for'])}\n"
+                f"  キーワード: {', '.join(hero['keywords'])}"
+            )
+        heroes_metadata_text = "\n\n".join(hero_descriptions)
 
         block_sequence_description = "\n".join(
             [
-                "- hero-aurora: 冒頭ヒーローセクション（約束・CTA・実績）",
-                "- countdown-1: 申込締切のカウントダウン",
-                "- problem-1: 共感と課題提示",
-                "- before-after-1: 導入前後の変化訴求",
-                "- testimonial-1: 導入事例・社会的証明",
-                "- special-price-1: 特別価格とオファー",
-                "- bonus-list-1: 申込特典の一覧",
-                "- guarantee-1: 返金保証・安心材料",
-                "- author-profile-1: 監修者・講師プロフィール",
-                "- scarcity-1: 限定枠・残数訴求",
-                "- sticky-cta-1: 固定CTAによる行動喚起",
+                "- top-hero-1: 冒頭ヒーローセクション（動画背景・約束・CTA）",
+                "- top-problem-1: 共感と課題提示（3-5個の問題点）",
+                "- top-highlights-1: 選ばれる理由（3個の特徴・アイコン付き）",
+                "- top-before-after-1: 導入前後の変化訴求",
+                "- top-testimonials-1: お客様の声・社会的証明（3件）",
+                "- top-bonus-1: 申込特典の一覧（3-5個）",
+                "- top-pricing-1: 料金プラン",
+                "- top-faq-1: よくある質問（3-5個）",
+                "- top-guarantee-1: 返金保証・安心材料",
+                "- top-countdown-1: 締切カウントダウン",
+                "- top-cta-1: 最終CTA（行動喚起）",
             ]
         )
 
-        field_requirements = (
-            "- hero-aurora: tagline, title, subtitle, highlightText, buttonText, secondaryButtonText, stats(3件{value,label})\n"
-            "- countdown-1: title, urgencyText, targetDate(ISO8601), showDays, showHours, showMinutes, showSeconds\n"
-            "- problem-1: title, subtitle, problems(4-6個)\n"
-            "- before-after-1: title, beforeTitle, beforeText, afterTitle, afterText\n"
-            "- testimonial-1: title, testimonials(3件: name, role, text, rating)\n"
-            "- special-price-1: title, originalPrice, specialPrice, discountBadge, buttonText, subtitle, features\n"
-            "- bonus-list-1: title, subtitle, bonuses[{title, description, value}], totalValue\n"
-            "- guarantee-1: title, subtitle, guaranteeType, description, badgeText\n"
-            "- author-profile-1: name, title, bio, achievements(3件), signatureText\n"
-            "- scarcity-1: title, message, remainingCount, totalCount\n"
-            "- sticky-cta-1: title, description, buttonText, subText, position"
-        )
+        field_requirements = """
+### top-hero-1 (ヒーロー・動画背景)
+{
+  "title": "メインキャッチコピー（20-30文字）",
+  "subtitle": "サブキャッチコピー（40-60文字）",
+  "tagline": "タグライン（10-15文字・英語可）",
+  "highlightText": "ハイライト文字（10-15文字）",
+  "buttonText": "メインCTAボタン文字",
+  "buttonUrl": "/register",
+  "secondaryButtonText": "サブCTAボタン文字",
+  "secondaryButtonUrl": "/demo",
+  "backgroundVideoUrl": "選択されたヒーローの動画URL",
+  "textColor": "#FFFFFF",
+  "backgroundColor": "#050814",
+  "accentColor": テーマのアクセントカラー,
+  "buttonColor": テーマのプライマリカラー
+}
+
+### top-problem-1 (問題提起)
+{
+  "title": "こんなお悩みはありませんか？",
+  "subtitle": "多くの方が直面する現実",
+  "problems": ["問題1", "問題2", "問題3", "問題4"],
+  "textColor": "#0F172A",
+  "backgroundColor": "#FFFFFF"
+}
+
+### top-highlights-1 (特徴・ハイライト)
+{
+  "title": "選ばれる理由",
+  "tagline": "Features",
+  "features": [
+    {
+      "icon": "🎨",
+      "title": "特徴タイトル",
+      "description": "特徴の説明文"
+    }
+  ],
+  "textColor": "#0F172A",
+  "backgroundColor": "#F8FAFC"
+}
+
+### top-before-after-1 (ビフォーアフター)
+{
+  "title": "導入前と導入後の変化",
+  "beforeTitle": "導入前",
+  "beforeText": "課題の状態（50-80文字）",
+  "afterTitle": "導入後",
+  "afterText": "解決後の状態（50-80文字）",
+  "textColor": "#0F172A",
+  "backgroundColor": "#FFFFFF"
+}
+
+### top-testimonials-1 (お客様の声)
+{
+  "title": "お客様の声",
+  "subtitle": "導入企業や受講生のリアルな成果をご紹介します。",
+  "testimonials": [
+    {
+      "name": "山田太郎",
+      "role": "マーケター / 年間売上1.2億円",
+      "quote": "コメント文（60-100文字）"
+    }
+  ],
+  "textColor": "#0F172A",
+  "backgroundColor": "#F8FAFC"
+}
+
+### top-bonus-1 (特典)
+{
+  "title": "今だけの特典",
+  "subtitle": "お申込者限定で以下の特典をプレゼント",
+  "bonuses": [
+    {
+      "title": "特典タイトル",
+      "description": "特典の説明",
+      "value": "29,800円相当"
+    }
+  ],
+  "totalValue": "120,000円相当",
+  "textColor": "#0F172A",
+  "backgroundColor": "#FFFBEB"
+}
+
+### top-pricing-1 (価格表)
+{
+  "title": "料金プラン",
+  "plans": [
+    {
+      "name": "プラン名",
+      "price": "98,000円",
+      "features": ["特徴1", "特徴2", "特徴3"],
+      "buttonText": "申し込む",
+      "highlighted": true
+    }
+  ],
+  "textColor": "#0F172A",
+  "backgroundColor": "#FFFFFF"
+}
+
+### top-faq-1 (FAQ)
+{
+  "title": "よくある質問",
+  "subtitle": "導入前によくいただく質問をまとめました。",
+  "items": [
+    {
+      "question": "質問文",
+      "answer": "回答文"
+    }
+  ],
+  "textColor": "#F8FAFC",
+  "backgroundColor": "#0F172A"
+}
+
+### top-guarantee-1 (保証)
+{
+  "title": "30日間 全額返金保証",
+  "subtitle": "安心してお試しいただけます",
+  "description": "30日以内にご満足いただけなければ、理由を問わず全額返金いたします。",
+  "badgeText": "100%保証",
+  "textColor": "#0F172A",
+  "backgroundColor": "#ECFDF5"
+}
+
+### top-countdown-1 (カウントダウン)
+{
+  "title": "特別オファー終了まで",
+  "urgencyText": "締切までに参加いただいた方限定で、追加特典と返金保証をご提供します。",
+  "targetDate": "2025-12-31T23:59:59Z",
+  "textColor": "#FFFFFF",
+  "backgroundColor": "#DC2626"
+}
+
+### top-cta-1 (CTA)
+{
+  "title": "今すぐ始めよう",
+  "subtitle": "情報には鮮度がある。５分でLPを公開して、今すぐ販売を開始。",
+  "buttonText": "無料で始める",
+  "buttonUrl": "/register",
+  "secondaryButtonText": "デモを見る",
+  "secondaryButtonUrl": "/demo",
+  "textColor": "#0F172A",
+  "backgroundColor": "#E0F2FE"
+}
+"""
 
         system_prompt = (
             "あなたは情報商材LPのコンバージョン最適化に特化したクリエイティブディレクターです。"
             "心理トリガー・権威性・社会的証明・緊急性を統合し、"
             "ユーザー入力を基にほぼ完成形の日本語コピーを生成してください。"
+            "\n\n"
+            "重要：ヒーローブロックは以下から最適なものを選択してください：\n\n"
+            f"{heroes_metadata_text}"
         )
 
         user_prompt = f"""
@@ -139,25 +301,46 @@ class AIService:
 # 入力データ
 {context_json}
 
+# 推奨ヒーローブロック
+ビジネス分析の結果、以下のヒーローが最適です：
+- ID: {selected_hero_id}
+- 名前: {hero_metadata['name'] if hero_metadata else 'ヒーロー'}
+- 動画URL: {hero_metadata['videoUrl'] if hero_metadata else '/videos/pixta.mp4'}
+
+このヒーローIDを必ず使用してください。
+
 # 必須ブロック（順番厳守）
 {block_sequence_description}
 
+# 各ブロックのフィールド定義
+{field_requirements}
+
 # 出力要件
 - 出力言語は必ず日本語。
+- ヒーローブロックは推奨されたものを使用（blockType: "top-hero-1"、content.backgroundVideoUrl: "{hero_metadata['videoUrl'] if hero_metadata else '/videos/pixta.mp4'}"）
 - ブロックは上記の順番で作成し、欠落なく出力すること。
-- 各ブロックの主要フィールド:
-{field_requirements}
 - 数字・期間・成果・限定数などは可能な限り具体的で信頼感のある値を設定する。
 - 情報が不足している場合は、コンバージョン最適化の観点から説得力のある内容を補完する。
 - JSON形式で以下の構造のみを返すこと。
+
 {{
+  "selectedHero": "{selected_hero_id}",
   "outline": ["セクション概要1", "セクション概要2", ...],
   "blocks": [
     {{
-      "blockType": "hero-aurora",
+      "blockType": "top-hero-1",
       "reason": "このブロックが効果的な理由",
-      "content": {{ ブロック固有フィールド }}
-    }}
+      "content": {{ 
+        "title": "...",
+        "backgroundVideoUrl": "{hero_metadata['videoUrl'] if hero_metadata else '/videos/pixta.mp4'}",
+        ...ヒーローの全フィールド 
+      }}
+    }},
+    {{
+      "blockType": "top-problem-1",
+      "content": {{ ...問題提起の全フィールド }}
+    }},
+    ...（全ブロック）
   ]
 }}
 """
@@ -185,6 +368,7 @@ class AIService:
         outline = ai_result.get("outline") if isinstance(ai_result.get("outline"), list) else []
         outline_missing = len(outline) == 0
 
+        # ブロックマップを作成（重複防止）
         block_map: Dict[str, Dict[str, Any]] = {}
         for block in ai_blocks:
             block_type = block.get("blockType")
@@ -202,7 +386,10 @@ class AIService:
                     "content": {},
                 }
 
-            processed_block = AIService._apply_defaults(block_data, input_data)
+            # 選択されたヒーローIDを渡す
+            processed_block = AIService._apply_defaults(
+                block_data, input_data, selected_hero_id=selected_hero_id
+            )
             processed_blocks.append(processed_block)
 
             if outline_missing:
@@ -216,6 +403,7 @@ class AIService:
 
         return {
             "theme": theme_key,
+            "selectedHero": selected_hero_id,
             "palette": {
                 "primary": palette["primary"],
                 "accent": palette["accent"],
@@ -229,12 +417,19 @@ class AIService:
         }
 
     @staticmethod
-    def _apply_defaults(block: Dict[str, Any], data: AIWizardInput) -> Dict[str, Any]:
+    def _apply_defaults(
+        block: Dict[str, Any], 
+        data: AIWizardInput,
+        selected_hero_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """各ブロックにデフォルト値を適用"""
+        
         block_type = block.get("blockType")
         content = dict(block.get("content") or {})
         reason = block.get("reason") or "ユーザー入力に基づき生成されました。"
 
         theme_key = data.theme or DEFAULT_THEME
+        palette = COLOR_THEMES.get(theme_key, COLOR_THEMES[DEFAULT_THEME])
         content.setdefault("themeKey", theme_key)
 
         product = data.product
@@ -250,56 +445,48 @@ class AIService:
         scarcity_text = offer.scarcity or ""
         deadline_text = price.deadline if price else None
 
-        if block_type == "hero-aurora":
+        # ===== top-hero-1: ヒーロー（動画背景） =====
+        if block_type == "top-hero-1":
             reason = "冒頭で強い約束とCTAを提示し、信頼と期待感を一気に高めるため。"
+            
+            # 選択されたヒーローの動画URLを設定
+            hero_metadata = get_hero_metadata(selected_hero_id) if selected_hero_id else None
+            if hero_metadata and hero_metadata.get("videoUrl"):
+                content["backgroundVideoUrl"] = hero_metadata["videoUrl"]
+            else:
+                content.setdefault("backgroundVideoUrl", "/videos/pixta.mp4")
+            
             content.setdefault("tagline", (narrative.unique_mechanism if narrative and narrative.unique_mechanism else product.format or data.business))
+            
             hero_title = content.get("title") or product.transformation or product.promise
             if not hero_title:
                 hero_title = f"{product.name}で{desired_outcome}を最短で実現"
             content["title"] = hero_title
+            
             subtitle = content.get("subtitle") or product.description or data.additional_notes or "あなたの理想を叶える実戦型カリキュラムを提供します。"
             content["subtitle"] = subtitle
+            
             highlight = content.get("highlightText") or product.promise or (narrative.unique_mechanism if narrative and narrative.unique_mechanism else desired_outcome)
             content["highlightText"] = highlight
+            
             content.setdefault("buttonText", call_to_action)
-            content.setdefault("secondaryButtonText", "導入事例を確認する")
+            content.setdefault("buttonUrl", "/register")
+            content.setdefault("secondaryButtonText", "詳細を見る")
+            content.setdefault("secondaryButtonUrl", "/about")
+            
+            content.setdefault("textColor", "#FFFFFF")
+            content.setdefault("backgroundColor", palette["background"])
+            content.setdefault("accentColor", palette["accent"])
+            content.setdefault("buttonColor", palette["primary"])
+            content.setdefault("overlayColor", palette["background"])
+            content.setdefault("secondaryButtonColor", "#F8FAFC")
 
-            stats = content.get("stats") if isinstance(content.get("stats"), list) else []
-            if not stats:
-                stats_candidates: List[Dict[str, str]] = []
-                if price and price.special:
-                    stats_candidates.append({"value": price.special, "label": "期間限定価格"})
-                if product.duration:
-                    stats_candidates.append({"value": product.duration, "label": "伴走期間"})
-                if product.key_features:
-                    stats_candidates.append({"value": f"{len(product.key_features)}項目", "label": "主要メリット"})
-                if offer.bonuses:
-                    stats_candidates.append({"value": f"+{len(offer.bonuses)}特典", "label": "特典総額"})
-                if not stats_candidates:
-                    stats_candidates = [
-                        {"value": "3 STEP", "label": "導入プロセス"},
-                        {"value": "95%", "label": "受講満足度"},
-                        {"value": "30日", "label": "成果実感"},
-                    ]
-                content["stats"] = stats_candidates[:3]
-
-        elif block_type == "countdown-1":
-            reason = "締切を明示し、今すぐ行動する理由を与えるため。"
-            content.setdefault("title", "申込締切まで残りわずか")
-            urgency = content.get("urgencyText") or scarcity_text or (deadline_text and f"{deadline_text}までの申込で特典適用") or "枠が埋まり次第、募集を終了します。"
-            content["urgencyText"] = urgency
-            # Use timezone-aware datetime to avoid deprecated datetime.utcnow()
-            default_target = (datetime.now(timezone.utc) + timedelta(days=7)).replace(microsecond=0).isoformat()
-            content["targetDate"] = content.get("targetDate") or default_target
-            content.setdefault("showDays", True)
-            content.setdefault("showHours", True)
-            content.setdefault("showMinutes", True)
-            content.setdefault("showSeconds", False)
-
-        elif block_type == "problem-1":
+        # ===== top-problem-1: 問題提起 =====
+        elif block_type == "top-problem-1":
             reason = "ターゲットの痛みを言語化し、強い共感を生むため。"
             content.setdefault("title", "こんなお悩みはありませんか？")
             content.setdefault("subtitle", f"{audience.persona or '多くの方'}が直面する現実")
+            
             problems = content.get("problems") if isinstance(content.get("problems"), list) else []
             if not problems:
                 problems = pain_points[:5] if pain_points else [
@@ -307,113 +494,195 @@ class AIService:
                     "独学では再現性が低く、成果が安定しない",
                     "時間も広告費も投入したのに売上が伸び悩んでいる",
                     "魅力的なコピーを書けず申し込みにつながらない",
-                    "ローンチのたびに徹夜続きで疲弊してしまう",
                 ]
-            content["problems"] = problems[:6]
+            content["problems"] = problems[:5]
+            
+            content.setdefault("textColor", "#0F172A")
+            content.setdefault("backgroundColor", "#FFFFFF")
 
-        elif block_type == "before-after-1":
+        # ===== top-highlights-1: ハイライト =====
+        elif block_type == "top-highlights-1":
+            reason = "選ばれる理由を明確に示し、差別化ポイントを訴求するため。"
+            content.setdefault("title", "選ばれる理由")
+            content.setdefault("tagline", "Features")
+            
+            features = content.get("features") if isinstance(content.get("features"), list) else []
+            if not features:
+                key_features = product.key_features or []
+                if key_features:
+                    features = [
+                        {"icon": "🎨", "title": f, "description": f"効果的な{f}で成果を最大化"} 
+                        for f in key_features[:3]
+                    ]
+                else:
+                    features = [
+                        {"icon": "🎨", "title": "簡単３ステップ", "description": "初心者でも迷わず実践できる体系的なカリキュラム"},
+                        {"icon": "🚀", "title": "最短30日で成果", "description": "段階的な実践で確実に結果につなげます"},
+                        {"icon": "💪", "title": "個別サポート付き", "description": "疑問点はチャットでいつでも質問可能"},
+                    ]
+            content["features"] = features[:3]
+            
+            content.setdefault("textColor", "#0F172A")
+            content.setdefault("backgroundColor", "#F8FAFC")
+
+        # ===== top-before-after-1: ビフォーアフター =====
+        elif block_type == "top-before-after-1":
             reason = "導入前後のギャップを可視化し、成果のイメージを明確にするため。"
             content.setdefault("title", "導入前と導入後の変化")
+            
             before_text = content.get("beforeText") or (pain_points[0] if pain_points else "時間も労力も投資したのに成果が出ない状態")
             after_text = content.get("afterText") or product.transformation or desired_outcome or "売上と時間の両立が実現"
+            
             content.setdefault("beforeTitle", "導入前")
             content.setdefault("afterTitle", "導入後")
             content["beforeText"] = before_text
             content["afterText"] = after_text
+            
+            content.setdefault("textColor", "#0F172A")
+            content.setdefault("backgroundColor", "#FFFFFF")
 
-        elif block_type == "testimonial-1":
+        # ===== top-testimonials-1: お客様の声 =====
+        elif block_type == "top-testimonials-1":
             reason = "第三者の実績で権威性と安心感を補強するため。"
-            testimonials = AIService._testimonials_to_dict(content.get("testimonials"), proof, audience.persona or data.target)
+            testimonials = AIService._testimonials_to_dict(
+                content.get("testimonials"), proof, audience.persona or data.target
+            )
             content["testimonials"] = testimonials
-            content.setdefault("title", "受講者の成果事例")
-            content.setdefault("layout", content.get("layout") or "card")
+            content.setdefault("title", "お客様の声")
+            content.setdefault("subtitle", "導入企業や受講生のリアルな成果をご紹介します。")
+            
+            content.setdefault("textColor", "#0F172A")
+            content.setdefault("backgroundColor", "#F8FAFC")
 
-        elif block_type == "special-price-1":
-            reason = "今申し込む価値と金銭的な魅力を最大化するため。"
-            content.setdefault("title", "今だけの特別オファー")
-            special_price = content.get("specialPrice") or (price.special if price else None)
-            original_price = content.get("originalPrice") or (price.original if price else None)
-            if special_price:
-                content["specialPrice"] = special_price
-            if original_price:
-                content["originalPrice"] = original_price
-            discount_badge = content.get("discountBadge") or AIService._calc_discount_badge(original_price, special_price)
-            if discount_badge:
-                content["discountBadge"] = discount_badge
-            subtitle = content.get("subtitle") or (price.payment_plan if price and price.payment_plan else "申込者限定で特別価格をご用意しました。")
-            content["subtitle"] = subtitle
-            content.setdefault("buttonText", call_to_action)
-            if not content.get("features") and product.key_features:
-                content["features"] = product.key_features[:4]
-
-        elif block_type == "bonus-list-1":
+        # ===== top-bonus-1: 特典 =====
+        elif block_type == "top-bonus-1":
             reason = "申込特典の価値を可視化し、値引き以上の価値を訴求するため。"
             bonuses = AIService._bonuses_to_dict(content.get("bonuses"), offer.bonuses)
             if not bonuses and product.deliverables:
-                bonuses = [{"title": deliverable, "description": "", "value": ""} for deliverable in product.deliverables[:3]]
+                bonuses = [
+                    {"title": deliverable, "description": "即実践可能な特典", "value": "29,800円相当"} 
+                    for deliverable in product.deliverables[:3]
+                ]
             content["bonuses"] = bonuses[:5]
-            content.setdefault("title", "申込者限定の豪華特典")
-            content.setdefault("subtitle", "即実践できる特典で成果までの距離を一気に縮めます")
+            content.setdefault("title", "今だけの特典")
+            content.setdefault("subtitle", "お申込者限定で以下の特典をプレゼント")
+            
             total_value = content.get("totalValue") or AIService._calculate_bonus_total(bonuses)
             if total_value:
                 content["totalValue"] = total_value
+            
+            content.setdefault("textColor", "#0F172A")
+            content.setdefault("backgroundColor", "#FFFBEB")
 
-        elif block_type == "guarantee-1":
+        # ===== top-pricing-1: 価格表 =====
+        elif block_type == "top-pricing-1":
+            reason = "料金プランを明確に提示し、購入の意思決定をサポートするため。"
+            content.setdefault("title", "料金プラン")
+            
+            plans = content.get("plans") if isinstance(content.get("plans"), list) else []
+            if not plans:
+                special_price = (price.special if price else None) or "98,000円"
+                original_price = (price.original if price else None)
+                
+                features_list = product.key_features or [
+                    "全カリキュラムへのアクセス",
+                    "個別サポート",
+                    "返金保証",
+                ]
+                
+                plans = [
+                    {
+                        "name": "スタンダードプラン",
+                        "price": special_price,
+                        "features": features_list[:5],
+                        "buttonText": call_to_action,
+                        "highlighted": True,
+                    }
+                ]
+            content["plans"] = plans
+            
+            content.setdefault("textColor", "#0F172A")
+            content.setdefault("backgroundColor", "#FFFFFF")
+
+        # ===== top-faq-1: FAQ =====
+        elif block_type == "top-faq-1":
+            reason = "よくある疑問を事前に解消し、購入への不安を取り除くため。"
+            content.setdefault("title", "よくある質問")
+            content.setdefault("subtitle", "導入前によくいただく質問をまとめました。")
+            
+            items = content.get("items") if isinstance(content.get("items"), list) else []
+            if not items:
+                objections = audience.objections if audience.objections else []
+                if objections:
+                    items = [
+                        {"question": obj, "answer": f"{product.name}では、{obj.replace('？', '')}についても手厚くサポートしています。"}
+                        for obj in objections[:3]
+                    ]
+                else:
+                    items = [
+                        {
+                            "question": "初心者でも実践できますか？",
+                            "answer": "はい、実践可能です。基礎から段階的に進められるカリキュラムと個別サポートをご用意しています。"
+                        },
+                        {
+                            "question": "返金保証はありますか？",
+                            "answer": "30日間の全額返金保証がございます。ご満足いただけない場合は、理由を問わず返金いたします。"
+                        },
+                        {
+                            "question": "サポート期間はどのくらいですか？",
+                            "answer": f"{product.duration or '90日間'}のサポート期間中、チャットでいつでもご質問いただけます。"
+                        },
+                    ]
+            content["items"] = items[:5]
+            
+            content.setdefault("textColor", "#F8FAFC")
+            content.setdefault("backgroundColor", "#0F172A")
+
+        # ===== top-guarantee-1: 保証 =====
+        elif block_type == "top-guarantee-1":
             reason = "リスクを取り除き、申込への心理的ハードルを下げるため。"
             guarantee = offer.guarantee
-            content.setdefault("title", (guarantee.headline if guarantee and guarantee.headline else "安心の保証制度"))
-            content.setdefault("subtitle", "結果が出るまで伴走するリスクゼロの仕組み")
-            content.setdefault("guaranteeType", (guarantee.description if guarantee and guarantee.description else "30日間 全額返金保証"))
-            description = content.get("description") or (guarantee.conditions if guarantee and guarantee.conditions else "条件なしでご満足いただけなければ、申請だけでご返金いたします。")
+            content.setdefault("title", (guarantee.headline if guarantee and guarantee.headline else "30日間 全額返金保証"))
+            content.setdefault("subtitle", "安心してお試しいただけます")
+            
+            description = content.get("description") or (
+                guarantee.description if guarantee and guarantee.description 
+                else "30日以内にご満足いただけなければ、理由を問わず全額返金いたします。"
+            )
             content["description"] = description
-            content.setdefault("badgeText", guarantee.headline if guarantee and guarantee.headline else "リスクゼロ")
+            content.setdefault("badgeText", "100%保証")
+            
+            content.setdefault("textColor", "#0F172A")
+            content.setdefault("backgroundColor", "#ECFDF5")
 
-        elif block_type == "author-profile-1":
-            reason = "誰が提供しているのかを明確にし、信頼感と専門性を訴求するため。"
-            content.setdefault("name", (proof.authority_name if proof and proof.authority_name else "監修者"))
-            content.setdefault("title", (proof.authority_title if proof and proof.authority_title else "コンバージョン戦略家"))
-            bio = content.get("bio") or (proof.authority_bio if proof and proof.authority_bio else proof.authority_headline if proof and proof.authority_headline else f"{product.name}を主宰し、{audience.persona or '受講生'}の成果創出を支援しています。")
-            content["bio"] = bio
-            achievements = content.get("achievements") if isinstance(content.get("achievements"), list) else None
-            if not achievements:
-                if proof and proof.achievements:
-                    achievements = proof.achievements[:3]
-                elif product.deliverables:
-                    achievements = product.deliverables[:3]
-                else:
-                    achievements = [
-                        "累計3,200名以上のローンチを支援",
-                        "平均CVRを2.3倍に改善",
-                        "大手企業・著名講師のプロジェクトを多数監修",
-                    ]
-            content["achievements"] = achievements
-            content.setdefault("signatureText", proof.authority_name if proof and proof.authority_name else product.name)
+        # ===== top-countdown-1: カウントダウン =====
+        elif block_type == "top-countdown-1":
+            reason = "締切を明示し、今すぐ行動する理由を与えるため。"
+            content.setdefault("title", "特別オファー終了まで")
+            
+            urgency = content.get("urgencyText") or scarcity_text or (
+                deadline_text and f"{deadline_text}までの申込で特典適用"
+            ) or "締切までに参加いただいた方限定で、追加特典と返金保証をご提供します。"
+            content["urgencyText"] = urgency
+            
+            default_target = (datetime.now(timezone.utc) + timedelta(days=7)).replace(microsecond=0).isoformat()
+            content["targetDate"] = content.get("targetDate") or default_target
+            
+            content.setdefault("textColor", "#FFFFFF")
+            content.setdefault("backgroundColor", "#DC2626")
 
-        elif block_type == "scarcity-1":
-            reason = "残席や限定性を明示し、今申し込まない理由を無くすため。"
-            content.setdefault("title", "残席状況のご案内")
-            message = content.get("message") or scarcity_text or (deadline_text and f"{deadline_text}までの先着枠です。") or "募集枠が埋まり次第、予告なく終了します。"
-            content["message"] = message
-            remaining_value = content.get("remainingCount")
-            remaining = remaining_value if isinstance(remaining_value, int) else AIService._parse_int(str(remaining_value)) if remaining_value else None
-            if remaining is None:
-                remaining = AIService._parse_int(scarcity_text) or 5
-            total_value = content.get("totalCount")
-            total = total_value if isinstance(total_value, int) else AIService._parse_int(str(total_value)) if total_value else None
-            if total is None:
-                total = max(remaining + 5, 30)
-            content["remainingCount"] = remaining
-            content["totalCount"] = total
-
-        elif block_type == "sticky-cta-1":
-            reason = "ページ滞在中どこからでも行動できるようにするため。"
-            content.setdefault("title", call_to_action)
-            description = content.get("description") or product.promise or "限定特典と保証付きで、今すぐ成果への一歩を踏み出せます。"
-            content["description"] = description
-            content["buttonText"] = call_to_action
-            sub_text = content.get("subText") or desired_outcome or "先着順でご案内しています。"
-            content["subText"] = sub_text
-            content.setdefault("position", content.get("position") or "bottom")
+        # ===== top-cta-1: CTA =====
+        elif block_type == "top-cta-1":
+            reason = "最終的な行動喚起で、明確な次のステップを提示するため。"
+            content.setdefault("title", "今すぐ始めよう")
+            content.setdefault("subtitle", f"{product.name}で、{desired_outcome}を実現しましょう。")
+            content.setdefault("buttonText", call_to_action)
+            content.setdefault("buttonUrl", "/register")
+            content.setdefault("secondaryButtonText", "まずは資料請求")
+            content.setdefault("secondaryButtonUrl", "/download")
+            
+            content.setdefault("textColor", "#0F172A")
+            content.setdefault("backgroundColor", "#E0F2FE")
 
         return {
             "blockType": block_type,
@@ -423,7 +692,9 @@ class AIService:
 
     @staticmethod
     def _bonuses_to_dict(existing: Any, bonuses: Optional[List[BonusItem]]) -> List[Dict[str, str]]:
+        """特典リストを辞書リストに変換"""
         items: List[Dict[str, str]] = []
+        
         if isinstance(existing, list):
             for bonus in existing:
                 if isinstance(bonus, dict) and bonus.get("title"):
@@ -432,6 +703,7 @@ class AIService:
                         "description": bonus.get("description") or "",
                         "value": bonus.get("value") or "",
                     })
+        
         if not items and bonuses:
             for bonus in bonuses:
                 items.append({
@@ -439,63 +711,79 @@ class AIService:
                     "description": bonus.description or "",
                     "value": bonus.value or "",
                 })
+        
         return items[:5]
 
     @staticmethod
     def _calculate_bonus_total(bonuses: List[Dict[str, str]]) -> Optional[str]:
+        """特典の合計金額を計算"""
         total = 0
         counted = False
+        
         for bonus in bonuses:
             numeric = AIService._parse_int(bonus.get("value"))
             if numeric:
                 total += numeric
                 counted = True
+        
         if counted and total > 0:
             return f"合計{total:,}円相当"
         return None
 
     @staticmethod
-    def _testimonials_to_dict(existing: Any, proof: Optional[Any], persona: Optional[str]) -> List[Dict[str, Any]]:
+    def _testimonials_to_dict(
+        existing: Any, 
+        proof: Optional[Any], 
+        persona: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        """お客様の声を辞書リストに変換"""
         items: List[Dict[str, Any]] = []
+        
         if isinstance(existing, list):
             for testimonial in existing:
                 if isinstance(testimonial, dict):
                     text = testimonial.get("text") or testimonial.get("quote")
                     if text:
                         items.append({
-                            "name": testimonial.get("name") or testimonial.get("role") or "受講者",
+                            "name": testimonial.get("name") or "受講者",
                             "role": testimonial.get("role") or "",
-                            "text": text,
-                            "rating": testimonial.get("rating") or 5,
+                            "quote": text,
                         })
+        
         if not items and proof and getattr(proof, "testimonials", None):
             for testimonial in proof.testimonials[:3]:
                 if isinstance(testimonial, Testimonial):
                     items.append({
-                        "name": testimonial.name or (testimonial.role or "受講者"),
+                        "name": testimonial.name or "受講者",
                         "role": testimonial.role or "",
-                        "text": testimonial.quote,
-                        "rating": 5,
+                        "quote": testimonial.quote,
                     })
-        if not items and proof and getattr(proof, "achievements", None):
-            for achievement in proof.achievements[:3]:
-                items.append({
-                    "name": proof.authority_name or "実績紹介",
-                    "role": proof.authority_title or "",
-                    "text": achievement,
-                    "rating": 5,
-                })
+        
         if not items:
             persona_label = persona or "受講者"
             items = [
-                {"name": "受講者A", "role": persona_label, "text": "導入後、ローンチ準備の時間が1/3になり、CVRも着実に伸びました。", "rating": 5},
-                {"name": "受講者B", "role": "副業スタート", "text": "テンプレートに沿って進めるだけで、初回ローンチから想定以上の売上を達成できました。", "rating": 5},
-                {"name": "受講者C", "role": "コミュニティ運営", "text": "コピーと構成が一体になっているので、伝えたい価値を最短で形にできました。", "rating": 5},
+                {
+                    "name": "受講者A",
+                    "role": f"{persona_label} / 30代",
+                    "quote": "導入後、ローンチ準備の時間が1/3になり、CVRも着実に伸びました。"
+                },
+                {
+                    "name": "受講者B",
+                    "role": "副業スタート / 20代",
+                    "quote": "テンプレートに沿って進めるだけで、初回ローンチから想定以上の売上を達成できました。"
+                },
+                {
+                    "name": "受講者C",
+                    "role": "コミュニティ運営 / 40代",
+                    "quote": "コピーと構成が一体になっているので、伝えたい価値を最短で形にできました。"
+                },
             ]
+        
         return items[:3]
 
     @staticmethod
     def _parse_int(value: Optional[str]) -> Optional[int]:
+        """文字列から数値を抽出"""
         if not value:
             return None
         digits = "".join(ch for ch in str(value) if ch.isdigit())
@@ -508,8 +796,10 @@ class AIService:
 
     @staticmethod
     def _calc_discount_badge(original: Optional[str], special: Optional[str]) -> Optional[str]:
+        """割引率を計算してバッジテキストを生成"""
         original_value = AIService._parse_int(original)
         special_value = AIService._parse_int(special)
+        
         if original_value and special_value and original_value > special_value:
             discount = int(round((1 - (special_value / original_value)) * 100))
             if discount > 0:
@@ -578,7 +868,10 @@ class AIService:
         response = client.chat.completions.create(
             model="gpt-4-turbo-preview",
             messages=[
-                {"role": "system", "content": "あなたは情報商材に特化したプロのコピーライターです。高額商品でも売れる、心理学に基づいた文章を作成します。緊急性、限定性、社会的証明を駆使してください。"},
+                {
+                    "role": "system", 
+                    "content": "あなたは情報商材に特化したプロのコピーライターです。高額商品でも売れる、心理学に基づいた文章を作成します。緊急性、限定性、社会的証明を駆使してください。"
+                },
                 {"role": "user", "content": prompt}
             ],
             temperature=0.8
@@ -634,82 +927,3 @@ LP情報:
         )
 
         return json.loads(response.choices[0].message.content)
-import json
-from datetime import datetime, timedelta
-from typing import List, Dict, Any
-
-from openai import OpenAI
-
-from app.config import settings
-from app.models.ai import AIWizardInput, BonusItem, Testimonial
-
-
-COLOR_THEMES: Dict[str, Dict[str, str]] = {
-    "urgent_red": {
-        "primary": "#DC2626",
-        "secondary": "#EF4444",
-        "accent": "#F97316",
-        "background": "#111116",
-        "text": "#F8FAFC",
-    },
-    "energy_orange": {
-        "primary": "#EA580C",
-        "secondary": "#F97316",
-        "accent": "#F59E0B",
-        "background": "#1A1207",
-        "text": "#FFEAD5",
-    },
-    "gold_premium": {
-        "primary": "#B45309",
-        "secondary": "#D97706",
-        "accent": "#FBBF24",
-        "background": "#120D03",
-        "text": "#FDE68A",
-    },
-    "power_blue": {
-        "primary": "#1E40AF",
-        "secondary": "#3B82F6",
-        "accent": "#60A5FA",
-        "background": "#0B1120",
-        "text": "#E2E8F0",
-    },
-    "passion_pink": {
-        "primary": "#BE185D",
-        "secondary": "#EC4899",
-        "accent": "#F472B6",
-        "background": "#1B0F1B",
-        "text": "#FCE7F3",
-    },
-}
-
-
-DEFAULT_THEME = "urgent_red"
-
-ALLOWED_BLOCK_SEQUENCE = [
-    "hero-aurora",
-    "countdown-1",
-    "problem-1",
-    "before-after-1",
-    "testimonial-1",
-    "special-price-1",
-    "bonus-list-1",
-    "guarantee-1",
-    "author-profile-1",
-    "scarcity-1",
-    "sticky-cta-1",
-]
-
-
-OUTLINE_FALLBACK_LABELS = {
-    "hero-aurora": "ヒーローセクション",
-    "countdown-1": "締切カウントダウン",
-    "problem-1": "共感・問題提起",
-    "before-after-1": "ビフォーアフター",
-    "testimonial-1": "導入事例",
-    "special-price-1": "特別価格",
-    "bonus-list-1": "豪華特典",
-    "guarantee-1": "返金保証",
-    "author-profile-1": "監修者・権威",
-    "scarcity-1": "残席・限定性",
-    "sticky-cta-1": "固定CTA",
-}
