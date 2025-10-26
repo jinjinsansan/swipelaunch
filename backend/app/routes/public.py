@@ -50,8 +50,8 @@ async def get_public_lp(
     try:
         supabase = get_supabase()
         
-        # スラッグでLP取得（公開中のみ）
-        lp_response = supabase.table("landing_pages").select("*").eq("slug", slug).eq("status", "published").single().execute()
+        # スラッグでLP取得（公開中のみ、ユーザー情報をJOIN）
+        lp_response = supabase.table("landing_pages").select("*, owner:users!seller_id(username, email)").eq("slug", slug).eq("status", "published").single().execute()
         
         if not lp_response.data:
             raise HTTPException(

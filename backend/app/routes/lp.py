@@ -173,8 +173,8 @@ async def get_lps(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
-        # クエリ構築
-        query = supabase.table("landing_pages").select("*").eq("seller_id", user_id)
+        # クエリ構築（ユーザー情報をJOIN）
+        query = supabase.table("landing_pages").select("*, owner:users!seller_id(username, email)").eq("seller_id", user_id)
         
         if status_filter:
             query = query.eq("status", status_filter)
