@@ -134,6 +134,16 @@ async def handle_payment_success(transaction: dict, payment_order: dict):
                 update_response = supabase.table("users").update({"point_balance": new_points}).eq("id", user_id).execute()
                 logger.info(f"📝 Update response: {update_response.data}")
                 
+                # point_transactions テーブルにも記録（フロントエンドの履歴表示用）
+                point_transaction_data = {
+                    "user_id": user_id,
+                    "transaction_type": "purchase",
+                    "amount": points_to_add,
+                    "description": f"Point Purchase via ONE.lat - {amount} USD"
+                }
+                supabase.table("point_transactions").insert(point_transaction_data).execute()
+                logger.info(f"📋 Transaction record added to point_transactions")
+                
                 logger.info(f"✅ Points added to user {user_id}: +{points_to_add} (Total: {new_points})")
             else:
                 logger.error(f"❌ User not found: {user_id}")
