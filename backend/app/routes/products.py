@@ -222,24 +222,32 @@ async def get_public_products(
             """ステップ情報から最適なサムネイルURLを抽出"""
             image_candidates: List[Optional[str]] = []
 
+            # image_urlをチェック（/placeholder.jpgは除外）
             image_url = step.get("image_url")
-            if isinstance(image_url, str):
+            if isinstance(image_url, str) and image_url.strip() and image_url.strip() != "/placeholder.jpg":
                 image_candidates.append(image_url)
 
             content_data = step.get("content_data") or {}
             if isinstance(content_data, dict):
+                # 画像専用フィールドを優先（ビデオURLは除外）
                 image_candidates.extend([
+                    content_data.get("backgroundImageUrl"),
+                    content_data.get("background_image_url"),
                     content_data.get("imageUrl"),
                     content_data.get("image_url"),
                     content_data.get("thumbnailUrl"),
                     content_data.get("thumbnail_url"),
                     content_data.get("heroImage"),
                     content_data.get("hero_image"),
+                    content_data.get("primaryImageUrl"),
+                    content_data.get("primary_image_url"),
                 ])
 
                 nested_content = content_data.get("content")
                 if isinstance(nested_content, dict):
                     image_candidates.extend([
+                        nested_content.get("backgroundImageUrl"),
+                        nested_content.get("background_image_url"),
                         nested_content.get("imageUrl"),
                         nested_content.get("image_url"),
                         nested_content.get("thumbnailUrl"),
@@ -250,13 +258,24 @@ async def get_public_products(
                 elif isinstance(nested_content, list):
                     for item in nested_content:
                         if isinstance(item, dict):
-                            candidate = item.get("imageUrl") or item.get("image_url") or item.get("thumbnailUrl") or item.get("thumbnail_url") or item.get("heroImage") or item.get("hero_image")
-                            if isinstance(candidate, str) and candidate.strip():
+                            candidate = (
+                                item.get("imageUrl") or 
+                                item.get("image_url") or 
+                                item.get("thumbnailUrl") or 
+                                item.get("thumbnail_url") or 
+                                item.get("heroImage") or 
+                                item.get("hero_image")
+                            )
+                            if isinstance(candidate, str) and candidate.strip() and candidate.strip() != "/placeholder.jpg":
                                 return candidate.strip()
 
+            # 有効な画像URLを返す（/placeholder.jpgとビデオファイルを除外）
             for candidate in image_candidates:
                 if isinstance(candidate, str) and candidate.strip():
-                    return candidate.strip()
+                    cleaned = candidate.strip()
+                    # プレースホルダーとビデオファイルを除外
+                    if cleaned != "/placeholder.jpg" and not any(cleaned.endswith(ext) for ext in ['.mp4', '.webm', '.mov', '.avi']):
+                        return cleaned
 
             return None
 
