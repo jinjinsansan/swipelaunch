@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -499,6 +500,15 @@ class AIService:
         content = dict(block.get("content") or {})
         reason = block.get("reason") or "ユーザー入力に基づき生成されました。"
 
+        def _is_blank(value: Optional[str]) -> bool:
+            return not isinstance(value, str) or not value.strip()
+
+        def _coalesce(*values: Optional[str], fallback: str = "") -> str:
+            for value in values:
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return fallback
+
         theme_key = data.theme or DEFAULT_THEME
         palette = COLOR_THEMES.get(theme_key, COLOR_THEMES[DEFAULT_THEME])
         content.setdefault("themeKey", theme_key)
@@ -646,11 +656,25 @@ class AIService:
                 ]
             content["bonuses"] = bonuses[:5]
             
-            # AIが生成した値を尊重（setdefaultは使わない）
-            if "title" not in content:
-                content["title"] = "今だけの特典"
-            if "subtitle" not in content:
-                content["subtitle"] = "お申込者限定で以下の特典をプレゼント"
+            product_label = _coalesce(product.name, data.business, data.goal, fallback="このプログラム")
+            audience_label = _coalesce(audience.persona, data.target, fallback="参加者")
+            bonus_count = len(content["bonuses"])
+
+            if _is_blank(content.get("title")):
+                count_label = f"{bonus_count}大特典" if bonus_count >= 3 else "限定特典"
+                content["title"] = f"{product_label}参加者向け{count_label}"
+
+            if _is_blank(content.get("subtitle")):
+                outcome_text = _coalesce(
+                    desired_outcome,
+                    product.transformation,
+                    product.promise,
+                    product.description,
+                )
+                if outcome_text:
+                    content["subtitle"] = f"{audience_label}が{outcome_text}を現実にするための特典ラインナップです。"
+                else:
+                    content["subtitle"] = f"{audience_label}の成果を後押しする実践特典をご用意しました。"
             
             total_value = content.get("totalValue") or AIService._calculate_bonus_total(bonuses)
             if total_value:
@@ -713,24 +737,77 @@ class AIService:
         elif block_type == "top-guarantee-1":
             reason = "リスクを取り除き、申込への心理的ハードルを下げるため。"
             guarantee = offer.guarantee
+            product_label = _coalesce(product.name, data.business, fallback="このサービス")
+
+            detail_text = _coalesce(
+                content.get("guaranteeDetails"),
+                content.get("description"),
+                guarantee.description if guarantee else None,
+            )
+            if detail_text:
+                content["guaranteeDetails"] = detail_text
+                content["description"] = detail_text
             
-            # AIが生成した値を優先（setdefaultは最後のフォールバックのみ）
-            if "title" not in content:
-                if guarantee and guarantee.headline:
-                    content["title"] = guarantee.headline
-                # 固定文言は削除 - AIに生成させる
-            
-            if "subtitle" not in content:
-                content["subtitle"] = "安心してお試しいただけます"
-            
-            # descriptionもAI生成を優先
-            if "description" not in content:
-                if guarantee and guarantee.description:
-                    content["description"] = guarantee.description
-                # 固定文言は削除 - AIに生成させる
-            
-            if "badgeText" not in content:
-                content["badgeText"] = "100%保証"
+            if _is_blank(content.get("title")):
+                headline = guarantee.headline.strip() if guarantee and isinstance(guarantee.headline, str) and guarantee.headline.strip() else None
+                content["title"] = headline or f"{product_label}の安心保証"
+
+            if _is_blank(content.get("subtitle")):
+                condition_text = guarantee.conditions.strip() if guarantee and isinstance(guarantee.conditions, str) and guarantee.conditions.strip() else None
+                if condition_text:
+                    content["subtitle"] = condition_text
+                elif deadline_text:
+                    content["subtitle"] = f"{deadline_text}までの成果を保証します。"
+                else:
+                    content["subtitle"] = f"{product_label}をリスクなくお試しいただけます。"
+
+            if _is_blank(content.get("guaranteeDetails")):
+                fallback_detail = _coalesce(
+                    guarantee.description if guarantee else None,
+                    guarantee.conditions if guarantee else None,
+                    fallback=f"{product_label}をご利用後も満足いただけない場合は、簡単な手続きで返金に対応します。",
+                )
+                content["guaranteeDetails"] = fallback_detail
+                content["description"] = fallback_detail
+
+            if _is_blank(content.get("badgeText")):
+                if guarantee and isinstance(guarantee.headline, str) and guarantee.headline.strip():
+                    badge = guarantee.headline.strip().replace("保証", "").replace(" ", "")
+                    content["badgeText"] = badge[:8] or "保証付き"
+                elif desired_outcome:
+                    content["badgeText"] = f"{desired_outcome}保証"
+                else:
+                    content["badgeText"] = "保証付き"
+
+            bullet_points = content.get("bulletPoints") if isinstance(content.get("bulletPoints"), list) else []
+            if not bullet_points:
+                candidate_texts: List[str] = []
+                if guarantee and isinstance(guarantee.conditions, str) and guarantee.conditions.strip():
+                    candidate_texts.append(guarantee.conditions)
+                if guarantee and isinstance(guarantee.description, str) and guarantee.description.strip():
+                    candidate_texts.append(guarantee.description)
+                if detail_text and detail_text not in candidate_texts:
+                    candidate_texts.append(detail_text)
+
+                extracted: List[str] = []
+                for text in candidate_texts:
+                    segments = [segment.strip(" ・-•\u3000") for segment in re.split(r"[\n。・•●◆▶︎➡︎→⇒]", text) if segment.strip()]
+                    for segment in segments:
+                        if len(extracted) >= 5:
+                            break
+                        extracted.append(segment)
+                    if len(extracted) >= 5:
+                        break
+
+                if not extracted and scarcity_text:
+                    extracted.append(scarcity_text.strip())
+                if not extracted and desired_outcome:
+                    extracted.append(f"{desired_outcome}まで専任が伴走サポート")
+                if not extracted:
+                    extracted.append(f"{product_label}チームが返金手続きまでサポート")
+
+                bullet_points = extracted[:3]
+                content["bulletPoints"] = bullet_points
             
             content.setdefault("textColor", "#0F172A")
             content.setdefault("backgroundColor", "#ECFDF5")
@@ -754,27 +831,52 @@ class AIService:
         # ===== top-cta-1: CTA =====
         elif block_type == "top-cta-1":
             reason = "最終的な行動喚起で、明確な次のステップを提示するため。"
+            product_label = _coalesce(product.name, data.business, fallback="このサービス")
+            desired = _coalesce(desired_outcome, product.transformation, product.promise)
+            mechanism = _coalesce(narrative.unique_mechanism if narrative else None)
+            guarantee = offer.guarantee
             
-            # AIが生成した値を優先（固定文言は最小限に）
-            if "title" not in content:
-                content["title"] = "今すぐ始めよう"  # 最小限のフォールバック
-            
-            if "subtitle" not in content:
-                # ユーザー入力から生成
-                content["subtitle"] = f"{product.name}で、{desired_outcome}を実現しましょう。"
-            
-            if "buttonText" not in content:
-                content["buttonText"] = call_to_action  # ユーザー入力
-            
-            if "buttonUrl" not in content:
+            if _is_blank(content.get("eyebrow")) and mechanism:
+                content["eyebrow"] = mechanism
+
+            if _is_blank(content.get("title")):
+                if desired:
+                    content["title"] = f"{desired}を叶える{product_label}"
+                else:
+                    content["title"] = f"{product_label}で次の成果へ"
+
+            if _is_blank(content.get("subtitle")):
+                base = _coalesce(
+                    product.description,
+                    narrative.origin_story if narrative else None,
+                    data.goal,
+                )
+                extra = ""
+                if guarantee and isinstance(guarantee.headline, str) and guarantee.headline.strip():
+                    extra = f"{guarantee.headline.strip()}付きでリスクなくスタートできます。"
+                elif scarcity_text:
+                    extra = scarcity_text
+                if base and extra:
+                    content["subtitle"] = f"{base} {extra}"
+                elif base:
+                    content["subtitle"] = base
+                else:
+                    content["subtitle"] = extra or f"{product_label}の詳細を今すぐ確認してください。"
+
+            if _is_blank(content.get("buttonText")):
+                content["buttonText"] = call_to_action
+
+            if _is_blank(content.get("buttonUrl")):
                 content["buttonUrl"] = "/register"
-            
-            if "secondaryButtonText" not in content:
-                # 固定文言は削除 - AIに生成させる or 空のまま
-                pass
-            
-            if "secondaryButtonUrl" not in content:
-                content["secondaryButtonUrl"] = "/download"
+
+            if _is_blank(content.get("secondaryButtonText")):
+                if price and (price.special or price.original):
+                    content["secondaryButtonText"] = "料金プランを見る"
+                else:
+                    content["secondaryButtonText"] = f"{product_label}の詳細を見る"
+
+            if _is_blank(content.get("secondaryButtonUrl")):
+                content["secondaryButtonUrl"] = "#pricing"
             
             content.setdefault("textColor", "#0F172A")
             content.setdefault("backgroundColor", "#E0F2FE")
