@@ -198,6 +198,7 @@ async def get_public_products(
     sort: str = Query("latest", description="ソート順: 'popular' (人気順) または 'latest' (新着順)"),
     limit: int = Query(5, ge=1, le=50),
     offset: int = Query(0, ge=0),
+    seller_username: Optional[str] = Query(None, description="販売者ユーザー名でフィルター"),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ):
     """
@@ -206,6 +207,7 @@ async def get_public_products(
     - **sort**: 'popular' (total_salesでソート) または 'latest' (created_atでソート)
     - **limit**: 取得件数（デフォルト: 5）
     - **offset**: オフセット
+    - **seller_username**: 販売者ユーザー名でフィルター（オプション）
     
     Returns:
         販売者情報を含む商品一覧
@@ -289,8 +291,26 @@ async def get_public_products(
 
             return None
 
+        # seller_usernameが指定されている場合、seller_idを取得
+        seller_id_filter = None
+        if seller_username:
+            user_response = supabase.table("users").select("id").eq("username", seller_username).single().execute()
+            if not user_response.data:
+                # 該当ユーザーが存在しない場合は空のレスポンスを返す
+                return PublicProductListResponse(
+                    data=[],
+                    total=0,
+                    limit=limit,
+                    offset=offset
+                )
+            seller_id_filter = user_response.data["id"]
+
         # 販売中の商品を取得（seller情報をJOIN）
         products_response = supabase.table("products").select("*, seller:users!seller_id(username)").eq("is_available", True)
+        
+        # seller_idでフィルタリング
+        if seller_id_filter:
+            products_response = products_response.eq("seller_id", seller_id_filter)
 
         # ソート順を決定
         if sort == "popular":
@@ -371,7 +391,10 @@ async def get_public_products(
             ))
         
         # 総数取得
-        count_response = supabase.table("products").select("id", count="exact").eq("is_available", True).execute()
+        count_query = supabase.table("products").select("id", count="exact").eq("is_available", True)
+        if seller_id_filter:
+            count_query = count_query.eq("seller_id", seller_id_filter)
+        count_response = count_query.execute()
         total = count_response.count or 0
         
         return PublicProductListResponse(
