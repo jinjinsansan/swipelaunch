@@ -17,15 +17,21 @@ from typing import Optional, Dict, Any, List
 from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/products", tags=["products"])
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
     return create_client(settings.supabase_url, settings.supabase_key)
 
-def get_current_user_id(credentials: HTTPAuthorizationCredentials) -> str:
+def get_current_user_id(credentials: Optional[HTTPAuthorizationCredentials]) -> str:
     """トークンから現在のユーザーIDを取得"""
     try:
+        if not credentials or not credentials.credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="認証情報が提供されていません"
+            )
+
         token = credentials.credentials
         payload = decode_access_token(token)
         user_id = payload.get("sub")
@@ -44,7 +50,7 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials) -> str:
             detail="トークンの検証に失敗しました"
         )
 
-def get_current_user(credentials: HTTPAuthorizationCredentials) -> dict:
+def get_current_user(credentials: Optional[HTTPAuthorizationCredentials]) -> dict:
     """トークンから現在のユーザー情報を取得"""
     user_id = get_current_user_id(credentials)
     supabase = get_supabase()
@@ -195,7 +201,7 @@ async def get_public_products(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ):
     """
-    全ての販売中商品を取得（認証必須、全ユーザー可能）
+    全ての販売中商品を取得（認証不要）
     
     - **sort**: 'popular' (total_salesでソート) または 'latest' (created_atでソート)
     - **limit**: 取得件数（デフォルト: 5）
@@ -205,8 +211,11 @@ async def get_public_products(
         販売者情報を含む商品一覧
     """
     try:
-        # 認証チェック（BuyerもSellerもOK）
-        user = get_current_user(credentials)
+        if credentials and credentials.credentials:
+            try:
+                get_current_user(credentials)
+            except HTTPException:
+                raise
         supabase = get_supabase()
 
         def extract_thumbnail_from_step(step: Dict[str, Any]) -> Optional[str]:
