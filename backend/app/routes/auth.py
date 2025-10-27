@@ -7,6 +7,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from supabase import create_client, Client
+from typing import Optional
 
 from app.config import settings
 from app.models.user import (
@@ -49,7 +50,11 @@ def build_user_response(user_info: dict) -> UserResponse:
         username=user_info["username"],
         user_type=user_info.get("user_type", "seller"),
         point_balance=user_info.get("point_balance", 0),
-        created_at=created_at
+        created_at=created_at,
+        bio=user_info.get("bio"),
+        sns_url=user_info.get("sns_url"),
+        line_url=user_info.get("line_url"),
+        profile_image_url=user_info.get("profile_image_url")
     )
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -89,7 +94,11 @@ async def register(data: UserRegisterRequest):
             "email": data.email,
             "username": data.username,
             "user_type": data.user_type,
-            "point_balance": 0
+            "point_balance": 0,
+            "bio": None,
+            "sns_url": None,
+            "line_url": None,
+            "profile_image_url": None
         }
         
         db_response = supabase.table("users").insert(user_data).execute()
@@ -336,6 +345,12 @@ async def update_profile(
             )
         
         update_data = {}
+
+        def normalize_optional_text(value: Optional[str]) -> Optional[str]:
+            if value is None:
+                return None
+            stripped = value.strip()
+            return stripped or None
         
         # ユーザー名の更新
         if data.username:
@@ -350,6 +365,18 @@ async def update_profile(
             
             update_data["username"] = data.username
         
+        if data.bio is not None:
+            update_data["bio"] = normalize_optional_text(data.bio)
+
+        if data.sns_url is not None:
+            update_data["sns_url"] = normalize_optional_text(data.sns_url)
+
+        if data.line_url is not None:
+            update_data["line_url"] = normalize_optional_text(data.line_url)
+
+        if data.profile_image_url is not None:
+            update_data["profile_image_url"] = normalize_optional_text(data.profile_image_url)
+
         # 更新がある場合のみ実行
         if update_data:
             updated_user = supabase.table("users").update(update_data).eq("id", user_id).execute()

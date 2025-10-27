@@ -33,6 +33,46 @@ class CTAClickRequest(BaseModel):
     step_id: Optional[str] = None
     session_id: Optional[str] = None
 
+
+class PublicUserProfileResponse(BaseModel):
+    username: str
+    bio: Optional[str] = None
+    sns_url: Optional[str] = None
+    line_url: Optional[str] = None
+    profile_image_url: Optional[str] = None
+
+
+@router.get("/users/{username}", response_model=PublicUserProfileResponse)
+async def get_public_user_profile(username: str):
+    """公開プロフィール情報を取得"""
+    try:
+        supabase = get_supabase()
+
+        user_response = (
+            supabase
+            .table("users")
+            .select("username, bio, sns_url, line_url, profile_image_url")
+            .eq("username", username)
+            .single()
+            .execute()
+        )
+
+        if not user_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="ユーザーが見つかりません"
+            )
+
+        return PublicUserProfileResponse(**user_response.data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"ユーザープロフィール取得エラー: {str(e)}"
+        )
+
 @router.get("/{slug}", response_model=LPDetailResponse)
 async def get_public_lp(
     slug: str,
