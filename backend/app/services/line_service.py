@@ -224,8 +224,7 @@ class LINEService:
                 'user_id': user_id,
                 'amount': bonus_points,
                 'transaction_type': 'bonus',
-                'description': f'LINE公式アカウント連携ボーナス',
-                'status': 'completed'
+                'description': f'LINE公式アカウント連携ボーナス'
             }).execute()
             
             # LINE連携にボーナス付与を記録
