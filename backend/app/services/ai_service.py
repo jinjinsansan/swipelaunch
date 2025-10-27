@@ -305,6 +305,13 @@ class AIService:
             "心理トリガー・権威性・社会的証明・緊急性を統合し、"
             "ユーザー入力を基にほぼ完成形の日本語コピーを生成してください。"
             "\n\n"
+            "**重要な原則**：\n"
+            "1. ユーザーが入力した情報「のみ」を使用してください\n"
+            "2. テンプレート的な汎用文言は一切使用しないでください\n"
+            "3. ユーザーのビジネス・商品・ターゲットに完全に特化した内容を生成してください\n"
+            "4. 情報が不足している場合は、ユーザーの入力から論理的に推測して補完してください\n"
+            "5. すべてのブロックの全フィールドを必ず埋めてください（空にしないこと）\n"
+            "\n"
             "重要：ヒーローブロックは以下から最適なものを選択してください：\n\n"
             f"{heroes_metadata_text}"
         )
@@ -312,6 +319,14 @@ class AIService:
         user_prompt = f"""
 # 目的
 ヒアリングで得た情報を基に、すぐに公開できるレベルの日本語LP構成とコピーを生成してください。
+
+# 重要な制約（必読）
+**絶対に守ること**：
+1. ユーザーが入力した情報「のみ」を使用してください
+2. テンプレート的な固定文言は一切使用しないでください
+3. ユーザーのビジネス・商品・ターゲットに特化した内容を生成してください
+4. 情報が不足している場合は、ユーザーの入力から論理的に推測して補完してください
+5. すべてのフィールドを必ず埋めてください（空にしないこと）
 
 # 入力データ
 {context_json}
@@ -330,12 +345,35 @@ class AIService:
 # 各ブロックのフィールド定義
 {field_requirements}
 
+# コンテンツ生成のガイドライン
+
+## top-problem-1（問題提起）
+- ユーザーのビジネスとターゲットから、具体的な悩みを3-5個生成
+- 例：「投資・FX」→「チャートの見方が分からず損失ばかり」「含み損を抱えて夜も眠れない」など
+- 絶対に汎用的な文言を使わないこと
+
+## top-highlights-1（特徴）
+- ユーザーの商品説明や提供形式から、具体的な特徴を3個生成
+- 「簡単３ステップ」のような汎用表現は禁止
+- 商品固有の強みを表現すること
+
+## top-testimonials-1（お客様の声）
+- ユーザーのビジネス・ターゲット・目標から、リアルな声を3つ生成
+- 年齢・職業・成果はターゲットに合わせること
+- 「受講者A」のような汎用名は禁止
+- 具体的な名前（仮名可）と肩書きを設定
+
+## top-faq-1（よくある質問）
+- ユーザーのビジネスとオファーに特化した質問を3-5個生成
+- 「初心者でも実践できますか？」のような汎用的な質問は最小限に
+- 商品・価格・提供形式に関する具体的な質問を優先
+
 # 出力要件
 - 出力言語は必ず日本語。
 - ヒーローブロックは推奨されたものを使用（blockType: "top-hero-1"、content.backgroundVideoUrl: "{hero_metadata['videoUrl'] if hero_metadata else '/videos/pixta.mp4'}"）
 - ブロックは上記の順番で作成し、欠落なく出力すること。
 - 数字・期間・成果・限定数などは可能な限り具体的で信頼感のある値を設定する。
-- 情報が不足している場合は、コンバージョン最適化の観点から説得力のある内容を補完する。
+- ユーザーの入力から推測して、すべてのフィールドを必ず埋めること。
 - JSON形式で以下の構造のみを返すこと。
 
 {{
@@ -503,14 +541,10 @@ class AIService:
             content.setdefault("subtitle", f"{audience.persona or '多くの方'}が直面する現実")
             
             problems = content.get("problems") if isinstance(content.get("problems"), list) else []
-            if not problems:
-                problems = pain_points[:5] if pain_points else [
-                    "情報が多すぎて何から手を付ければ良いか分からない",
-                    "独学では再現性が低く、成果が安定しない",
-                    "時間も広告費も投入したのに売上が伸び悩んでいる",
-                    "魅力的なコピーを書けず申し込みにつながらない",
-                ]
-            content["problems"] = problems[:5]
+            # AIが生成しなかった場合のみ、ユーザー入力から使用（固定テキストは使わない）
+            if not problems and pain_points:
+                problems = pain_points[:5]
+            content["problems"] = problems[:5] if problems else []
             
             content.setdefault("textColor", "#0F172A")
             content.setdefault("backgroundColor", "#FFFFFF")
@@ -522,6 +556,7 @@ class AIService:
             content.setdefault("tagline", "Features")
             
             features = content.get("features") if isinstance(content.get("features"), list) else []
+            # AIが生成しなかった場合のみ、ユーザー入力から使用（固定テキストは使わない）
             if not features:
                 key_features = product.key_features or []
                 if key_features:
@@ -529,13 +564,7 @@ class AIService:
                         {"icon": "🎨", "title": f, "description": f"効果的な{f}で成果を最大化"} 
                         for f in key_features[:3]
                     ]
-                else:
-                    features = [
-                        {"icon": "🎨", "title": "簡単３ステップ", "description": "初心者でも迷わず実践できる体系的なカリキュラム"},
-                        {"icon": "🚀", "title": "最短30日で成果", "description": "段階的な実践で確実に結果につなげます"},
-                        {"icon": "💪", "title": "個別サポート付き", "description": "疑問点はチャットでいつでも質問可能"},
-                    ]
-            content["features"] = features[:3]
+            content["features"] = features[:3] if features else []
             
             content.setdefault("textColor", "#0F172A")
             content.setdefault("backgroundColor", "#F8FAFC")
@@ -644,6 +673,7 @@ class AIService:
             content.setdefault("subtitle", "導入前によくいただく質問をまとめました。")
             
             items = content.get("items") if isinstance(content.get("items"), list) else []
+            # AIが生成しなかった場合のみ、ユーザー入力から使用（固定テキストは使わない）
             if not items:
                 objections = audience.objections if audience.objections else []
                 if objections:
@@ -651,22 +681,7 @@ class AIService:
                         {"question": obj, "answer": f"{product.name}では、{obj.replace('？', '')}についても手厚くサポートしています。"}
                         for obj in objections[:3]
                     ]
-                else:
-                    items = [
-                        {
-                            "question": "初心者でも実践できますか？",
-                            "answer": "はい、実践可能です。基礎から段階的に進められるカリキュラムと個別サポートをご用意しています。"
-                        },
-                        {
-                            "question": "返金保証はありますか？",
-                            "answer": "30日間の全額返金保証がございます。ご満足いただけない場合は、理由を問わず返金いたします。"
-                        },
-                        {
-                            "question": "サポート期間はどのくらいですか？",
-                            "answer": f"{product.duration or '90日間'}のサポート期間中、チャットでいつでもご質問いただけます。"
-                        },
-                    ]
-            content["items"] = items[:5]
+            content["items"] = items[:5] if items else []
             
             content.setdefault("textColor", "#F8FAFC")
             content.setdefault("backgroundColor", "#0F172A")
@@ -783,6 +798,7 @@ class AIService:
                             "quote": text,
                         })
         
+        # AIが生成しなかった場合のみ、ユーザー入力から使用（固定テキストは使わない）
         if not items and proof and getattr(proof, "testimonials", None):
             for testimonial in proof.testimonials[:3]:
                 if isinstance(testimonial, Testimonial):
@@ -792,26 +808,7 @@ class AIService:
                         "quote": testimonial.quote,
                     })
         
-        if not items:
-            persona_label = persona or "受講者"
-            items = [
-                {
-                    "name": "受講者A",
-                    "role": f"{persona_label} / 30代",
-                    "quote": "導入後、ローンチ準備の時間が1/3になり、CVRも着実に伸びました。"
-                },
-                {
-                    "name": "受講者B",
-                    "role": "副業スタート / 20代",
-                    "quote": "テンプレートに沿って進めるだけで、初回ローンチから想定以上の売上を達成できました。"
-                },
-                {
-                    "name": "受講者C",
-                    "role": "コミュニティ運営 / 40代",
-                    "quote": "コピーと構成が一体になっているので、伝えたい価値を最短で形にできました。"
-                },
-            ]
-        
+        # 固定テキストは削除 - AIに生成させる
         return items[:3]
 
     @staticmethod
