@@ -187,6 +187,9 @@ class AdminUserSummarySchema(BaseModel):
     total_point_spent: int = 0
     total_point_granted: int = 0
     latest_activity: Optional[str] = None
+    line_connected: bool = False
+    line_display_name: Optional[str] = None
+    line_bonus_awarded: bool = False
 
 
 class AdminUserListResponse(BaseModel):
@@ -396,6 +399,9 @@ def build_admin_user_summaries(
                 is_blocked=bool(user.get("is_blocked", False)),
                 blocked_reason=user.get("blocked_reason"),
                 blocked_at=user.get("blocked_at"),
+                line_connected=False,
+                line_display_name=None,
+                line_bonus_awarded=False,
             )
             for user in users_raw
         ]
@@ -403,6 +409,7 @@ def build_admin_user_summaries(
 
     lp_counts: Dict[str, int] = defaultdict(int)
     product_counts: Dict[str, int] = defaultdict(int)
+    line_connections: Dict[str, Dict[str, Any]] = {}
     transaction_totals: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
         "purchased": 0,
         "spent": 0,
@@ -471,6 +478,27 @@ def build_admin_user_summaries(
                 totals["latest_activity_dt"] = dt
                 totals["latest_activity"] = dt.isoformat()
 
+    # LINE連携情報を取得
+    try:
+        line_response = (
+            supabase
+            .table("line_connections")
+            .select("user_id, display_name, bonus_awarded")
+            .in_("user_id", user_ids)
+            .execute()
+        )
+        line_rows, _ = handle_supabase_response(line_response, "line_connections lookup", raise_on_error=False)
+        for line_conn in line_rows:
+            user_id = line_conn.get("user_id")
+            if user_id:
+                line_connections[user_id] = {
+                    "connected": True,
+                    "display_name": line_conn.get("display_name"),
+                    "bonus_awarded": bool(line_conn.get("bonus_awarded", False))
+                }
+    except Exception as e:
+        logger.warning(f"Failed to fetch LINE connections: {e}")
+
     summaries: List[AdminUserSummarySchema] = []
     for user in users_raw:
         user_id = user.get("id")
@@ -482,6 +510,7 @@ def build_admin_user_summaries(
             "net": 0,
             "latest_activity": None,
         })
+        line_info = line_connections.get(user_id, {})
         summaries.append(
             AdminUserSummarySchema(
                 id=user_id,
@@ -499,6 +528,9 @@ def build_admin_user_summaries(
                 total_point_spent=int(totals.get("spent") or 0),
                 total_point_granted=int(totals.get("granted") or 0),
                 latest_activity=totals.get("latest_activity"),
+                line_connected=line_info.get("connected", False),
+                line_display_name=line_info.get("display_name"),
+                line_bonus_awarded=line_info.get("bonus_awarded", False),
             )
         )
     return summaries, total
