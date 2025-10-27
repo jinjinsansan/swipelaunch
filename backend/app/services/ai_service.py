@@ -78,6 +78,81 @@ GENERIC_SECONDARY_CTA_TEXTS = {
     "資料請求",
 }
 
+GENERIC_BONUS_TITLES = {
+    "今だけの特典",
+    "限定特典",
+    "申込特典",
+}
+
+GENERIC_BONUS_SUBTITLES = {
+    "お申込者限定で以下の特典をプレゼント",
+    "成果までの距離を一気に縮める特典を期間限定でご提供します。",
+    "導入直後から成果を出すための特典を無償提供。",
+}
+
+GENERIC_BONUS_TOTAL_VALUES = {
+    "合計109,800円相当",
+    "合計128,000円相当",
+    "合計156,000円相当",
+    "合計178,000円相当",
+    "合計198,000円相当",
+}
+
+GENERIC_GUARANTEE_TITLES = {
+    "30日間 全額返金保証",
+    "30日間の全額返金保証",
+    "安心の返金保証",
+    "返金保証制度",
+    "Premium Assurance",
+    "返金保証ポリシー",
+}
+
+GENERIC_GUARANTEE_SUBTITLES = {
+    "リスクゼロで体験いただくために、安心の保証制度を用意しています。",
+    "お申し込みから30日以内なら、理由を問わず返金を承ります。",
+    "安心してお試しいただけます",
+    "結果に納得いただけない場合は、申請だけで全額返金いたします。",
+    "安心してご利用いただけるよう、初月はリスクゼロでお試しいただけます。",
+    "安心してご導入いただけるよう、プレミアム保証をご用意しています。",
+    "導入後30日以内であれば、全額返金に対応いたします。",
+}
+
+GENERIC_GUARANTEE_DETAILS = {
+    "条件は一切ありません。実際に使ってみてご満足いただけなければ、メール一本で全額返金いたします。",
+    "初回ローンチを実施して成果が得られなかった場合、メール1通で返金を申請できます。手数料は一切かかりません。",
+    "導入から30日以内であれば、使用状況に関わらず全額返金いたします。",
+    "サポートチームと伴走した上で成果が出なかった場合、契約初月の利用料を全額返金します。",
+    "ご導入から45日以内に成果が得られなかった場合は、100%返金いたします。",
+    "フォームから申請いただくだけで、3営業日以内に返金手続きを進めます。",
+}
+
+GENERIC_GUARANTEE_BADGES = {
+    "Risk Free",
+    "安心サポート",
+    "Guarantee",
+    "Premium Care",
+    "Secure",
+    "保証付き",
+}
+
+GENERIC_GUARANTEE_BULLETS = {
+    "専任サポートが導入〜初回ローンチまで伴走",
+    "再現性の高いAIプロンプトテンプレート付き",
+    "返金サポート専用窓口を24時間以内に対応",
+    "導入オンボーディングを専任CSがサポート",
+    "プロジェクト設計テンプレートを全員に配布",
+    "サポートチームが24時間以内に回答",
+    "返金時もサポート担当が手続き支援",
+    "返金後も問題点のフィードバックを共有",
+    "継続利用の押し売りは一切なし",
+    "専任コンシェルジュが返金申請をサポート",
+    "返金後もナレッジ資料を30日閲覧可能",
+    "解約アンケートで改善要望を反映",
+    "契約期間に関わらず申請可能",
+    "返金時の手数料は弊社が負担",
+    "担当者が継続的にフォロー",
+}
+
 # 新しいテンプレートライブラリに対応したブロックシーケンス
 ALLOWED_BLOCK_SEQUENCE = [
     "top-hero-1",          # ヒーロー（動画背景） - 動的に選択
@@ -683,11 +758,13 @@ class AIService:
             audience_label = _coalesce(audience.persona, data.target, fallback="参加者")
             bonus_count = len(content["bonuses"])
 
-            if _is_blank(content.get("title")):
+            if (_is_blank(content.get("title"))
+                or content.get("title", "").strip() in GENERIC_BONUS_TITLES):
                 count_label = f"{bonus_count}大特典" if bonus_count >= 3 else "限定特典"
                 content["title"] = f"{product_label}参加者向け{count_label}"
 
-            if _is_blank(content.get("subtitle")):
+            if (_is_blank(content.get("subtitle"))
+                or content.get("subtitle", "").strip() in GENERIC_BONUS_SUBTITLES):
                 outcome_text = _coalesce(
                     desired_outcome,
                     product.transformation,
@@ -700,8 +777,12 @@ class AIService:
                     content["subtitle"] = f"{audience_label}の成果を後押しする実践特典をご用意しました。"
             
             total_value = content.get("totalValue") or AIService._calculate_bonus_total(bonuses)
-            if total_value:
+            if total_value and total_value.strip() not in GENERIC_BONUS_TOTAL_VALUES:
                 content["totalValue"] = total_value
+            elif total_value:
+                calculated = AIService._calculate_bonus_total(bonuses)
+                if calculated:
+                    content["totalValue"] = calculated
             
             content.setdefault("textColor", "#0F172A")
             content.setdefault("backgroundColor", "#FFFBEB")
@@ -771,11 +852,17 @@ class AIService:
                 content["guaranteeDetails"] = detail_text
                 content["description"] = detail_text
             
-            if _is_blank(content.get("title")):
+            title_value = content.get("title") if isinstance(content.get("title"), str) else ""
+            if (_is_blank(title_value)
+                or title_value.strip() in GENERIC_GUARANTEE_TITLES):
                 headline = guarantee.headline.strip() if guarantee and isinstance(guarantee.headline, str) and guarantee.headline.strip() else None
                 content["title"] = headline or f"{product_label}の安心保証"
+            else:
+                content["title"] = title_value.strip()
 
-            if _is_blank(content.get("subtitle")):
+            subtitle_value = content.get("subtitle") if isinstance(content.get("subtitle"), str) else ""
+            if (_is_blank(subtitle_value)
+                or subtitle_value.strip() in GENERIC_GUARANTEE_SUBTITLES):
                 condition_text = guarantee.conditions.strip() if guarantee and isinstance(guarantee.conditions, str) and guarantee.conditions.strip() else None
                 if condition_text:
                     content["subtitle"] = condition_text
@@ -783,8 +870,12 @@ class AIService:
                     content["subtitle"] = f"{deadline_text}までの成果を保証します。"
                 else:
                     content["subtitle"] = f"{product_label}をリスクなくお試しいただけます。"
+            else:
+                content["subtitle"] = subtitle_value.strip()
 
-            if _is_blank(content.get("guaranteeDetails")):
+            details_value = content.get("guaranteeDetails") if isinstance(content.get("guaranteeDetails"), str) else ""
+            if (_is_blank(details_value)
+                or details_value.strip() in GENERIC_GUARANTEE_DETAILS):
                 fallback_detail = _coalesce(
                     guarantee.description if guarantee else None,
                     guarantee.conditions if guarantee else None,
@@ -792,8 +883,14 @@ class AIService:
                 )
                 content["guaranteeDetails"] = fallback_detail
                 content["description"] = fallback_detail
+            else:
+                stripped = details_value.strip()
+                content["guaranteeDetails"] = stripped
+                content["description"] = stripped
 
-            if _is_blank(content.get("badgeText")):
+            badge_value = content.get("badgeText") if isinstance(content.get("badgeText"), str) else ""
+            if (_is_blank(badge_value)
+                or badge_value.strip() in GENERIC_GUARANTEE_BADGES):
                 if guarantee and isinstance(guarantee.headline, str) and guarantee.headline.strip():
                     badge = guarantee.headline.strip().replace("保証", "").replace(" ", "")
                     content["badgeText"] = badge[:8] or "保証付き"
@@ -801,9 +898,14 @@ class AIService:
                     content["badgeText"] = f"{desired_outcome}保証"
                 else:
                     content["badgeText"] = "保証付き"
+            else:
+                content["badgeText"] = badge_value.strip()
 
             bullet_points = content.get("bulletPoints") if isinstance(content.get("bulletPoints"), list) else []
-            if not bullet_points:
+            if not bullet_points or all(
+                isinstance(point, str) and point.strip() in GENERIC_GUARANTEE_BULLETS
+                for point in bullet_points
+            ):
                 candidate_texts: List[str] = []
                 if guarantee and isinstance(guarantee.conditions, str) and guarantee.conditions.strip():
                     candidate_texts.append(guarantee.conditions)
