@@ -7,7 +7,8 @@ from app.models.line import (
     LineConnectionResponse,
     LineBonusSettingsResponse,
     LineBonusSettingsUpdate,
-    LineLinkStatusResponse
+    LineLinkStatusResponse,
+    LineLinkTokenResponse
 )
 from app.services.line_service import LINEService
 from app.routes.auth import get_current_user
@@ -86,8 +87,86 @@ async def line_webhook(
                     if event.replyToken:
                         await LINEService.send_reply_message(
                             event.replyToken,
-                            "🎉 D-swipeに友達追加ありがとうございます！\n\nD-swipeアカウントと連携すると300ポイントプレゼント🎁\n\nhttps://d-swipe.com からアカウント登録・ログインしてください！"
+                            "🎉 D-swipeに友達追加ありがとうございます！\n\n【ポイント受け取り方法】\n1. D-swipeにログイン: https://d-swipe.com/line/bonus\n2. 表示される連携コードをコピー\n3. このLINEトークに連携コードを送信\n4. 300ポイント自動付与！🎁"
                         )
+            
+            # メッセージイベント（トークンによる連携）
+            elif event.type == "message":
+                line_user_id = event.source.get('userId')
+                message = event.message
+                
+                if not line_user_id or not message:
+                    continue
+                
+                # テキストメッセージのみ処理
+                if message.get('type') == 'text':
+                    text = message.get('text', '').strip()
+                    logger.info(f"📝 Received message from {line_user_id}: {text}")
+                    
+                    # トークンとして処理
+                    user_id = await LINEService.find_user_by_token(text)
+                    
+                    if user_id:
+                        # トークンが有効 - ユーザーを特定できた
+                        logger.info(f"✅ Valid token received from {line_user_id}, user: {user_id}")
+                        
+                        # 既に連携済みかチェック
+                        existing_connection = await LINEService.find_user_by_line_id(line_user_id)
+                        
+                        if existing_connection:
+                            if event.replyToken:
+                                await LINEService.send_reply_message(
+                                    event.replyToken,
+                                    "⚠️ このLINEアカウントは既に連携されています。"
+                                )
+                            continue
+                        
+                        # ユーザープロフィール取得
+                        profile = await LINEService.get_user_profile(line_user_id)
+                        
+                        # LINE連携を作成
+                        connection = await LINEService.create_line_connection(
+                            user_id=user_id,
+                            line_user_id=line_user_id,
+                            display_name=profile.displayName if profile else None,
+                            picture_url=profile.pictureUrl if profile else None,
+                            status_message=profile.statusMessage if profile else None
+                        )
+                        
+                        if connection:
+                            # トークンを使用済みにマーク
+                            await LINEService.mark_token_used(text, line_user_id)
+                            
+                            # ボーナスポイント付与
+                            bonus_awarded = await LINEService.award_bonus_points(user_id, line_user_id)
+                            
+                            if bonus_awarded and event.replyToken:
+                                settings = await LINEService.get_bonus_settings()
+                                bonus_points = settings.get('bonus_points', 300) if settings else 300
+                                
+                                await LINEService.send_reply_message(
+                                    event.replyToken,
+                                    f"🎉 連携完了！\n\n{bonus_points}ポイントをプレゼントしました！\nD-swipeでLPを購入してビジネスを加速させましょう！💪"
+                                )
+                            else:
+                                if event.replyToken:
+                                    await LINEService.send_reply_message(
+                                        event.replyToken,
+                                        "✅ 連携完了しましたが、ボーナスは既に付与済みです。"
+                                    )
+                        else:
+                            if event.replyToken:
+                                await LINEService.send_reply_message(
+                                    event.replyToken,
+                                    "❌ 連携に失敗しました。もう一度お試しください。"
+                                )
+                    else:
+                        # トークンが無効
+                        if event.replyToken:
+                            await LINEService.send_reply_message(
+                                event.replyToken,
+                                "❌ 無効な連携コードです。\n\n【確認事項】\n• D-swipeにログインしていますか？\n• 連携コードを正確にコピーしましたか？\n• 連携コードの有効期限（24時間）は切れていませんか？\n\nhttps://d-swipe.com/line/bonus で新しいコードを取得してください。"
+                            )
             
             # アンフォローイベント
             elif event.type == "unfollow":
@@ -98,6 +177,43 @@ async def line_webhook(
     
     except Exception as e:
         logger.error(f"❌ Webhook processing error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/generate-link-token", response_model=LineLinkTokenResponse)
+async def generate_line_link_token(current_user = Depends(get_current_user)):
+    """
+    LINE連携用のユニークトークンを生成
+    
+    このトークンを使ってLINE追加URLを生成し、
+    ユーザーが友達追加するとポイントが自動付与される
+    """
+    try:
+        user_id = getattr(current_user, 'id', current_user.get('id') if isinstance(current_user, dict) else None)
+        
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID not found")
+        
+        # トークンを生成
+        token_data = await LINEService.generate_link_token(user_id)
+        
+        if not token_data:
+            raise HTTPException(status_code=500, detail="Failed to generate token")
+        
+        # LINE追加URLを生成（トークンをクエリパラメータに含める）
+        base_url = "https://lin.ee/JFvc4dE"
+        line_add_url = f"{base_url}?token={token_data['token']}"
+        
+        return LineLinkTokenResponse(
+            token=token_data['token'],
+            line_add_url=line_add_url,
+            expires_at=token_data['expires_at']
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating LINE link token: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

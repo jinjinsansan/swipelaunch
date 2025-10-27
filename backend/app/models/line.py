@@ -56,3 +56,9 @@ class LineLinkStatusResponse(BaseModel):
     is_connected: bool
     bonus_settings: Optional[LineBonusSettingsResponse]
     connection: Optional[LineConnectionResponse]
+
+class LineLinkTokenResponse(BaseModel):
+    """LINE連携トークンレスポンス"""
+    token: str
+    line_add_url: str
+    expires_at: datetime

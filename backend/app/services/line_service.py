@@ -2,9 +2,10 @@ import hmac
 import hashlib
 import base64
 import logging
+import secrets
 from typing import Optional, Dict, Any
 import httpx
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.config import settings, get_supabase_client
 from app.models.line import LINEUserProfile
@@ -239,6 +240,113 @@ class LINEService:
         
         except Exception as e:
             logger.error(f"Error awarding bonus points: {e}")
+            return False
+    
+    @staticmethod
+    async def generate_link_token(user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        LINE連携用のユニークトークンを生成
+        
+        Args:
+            user_id: ユーザーID
+        
+        Returns:
+            トークン情報、または失敗時はNone
+        """
+        try:
+            supabase = get_supabase_client()
+            
+            # ランダムなトークンを生成（32文字）
+            token = secrets.token_urlsafe(32)
+            
+            # 有効期限は24時間
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+            
+            # トークンをデータベースに保存
+            token_data = {
+                'user_id': user_id,
+                'token': token,
+                'expires_at': expires_at.isoformat(),
+                'used': False
+            }
+            
+            response = supabase.table('line_link_tokens').insert(token_data).execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"✅ Generated LINE link token for user: {user_id}")
+                return response.data[0]
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error generating link token: {e}")
+            return None
+    
+    @staticmethod
+    async def find_user_by_token(token: str) -> Optional[str]:
+        """
+        トークンから有効なユーザーIDを検索
+        
+        Args:
+            token: LINE連携トークン
+        
+        Returns:
+            ユーザーID、または見つからない/無効な場合はNone
+        """
+        try:
+            supabase = get_supabase_client()
+            
+            response = supabase.table('line_link_tokens').select('user_id, expires_at, used').eq('token', token).limit(1).execute()
+            
+            if not response.data or len(response.data) == 0:
+                logger.warning(f"Token not found: {token}")
+                return None
+            
+            token_data = response.data[0]
+            
+            # トークンが既に使用済み
+            if token_data.get('used'):
+                logger.warning(f"Token already used: {token}")
+                return None
+            
+            # トークンの有効期限チェック
+            expires_at = datetime.fromisoformat(token_data['expires_at'].replace('Z', '+00:00'))
+            if datetime.now(timezone.utc) > expires_at:
+                logger.warning(f"Token expired: {token}")
+                return None
+            
+            return token_data['user_id']
+        except Exception as e:
+            logger.error(f"Error finding user by token: {e}")
+            return None
+    
+    @staticmethod
+    async def mark_token_used(token: str, line_user_id: str) -> bool:
+        """
+        トークンを使用済みにマーク
+        
+        Args:
+            token: LINE連携トークン
+            line_user_id: LINEユーザーID
+        
+        Returns:
+            成功時True
+        """
+        try:
+            supabase = get_supabase_client()
+            
+            response = supabase.table('line_link_tokens').update({
+                'used': True,
+                'line_user_id': line_user_id,
+                'used_at': datetime.now(timezone.utc).isoformat()
+            }).eq('token', token).execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"✅ Token marked as used: {token}")
+                return True
+            
+            return False
+        except Exception as e:
+            logger.error(f"Error marking token as used: {e}")
             return False
     
     @staticmethod
