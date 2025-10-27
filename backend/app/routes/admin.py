@@ -127,15 +127,22 @@ def create_moderation_event(
         logger.warning("Failed to record moderation event: %s", exc)
 
 
-def handle_supabase_response(response, context: str) -> Tuple[Any, Optional[int]]:
+def handle_supabase_response(
+    response,
+    context: str,
+    *,
+    raise_on_error: bool = True,
+) -> Tuple[Any, Optional[int]]:
     error = getattr(response, "error", None)
     if error:
         message = getattr(error, "message", None) or str(error)
         logger.error("Supabase error in %s: %s", context, message)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"{context}: {message}",
-        )
+        if raise_on_error:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"{context}: {message}",
+            )
+        return [], None
     data = response.data or []
     count = getattr(response, "count", None)
     return data, count
@@ -190,6 +197,10 @@ class AdminUserSummarySchema(BaseModel):
     line_connected: bool = False
     line_display_name: Optional[str] = None
     line_bonus_awarded: bool = False
+    total_note_count: int = 0
+    published_note_count: int = 0
+    latest_note_title: Optional[str] = None
+    latest_note_updated_at: Optional[str] = None
 
 
 class AdminUserListResponse(BaseModel):
@@ -226,20 +237,39 @@ class AdminUserPurchaseSchema(BaseModel):
     description: Optional[str] = None
 
 
+class AdminUserNoteSchema(BaseModel):
+    id: str
+    title: str
+    status: str
+    slug: str
+    is_paid: bool
+    price_points: int
+    created_at: str
+    updated_at: str
+    published_at: Optional[str] = None
+    total_purchases: int = 0
+
+
 class AdminUserDetailResponse(AdminUserSummarySchema):
     transactions: List[AdminPointTransactionSchema]
     landing_pages: List[AdminUserLandingPageSchema]
     purchase_history: List[AdminUserPurchaseSchema]
+    notes: List[AdminUserNoteSchema]
 
 
 class UserActionResponse(BaseModel):
     success: bool = True
     user_id: Optional[str]
     message: str
+    note_id: Optional[str] = None
 
 
 class BlockUserRequest(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=400)
+
+
+class NoteActionRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class LPStatusUpdateRequest(BaseModel):
@@ -446,6 +476,35 @@ def build_admin_user_summaries(
         if seller_id:
             product_counts[seller_id] += 1
 
+    note_counts: Dict[str, int] = defaultdict(int)
+    published_note_counts: Dict[str, int] = defaultdict(int)
+    note_latest_title: Dict[str, str] = {}
+    note_latest_dt: Dict[str, datetime] = {}
+
+    if user_ids:
+        notes_response = (
+            supabase
+            .table("notes")
+            .select("author_id,status,title,updated_at,created_at")
+            .in_("author_id", user_ids)
+            .execute()
+        )
+        note_rows, _ = handle_supabase_response(notes_response, "notes author lookup", raise_on_error=False)
+        for note in note_rows:
+            author_id = note.get("author_id")
+            if not author_id:
+                continue
+            note_counts[author_id] += 1
+            if note.get("status") == "published":
+                published_note_counts[author_id] += 1
+            updated_raw = note.get("updated_at") or note.get("created_at")
+            updated_dt = parse_iso_datetime(updated_raw)
+            if updated_dt:
+                current_dt = note_latest_dt.get(author_id)
+                if not current_dt or updated_dt > current_dt:
+                    note_latest_dt[author_id] = updated_dt
+                    note_latest_title[author_id] = note.get("title", "")
+
     transactions_response = (
         supabase
         .table("point_transactions")
@@ -511,6 +570,7 @@ def build_admin_user_summaries(
             "latest_activity": None,
         })
         line_info = line_connections.get(user_id, {})
+        latest_note_dt = note_latest_dt.get(user_id)
         summaries.append(
             AdminUserSummarySchema(
                 id=user_id,
@@ -531,6 +591,10 @@ def build_admin_user_summaries(
                 line_connected=line_info.get("connected", False),
                 line_display_name=line_info.get("display_name"),
                 line_bonus_awarded=line_info.get("bonus_awarded", False),
+                total_note_count=note_counts.get(user_id, 0),
+                published_note_count=published_note_counts.get(user_id, 0),
+                latest_note_title=note_latest_title.get(user_id),
+                latest_note_updated_at=latest_note_dt.isoformat() if latest_note_dt else None,
             )
         )
     return summaries, total
@@ -659,11 +723,54 @@ async def get_admin_user_detail(
             for lp in landing_page_rows
         ]
 
+        notes_response = (
+            supabase
+            .table("notes")
+            .select("id,title,slug,status,is_paid,price_points,created_at,updated_at,published_at")
+            .eq("author_id", user_id)
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        note_rows, _ = handle_supabase_response(notes_response, "admin user notes lookup", raise_on_error=False)
+        note_ids = [note.get("id") for note in note_rows if note.get("id")]
+        note_purchase_counts: Dict[str, int] = defaultdict(int)
+        if note_ids:
+            purchases_response = (
+                supabase
+                .table("note_purchases")
+                .select("note_id")
+                .in_("note_id", note_ids)
+                .execute()
+            )
+            purchase_rows, _ = handle_supabase_response(purchases_response, "admin note purchase lookup", raise_on_error=False)
+            for purchase in purchase_rows:
+                note_id = purchase.get("note_id")
+                if note_id:
+                    note_purchase_counts[note_id] += 1
+
+        notes = [
+            AdminUserNoteSchema(
+                id=note.get("id"),
+                title=note.get("title", ""),
+                status=note.get("status", "draft"),
+                slug=note.get("slug", ""),
+                is_paid=bool(note.get("is_paid", False)),
+                price_points=int(note.get("price_points") or 0),
+                created_at=note.get("created_at", now_utc_iso()),
+                updated_at=note.get("updated_at", now_utc_iso()),
+                published_at=note.get("published_at"),
+                total_purchases=note_purchase_counts.get(note.get("id"), 0),
+            )
+            for note in note_rows
+            if note.get("id")
+        ]
+
         return AdminUserDetailResponse(
             **summary.model_dump(),
             transactions=transactions,
             landing_pages=landing_pages,
             purchase_history=purchase_history,
+            notes=notes,
         )
     except HTTPException:
         raise
@@ -770,6 +877,102 @@ async def delete_user(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"ユーザー削除に失敗しました: {exc}",
+        )
+
+
+@router.post("/users/{user_id}/notes/{note_id}/unpublish", response_model=UserActionResponse)
+async def admin_unpublish_note(
+    user_id: str,
+    note_id: str,
+    request: NoteActionRequest | None = None,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        note_response = (
+            supabase
+            .table("notes")
+            .select("id,author_id,status,title")
+            .eq("id", note_id)
+            .single()
+            .execute()
+        )
+        note = getattr(note_response, "data", None)
+        if not note:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="NOTEが見つかりません")
+        if note.get("author_id") != user_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="指定したユーザーのNOTEではありません")
+        if note.get("status") == "draft":
+            return UserActionResponse(user_id=user_id, note_id=note_id, message="NOTEは既に下書きです")
+
+        supabase.table("notes").update({
+            "status": "draft",
+            "published_at": None,
+            "updated_at": now_utc_iso(),
+        }).eq("id", note_id).execute()
+
+        reason_text = request.reason if request and request.reason else f"note:{note_id} ({note.get('title')})"
+        create_moderation_event(
+            supabase,
+            action="note_unpublish",
+            performed_by=admin.get("id"),
+            target_user_id=user_id,
+            reason=reason_text,
+        )
+
+        return UserActionResponse(user_id=user_id, note_id=note_id, message="NOTEを非公開にしました")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to unpublish note")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"NOTEの非公開化に失敗しました: {exc}",
+        )
+
+
+@router.post("/users/{user_id}/notes/{note_id}/delete", response_model=UserActionResponse)
+async def admin_delete_note(
+    user_id: str,
+    note_id: str,
+    request: NoteActionRequest | None = None,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        note_response = (
+            supabase
+            .table("notes")
+            .select("id,author_id,title")
+            .eq("id", note_id)
+            .single()
+            .execute()
+        )
+        note = getattr(note_response, "data", None)
+        if not note:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="NOTEが見つかりません")
+        if note.get("author_id") != user_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="指定したユーザーのNOTEではありません")
+
+        supabase.table("notes").delete().eq("id", note_id).execute()
+
+        reason_text = request.reason if request and request.reason else f"note:{note_id} ({note.get('title')})"
+        create_moderation_event(
+            supabase,
+            action="note_delete",
+            performed_by=admin.get("id"),
+            target_user_id=user_id,
+            reason=reason_text,
+        )
+
+        return UserActionResponse(user_id=user_id, note_id=note_id, message="NOTEを削除しました")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to delete note")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"NOTEの削除に失敗しました: {exc}",
         )
 
 
