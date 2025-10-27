@@ -363,10 +363,28 @@ class AIService:
 - 「受講者A」のような汎用名は禁止
 - 具体的な名前（仮名可）と肩書きを設定
 
+## top-bonus-1（特典）
+**重要**: ユーザーが入力した特典情報を「必ず」使用してください
+- title, subtitleはユーザーのオファーに特化した内容に
+- 「今だけの特典」のような汎用表現は禁止
+- ユーザーが入力した特典タイトル・説明・価値を必ず反映
+
 ## top-faq-1（よくある質問）
 - ユーザーのビジネスとオファーに特化した質問を3-5個生成
 - 「初心者でも実践できますか？」のような汎用的な質問は最小限に
 - 商品・価格・提供形式に関する具体的な質問を優先
+
+## top-guarantee-1（返金保証）
+**重要**: ユーザーが入力した保証情報を「必ず」使用してください
+- title, description, subtitleはユーザー入力から生成
+- 「30日間 全額返金保証」のような汎用表現は禁止（ユーザー入力があれば）
+- ユーザーが入力した保証内容を必ず反映
+
+## top-cta-1（最終CTA）
+**重要**: ユーザーの商品名・目標・CTAテキストを「必ず」使用してください
+- title, subtitleはユーザーの商品・目標に特化した内容に
+- 「今すぐ始めよう」「まずは資料請求」のような汎用表現は禁止
+- buttonTextはユーザーが入力したCTAテキストを必ず使用
 
 # 出力要件
 - 出力言語は必ず日本語。
@@ -619,6 +637,7 @@ class AIService:
         # ===== top-bonus-1: 特典 =====
         elif block_type == "top-bonus-1":
             reason = "申込特典の価値を可視化し、値引き以上の価値を訴求するため。"
+            # AIが生成したbonusesを優先、なければユーザー入力から使用
             bonuses = AIService._bonuses_to_dict(content.get("bonuses"), offer.bonuses)
             if not bonuses and product.deliverables:
                 bonuses = [
@@ -626,8 +645,12 @@ class AIService:
                     for deliverable in product.deliverables[:3]
                 ]
             content["bonuses"] = bonuses[:5]
-            content.setdefault("title", "今だけの特典")
-            content.setdefault("subtitle", "お申込者限定で以下の特典をプレゼント")
+            
+            # AIが生成した値を尊重（setdefaultは使わない）
+            if "title" not in content:
+                content["title"] = "今だけの特典"
+            if "subtitle" not in content:
+                content["subtitle"] = "お申込者限定で以下の特典をプレゼント"
             
             total_value = content.get("totalValue") or AIService._calculate_bonus_total(bonuses)
             if total_value:
@@ -690,15 +713,24 @@ class AIService:
         elif block_type == "top-guarantee-1":
             reason = "リスクを取り除き、申込への心理的ハードルを下げるため。"
             guarantee = offer.guarantee
-            content.setdefault("title", (guarantee.headline if guarantee and guarantee.headline else "30日間 全額返金保証"))
-            content.setdefault("subtitle", "安心してお試しいただけます")
             
-            description = content.get("description") or (
-                guarantee.description if guarantee and guarantee.description 
-                else "30日以内にご満足いただけなければ、理由を問わず全額返金いたします。"
-            )
-            content["description"] = description
-            content.setdefault("badgeText", "100%保証")
+            # AIが生成した値を優先（setdefaultは最後のフォールバックのみ）
+            if "title" not in content:
+                if guarantee and guarantee.headline:
+                    content["title"] = guarantee.headline
+                # 固定文言は削除 - AIに生成させる
+            
+            if "subtitle" not in content:
+                content["subtitle"] = "安心してお試しいただけます"
+            
+            # descriptionもAI生成を優先
+            if "description" not in content:
+                if guarantee and guarantee.description:
+                    content["description"] = guarantee.description
+                # 固定文言は削除 - AIに生成させる
+            
+            if "badgeText" not in content:
+                content["badgeText"] = "100%保証"
             
             content.setdefault("textColor", "#0F172A")
             content.setdefault("backgroundColor", "#ECFDF5")
@@ -722,12 +754,27 @@ class AIService:
         # ===== top-cta-1: CTA =====
         elif block_type == "top-cta-1":
             reason = "最終的な行動喚起で、明確な次のステップを提示するため。"
-            content.setdefault("title", "今すぐ始めよう")
-            content.setdefault("subtitle", f"{product.name}で、{desired_outcome}を実現しましょう。")
-            content.setdefault("buttonText", call_to_action)
-            content.setdefault("buttonUrl", "/register")
-            content.setdefault("secondaryButtonText", "まずは資料請求")
-            content.setdefault("secondaryButtonUrl", "/download")
+            
+            # AIが生成した値を優先（固定文言は最小限に）
+            if "title" not in content:
+                content["title"] = "今すぐ始めよう"  # 最小限のフォールバック
+            
+            if "subtitle" not in content:
+                # ユーザー入力から生成
+                content["subtitle"] = f"{product.name}で、{desired_outcome}を実現しましょう。"
+            
+            if "buttonText" not in content:
+                content["buttonText"] = call_to_action  # ユーザー入力
+            
+            if "buttonUrl" not in content:
+                content["buttonUrl"] = "/register"
+            
+            if "secondaryButtonText" not in content:
+                # 固定文言は削除 - AIに生成させる or 空のまま
+                pass
+            
+            if "secondaryButtonUrl" not in content:
+                content["secondaryButtonUrl"] = "/download"
             
             content.setdefault("textColor", "#0F172A")
             content.setdefault("backgroundColor", "#E0F2FE")
