@@ -219,18 +219,13 @@ async def get_public_products(
         supabase = get_supabase()
 
         def extract_thumbnail_from_step(step: Dict[str, Any]) -> Optional[str]:
-            """ステップ情報から最適なサムネイルURLを抽出"""
-            image_candidates: List[Optional[str]] = []
-
-            # image_urlをチェック（/placeholder.jpgは除外）
-            image_url = step.get("image_url")
-            if isinstance(image_url, str) and image_url.strip() and image_url.strip() != "/placeholder.jpg":
-                image_candidates.append(image_url)
+            """ステップ情報から最適なサムネイル（画像または動画）URLを抽出"""
+            media_candidates: List[Optional[str]] = []
 
             content_data = step.get("content_data") or {}
             if isinstance(content_data, dict):
-                # 画像専用フィールドを優先（ビデオURLは除外）
-                image_candidates.extend([
+                # 画像を最優先、次に動画
+                media_candidates.extend([
                     content_data.get("backgroundImageUrl"),
                     content_data.get("background_image_url"),
                     content_data.get("imageUrl"),
@@ -241,11 +236,16 @@ async def get_public_products(
                     content_data.get("hero_image"),
                     content_data.get("primaryImageUrl"),
                     content_data.get("primary_image_url"),
+                    # 動画も候補に含める
+                    content_data.get("backgroundVideoUrl"),
+                    content_data.get("background_video_url"),
+                    content_data.get("videoUrl"),
+                    content_data.get("video_url"),
                 ])
 
                 nested_content = content_data.get("content")
                 if isinstance(nested_content, dict):
-                    image_candidates.extend([
+                    media_candidates.extend([
                         nested_content.get("backgroundImageUrl"),
                         nested_content.get("background_image_url"),
                         nested_content.get("imageUrl"),
@@ -254,6 +254,10 @@ async def get_public_products(
                         nested_content.get("thumbnail_url"),
                         nested_content.get("heroImage"),
                         nested_content.get("hero_image"),
+                        nested_content.get("backgroundVideoUrl"),
+                        nested_content.get("background_video_url"),
+                        nested_content.get("videoUrl"),
+                        nested_content.get("video_url"),
                     ])
                 elif isinstance(nested_content, list):
                     for item in nested_content:
@@ -264,17 +268,23 @@ async def get_public_products(
                                 item.get("thumbnailUrl") or 
                                 item.get("thumbnail_url") or 
                                 item.get("heroImage") or 
-                                item.get("hero_image")
+                                item.get("hero_image") or
+                                item.get("backgroundVideoUrl") or
+                                item.get("videoUrl")
                             )
                             if isinstance(candidate, str) and candidate.strip() and candidate.strip() != "/placeholder.jpg":
                                 return candidate.strip()
 
-            # 有効な画像URLを返す（/placeholder.jpgとビデオファイルを除外）
-            for candidate in image_candidates:
+            # image_urlもチェック（/placeholder.jpgは除外）
+            image_url = step.get("image_url")
+            if isinstance(image_url, str) and image_url.strip() and image_url.strip() != "/placeholder.jpg":
+                media_candidates.append(image_url)
+
+            # 有効なメディアURLを返す（/placeholder.jpgのみ除外）
+            for candidate in media_candidates:
                 if isinstance(candidate, str) and candidate.strip():
                     cleaned = candidate.strip()
-                    # プレースホルダーとビデオファイルを除外
-                    if cleaned != "/placeholder.jpg" and not any(cleaned.endswith(ext) for ext in ['.mp4', '.webm', '.mov', '.avi']):
+                    if cleaned != "/placeholder.jpg":
                         return cleaned
 
             return None
