@@ -27,6 +27,7 @@ class UserResponse(BaseModel):
     sns_url: Optional[str] = None
     line_url: Optional[str] = None
     profile_image_url: Optional[str] = None
+    last_login_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True

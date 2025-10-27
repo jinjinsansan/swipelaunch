@@ -54,7 +54,8 @@ def build_user_response(user_info: dict) -> UserResponse:
         bio=user_info.get("bio"),
         sns_url=user_info.get("sns_url"),
         line_url=user_info.get("line_url"),
-        profile_image_url=user_info.get("profile_image_url")
+        profile_image_url=user_info.get("profile_image_url"),
+        last_login_at=user_info.get("last_login_at")
     )
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -98,7 +99,8 @@ async def register(data: UserRegisterRequest):
             "bio": None,
             "sns_url": None,
             "line_url": None,
-            "profile_image_url": None
+            "profile_image_url": None,
+            "last_login_at": None
         }
         
         db_response = supabase.table("users").insert(user_data).execute()
@@ -160,6 +162,13 @@ async def login(data: UserLoginRequest):
             )
         
         user_info = user_response.data
+
+        try:
+            last_login_value = datetime.utcnow().isoformat()
+            supabase.table("users").update({"last_login_at": last_login_value}).eq("id", user_info["id"]).execute()
+            user_info["last_login_at"] = last_login_value
+        except Exception as update_error:
+            print(f"[WARN] Failed to update last_login_at: {update_error}")
         
         user = build_user_response(user_info)
         return AuthResponse(
@@ -245,6 +254,13 @@ async def login_with_google(payload: GoogleAuthRequest):
                 detail="ユーザー情報の作成に失敗しました"
             )
         user_info = created.data[0]
+
+    try:
+        last_login_value = datetime.utcnow().isoformat()
+        supabase.table("users").update({"last_login_at": last_login_value}).eq("id", user_info["id"]).execute()
+        user_info["last_login_at"] = last_login_value
+    except Exception as update_error:
+        print(f"[WARN] Failed to update last_login_at (Google): {update_error}")
 
     user = build_user_response(user_info)
     access_token = create_access_token(user.id)
