@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, List
+from typing import Optional, Literal, List, Dict, Any
 from datetime import datetime
 
 # LP作成リクエスト
@@ -177,3 +177,20 @@ class LPListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class LPStepUpsertRequest(BaseModel):
+    id: Optional[str] = None
+    step_order: int
+    block_type: Optional[str] = None
+    content_data: Dict[str, Any] = Field(default_factory=dict)
+    image_url: Optional[str] = None
+    video_url: Optional[str] = None
+
+
+class LPStepsBulkUpdateRequest(BaseModel):
+    steps: List[LPStepUpsertRequest]
+
+
+class LPStepsBulkUpdateResponse(BaseModel):
+    steps: List[LPStepResponse]

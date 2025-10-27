@@ -13,7 +13,10 @@ from app.models.landing_page import (
     LPStepResponse,
     CTACreateRequest,
     CTAUpdateRequest,
-    CTAResponse
+    CTAResponse,
+    LPStepUpsertRequest,
+    LPStepsBulkUpdateRequest,
+    LPStepsBulkUpdateResponse
 )
 from typing import Optional, List, Dict
 import re
@@ -728,6 +731,126 @@ async def delete_step(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"ステップ削除エラー: {str(e)}"
+        )
+
+
+@router.post("/{lp_id}/blocks", response_model=LPStepsBulkUpdateResponse)
+async def bulk_update_steps(
+    lp_id: str,
+    data: LPStepsBulkUpdateRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    ステップを一括更新する
+
+    - 既存ステップを差分で削除
+    - 指定された順序で新規作成/更新
+    """
+    try:
+        user_id = get_current_user_id(credentials)
+        supabase = get_supabase()
+
+        lp_response = (
+            supabase
+            .table("landing_pages")
+            .select("id")
+            .eq("id", lp_id)
+            .eq("seller_id", user_id)
+            .single()
+            .execute()
+        )
+
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
+
+        incoming_steps = data.steps or []
+
+        existing_steps_response = (
+            supabase
+            .table("lp_steps")
+            .select("id")
+            .eq("lp_id", lp_id)
+            .execute()
+        )
+
+        existing_ids = {
+            step.get("id")
+            for step in (existing_steps_response.data or [])
+            if step.get("id")
+        }
+
+        incoming_ids = {
+            step.id
+            for step in incoming_steps
+            if step.id
+        }
+
+        delete_ids = [step_id for step_id in existing_ids if step_id not in incoming_ids]
+        if delete_ids:
+            supabase.table("lp_steps").delete().eq("lp_id", lp_id).in_("id", delete_ids).execute()
+
+        def prepare_payload(index: int, step: LPStepUpsertRequest) -> dict:
+            payload: dict = {
+                "step_order": index,
+                "content_data": dict(step.content_data or {}),
+                "image_url": step.image_url or "",
+            }
+
+            if step.video_url is not None:
+                payload["video_url"] = step.video_url
+
+            block_type = step.block_type or payload["content_data"].get("block_type")
+            if block_type:
+                payload["block_type"] = block_type
+                payload["content_data"]["block_type"] = block_type
+
+            return payload
+
+        for index, step in enumerate(incoming_steps):
+            payload = prepare_payload(index, step)
+
+            if step.id and step.id in existing_ids:
+                response = supabase.table("lp_steps").update(payload).eq("id", step.id).eq("lp_id", lp_id).execute()
+            else:
+                payload_with_lp = {"lp_id": lp_id, **payload}
+                response = supabase.table("lp_steps").insert(payload_with_lp).execute()
+
+            error = getattr(response, "error", None)
+            if error:
+                message = getattr(error, "message", None)
+                if isinstance(error, dict):
+                    message = error.get("message")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"ステップの一括更新に失敗しました: {message or str(error)}"
+                )
+
+        final_steps_response = (
+            supabase
+            .table("lp_steps")
+            .select("*")
+            .eq("lp_id", lp_id)
+            .order("step_order")
+            .execute()
+        )
+
+        final_steps = []
+        for step in final_steps_response.data or []:
+            if not step.get("block_type") and (step.get("content_data") or {}).get("block_type"):
+                step["block_type"] = step["content_data"].get("block_type")
+            final_steps.append(LPStepResponse(**step))
+
+        return LPStepsBulkUpdateResponse(steps=final_steps)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"ステップ一括更新エラー: {str(e)}"
         )
 
 # ==================== CTA管理 ====================
