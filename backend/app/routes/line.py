@@ -102,12 +102,12 @@ async def line_webhook(
 
 
 @router.get("/status", response_model=LineLinkStatusResponse)
-async def get_line_link_status(current_user: dict = Depends(get_current_user)):
+async def get_line_link_status(current_user = Depends(get_current_user)):
     """
     現在のユーザーのLINE連携状態とボーナス情報を取得
     """
     try:
-        user_id = current_user['id']
+        user_id = getattr(current_user, 'id', current_user.get('id') if isinstance(current_user, dict) else None)
         supabase = get_supabase_client()
         
         # ボーナス設定を取得
@@ -139,7 +139,7 @@ async def get_line_link_status(current_user: dict = Depends(get_current_user)):
 @router.post("/link")
 async def link_line_account(
     line_user_id: str,
-    current_user: dict = Depends(get_current_user)
+    current_user = Depends(get_current_user)
 ):
     """
     LINE アカウントを手動で連携
@@ -147,7 +147,7 @@ async def link_line_account(
     ※ 通常はWebhookで自動連携されるが、手動連携も可能にする
     """
     try:
-        user_id = current_user['id']
+        user_id = getattr(current_user, 'id', current_user.get('id') if isinstance(current_user, dict) else None)
         
         # 既に連携済みかチェック
         supabase = get_supabase_client()
@@ -209,14 +209,15 @@ async def get_bonus_settings():
 @router.put("/bonus-settings", response_model=LineBonusSettingsResponse)
 async def update_bonus_settings(
     update_data: LineBonusSettingsUpdate,
-    current_user: dict = Depends(get_current_user)
+    current_user = Depends(get_current_user)
 ):
     """
     LINEボーナス設定を更新（管理者のみ）
     """
     try:
         # 管理者チェック
-        if current_user.get('user_type') != 'admin':
+        user_type = getattr(current_user, 'user_type', current_user.get('user_type') if isinstance(current_user, dict) else None)
+        if user_type != 'admin':
             raise HTTPException(status_code=403, detail="Admin access required")
         
         supabase = get_supabase_client()
@@ -239,7 +240,8 @@ async def update_bonus_settings(
         if not response.data or len(response.data) == 0:
             raise HTTPException(status_code=500, detail="Failed to update settings")
         
-        logger.info(f"✅ LINE bonus settings updated by admin: {current_user['id']}")
+        user_id = getattr(current_user, 'id', current_user.get('id') if isinstance(current_user, dict) else 'unknown')
+        logger.info(f"✅ LINE bonus settings updated by admin: {user_id}")
         
         return LineBonusSettingsResponse(**response.data[0])
     
