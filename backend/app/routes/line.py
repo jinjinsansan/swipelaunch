@@ -141,12 +141,9 @@ async def line_webhook(
                             bonus_awarded = await LINEService.award_bonus_points(user_id, line_user_id)
                             
                             if bonus_awarded and event.replyToken:
-                                settings = await LINEService.get_bonus_settings()
-                                bonus_points = settings.get('bonus_points', 300) if settings else 300
-                                
                                 await LINEService.send_reply_message(
                                     event.replyToken,
-                                    f"🎉 連携完了！\n\n{bonus_points}ポイントをプレゼントしました！\nD-swipeでLPを購入してビジネスを加速させましょう！💪"
+                                    "D-swipeLINE連携おめでとうございます！特別ポイントが付与されました！ダッシュボードでご確認ください。"
                                 )
                             else:
                                 if event.replyToken:
