@@ -55,6 +55,29 @@ COLOR_THEMES: Dict[str, Dict[str, str]] = {
 
 DEFAULT_THEME = "urgent_red"
 
+GENERIC_CTA_TITLES = {
+    "今すぐ始めよう",
+    "今すぐスタート",
+    "今すぐ開始",
+    "今すぐ行動しよう",
+}
+
+GENERIC_CTA_SUBTITLES = {
+    "情報には鮮度がある。５分でLPを公開して、今すぐ販売を開始。",
+    "最短で成果を手に入れましょう。",
+}
+
+GENERIC_PRIMARY_CTA_TEXTS = {
+    "無料で始める",
+    "無料でスタート",
+    "無料体験",
+}
+
+GENERIC_SECONDARY_CTA_TEXTS = {
+    "デモを見る",
+    "資料請求",
+}
+
 # 新しいテンプレートライブラリに対応したブロックシーケンス
 ALLOWED_BLOCK_SEQUENCE = [
     "top-hero-1",          # ヒーロー（動画背景） - 動的に選択
@@ -835,17 +858,41 @@ class AIService:
             desired = _coalesce(desired_outcome, product.transformation, product.promise)
             mechanism = _coalesce(narrative.unique_mechanism if narrative else None)
             guarantee = offer.guarantee
+            title_text = content.get("title") if isinstance(content.get("title"), str) else ""
+            subtitle_text = content.get("subtitle") if isinstance(content.get("subtitle"), str) else ""
+            primary_text = content.get("buttonText") if isinstance(content.get("buttonText"), str) else ""
+            secondary_text = content.get("secondaryButtonText") if isinstance(content.get("secondaryButtonText"), str) else ""
             
             if _is_blank(content.get("eyebrow")) and mechanism:
                 content["eyebrow"] = mechanism
 
-            if _is_blank(content.get("title")):
+            lacks_personalization = False
+            if desired and desired not in title_text:
+                lacks_personalization = True
+            if product_label and product_label not in title_text:
+                lacks_personalization = True
+
+            title_needs_override = (
+                _is_blank(title_text)
+                or title_text.strip() in GENERIC_CTA_TITLES
+                or lacks_personalization
+            )
+
+            if title_needs_override:
                 if desired:
                     content["title"] = f"{desired}を叶える{product_label}"
                 else:
                     content["title"] = f"{product_label}で次の成果へ"
+            else:
+                content["title"] = title_text.strip()
 
-            if _is_blank(content.get("subtitle")):
+            subtitle_needs_override = (
+                _is_blank(subtitle_text)
+                or subtitle_text.strip() in GENERIC_CTA_SUBTITLES
+                or subtitle_text.strip() == title_text.strip()
+            )
+
+            if subtitle_needs_override:
                 base = _coalesce(
                     product.description,
                     narrative.origin_story if narrative else None,
@@ -862,18 +909,30 @@ class AIService:
                     content["subtitle"] = base
                 else:
                     content["subtitle"] = extra or f"{product_label}の詳細を今すぐ確認してください。"
+            else:
+                content["subtitle"] = subtitle_text.strip()
 
-            if _is_blank(content.get("buttonText")):
-                content["buttonText"] = call_to_action
+            if call_to_action:
+                content["buttonText"] = call_to_action.strip()
+            elif _is_blank(primary_text) or primary_text.strip() in GENERIC_PRIMARY_CTA_TEXTS:
+                content["buttonText"] = "詳細を見る"
+            else:
+                content["buttonText"] = primary_text.strip()
 
             if _is_blank(content.get("buttonUrl")):
                 content["buttonUrl"] = "/register"
 
-            if _is_blank(content.get("secondaryButtonText")):
+            secondary_needs_override = (
+                _is_blank(secondary_text)
+                or secondary_text.strip() in GENERIC_SECONDARY_CTA_TEXTS
+            )
+            if secondary_needs_override:
                 if price and (price.special or price.original):
                     content["secondaryButtonText"] = "料金プランを見る"
                 else:
                     content["secondaryButtonText"] = f"{product_label}の詳細を見る"
+            else:
+                content["secondaryButtonText"] = secondary_text.strip()
 
             if _is_blank(content.get("secondaryButtonUrl")):
                 content["secondaryButtonUrl"] = "#pricing"
