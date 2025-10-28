@@ -394,13 +394,18 @@ async def list_public_notes(
     offset: int = Query(0, ge=0),
     search: Optional[str] = Query(None, min_length=1),
     categories: Optional[List[str]] = Query(None),
+    author_username: Optional[str] = Query(None, min_length=1, max_length=120),
 ):
     supabase = get_supabase()
+
+    select_columns = "id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users(username)"
+    if author_username:
+        select_columns = "id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users!inner(username)"
 
     query = (
         supabase
         .table("notes")
-        .select("id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users(username)", count="exact")
+        .select(select_columns, count="exact")
         .eq("status", "published")
         .order("published_at", desc=True)
         .range(offset, offset + limit - 1)
@@ -414,6 +419,9 @@ async def list_public_notes(
         filtered = [c.strip() for c in categories if isinstance(c, str) and c.strip()]
         if filtered:
             query = query.contains("categories", filtered)
+
+    if author_username:
+        query = query.eq("users.username", author_username)
 
     response = query.execute()
     items: List[PublicNoteSummary] = []
