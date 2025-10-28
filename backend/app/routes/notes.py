@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 from collections import Counter, defaultdict
@@ -30,6 +31,7 @@ from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 security = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 
 
 def get_supabase() -> Client:
@@ -207,114 +209,134 @@ async def get_note_metrics(credentials: HTTPAuthorizationCredentials = Depends(s
     user_id = get_current_user_id(credentials)
     supabase = get_supabase()
 
-    notes_response = (
-        supabase
-        .table("notes")
-        .select("id,title,slug,status,is_paid,price_points,published_at,created_at,categories")
-        .eq("author_id", user_id)
-        .execute()
-    )
-
-    notes = notes_response.data or []
-    total_notes = len(notes)
-    published_notes = sum(1 for note in notes if note.get("status") == "published")
-    draft_notes = sum(1 for note in notes if note.get("status") == "draft")
-    paid_notes = sum(1 for note in notes if note.get("is_paid"))
-    free_notes = total_notes - paid_notes
-
-    note_ids = [note.get("id") for note in notes if note.get("id")]
-    purchases: List[Dict[str, Any]] = []
-    if note_ids:
-        purchases_response = (
+    try:
+        notes_response = (
             supabase
-            .table("note_purchases")
-            .select("note_id, points_spent, purchased_at")
-            .in_("note_id", note_ids)
+            .table("notes")
+            .select("id,title,slug,status,is_paid,price_points,published_at,created_at,categories")
+            .eq("author_id", user_id)
             .execute()
         )
-        purchases = purchases_response.data or []
 
-    total_sales_points = 0
-    total_sales_count = 0
-    monthly_sales_points = 0
-    monthly_sales_count = 0
-    purchase_count_by_note = defaultdict(int)
-    purchase_points_by_note = defaultdict(int)
+        notes = notes_response.data or []
+        total_notes = len(notes)
+        published_notes = sum(1 for note in notes if note.get("status") == "published")
+        draft_notes = sum(1 for note in notes if note.get("status") == "draft")
+        paid_notes = sum(1 for note in notes if note.get("is_paid"))
+        free_notes = total_notes - paid_notes
 
-    now = datetime.utcnow()
-    thirty_days_ago = now - timedelta(days=30)
+        note_ids = [note.get("id") for note in notes if note.get("id")]
+        purchases: List[Dict[str, Any]] = []
+        if note_ids:
+            purchases_response = (
+                supabase
+                .table("note_purchases")
+                .select("note_id, points_spent, purchased_at")
+                .in_("note_id", note_ids)
+                .execute()
+            )
+            purchases = purchases_response.data or []
 
-    for purchase in purchases:
-        note_id = purchase.get("note_id")
-        if not note_id:
-            continue
-        points = int(purchase.get("points_spent") or 0)
-        total_sales_points += points
-        total_sales_count += 1
-        purchase_count_by_note[note_id] += 1
-        purchase_points_by_note[note_id] += points
+        total_sales_points = 0
+        total_sales_count = 0
+        monthly_sales_points = 0
+        monthly_sales_count = 0
+        purchase_count_by_note = defaultdict(int)
+        purchase_points_by_note = defaultdict(int)
 
-        purchased_at = _parse_datetime(purchase.get("purchased_at"))
-        if purchased_at and purchased_at >= thirty_days_ago:
-            monthly_sales_points += points
-            monthly_sales_count += 1
+        now = datetime.utcnow()
+        thirty_days_ago = now - timedelta(days=30)
 
-    published_dates = [
-        _parse_datetime(note.get("published_at"))
-        for note in notes
-        if note.get("published_at")
-    ]
-    latest_published_at = max([dt for dt in published_dates if dt], default=None)
-    recent_published_count = sum(1 for dt in published_dates if dt and dt >= thirty_days_ago)
+        for purchase in purchases:
+            note_id = purchase.get("note_id")
+            if not note_id:
+                continue
+            points = int(purchase.get("points_spent") or 0)
+            total_sales_points += points
+            total_sales_count += 1
+            purchase_count_by_note[note_id] += 1
+            purchase_points_by_note[note_id] += points
 
-    paid_prices = [int(note.get("price_points") or 0) for note in notes if note.get("is_paid")]
-    average_paid_price = int(round(sum(paid_prices) / len(paid_prices))) if paid_prices else 0
+            purchased_at = _parse_datetime(purchase.get("purchased_at"))
+            if purchased_at and purchased_at >= thirty_days_ago:
+                monthly_sales_points += points
+                monthly_sales_count += 1
 
-    categories_counter: Counter[str] = Counter()
-    for note in notes:
-        for category in note.get("categories") or []:
-            if isinstance(category, str) and category.strip():
-                categories_counter[category.strip()] += 1
-    top_categories = [category for category, _ in categories_counter.most_common(5)]
+        published_dates = [
+            _parse_datetime(note.get("published_at"))
+            for note in notes
+            if note.get("published_at")
+        ]
+        latest_published_at = max([dt for dt in published_dates if dt], default=None)
+        recent_published_count = sum(1 for dt in published_dates if dt and dt >= thirty_days_ago)
 
-    note_lookup = {note.get("id"): note for note in notes if note.get("id")}
-    top_note_id = None
-    best_count = 0
-    best_points = 0
-    for note_id, count in purchase_count_by_note.items():
-        points = purchase_points_by_note.get(note_id, 0)
-        if count > best_count or (count == best_count and points > best_points):
-            top_note_id = note_id
-            best_count = count
-            best_points = points
+        paid_prices = [int(note.get("price_points") or 0) for note in notes if note.get("is_paid")]
+        average_paid_price = int(round(sum(paid_prices) / len(paid_prices))) if paid_prices else 0
 
-    top_note: Optional[NoteMetricsTopNote] = None
-    if top_note_id and top_note_id in note_lookup:
-        note = note_lookup[top_note_id]
-        top_note = NoteMetricsTopNote(
-            note_id=top_note_id,
-            title=note.get("title", ""),
-            slug=note.get("slug"),
-            purchase_count=best_count,
-            points_earned=best_points,
+        categories_counter: Counter[str] = Counter()
+        for note in notes:
+            for category in note.get("categories") or []:
+                if isinstance(category, str) and category.strip():
+                    categories_counter[category.strip()] += 1
+        top_categories = [category for category, _ in categories_counter.most_common(5)]
+
+        note_lookup = {note.get("id"): note for note in notes if note.get("id")}
+        top_note_id = None
+        best_count = 0
+        best_points = 0
+        for note_id, count in purchase_count_by_note.items():
+            points = purchase_points_by_note.get(note_id, 0)
+            if count > best_count or (count == best_count and points > best_points):
+                top_note_id = note_id
+                best_count = count
+                best_points = points
+
+        top_note: Optional[NoteMetricsTopNote] = None
+        if top_note_id and top_note_id in note_lookup:
+            note = note_lookup[top_note_id]
+            top_note = NoteMetricsTopNote(
+                note_id=top_note_id,
+                title=note.get("title", ""),
+                slug=note.get("slug"),
+                purchase_count=best_count,
+                points_earned=best_points,
+            )
+
+        return NoteMetricsResponse(
+            total_notes=total_notes,
+            published_notes=published_notes,
+            draft_notes=draft_notes,
+            paid_notes=paid_notes,
+            free_notes=free_notes,
+            total_sales_count=total_sales_count,
+            total_sales_points=total_sales_points,
+            monthly_sales_count=monthly_sales_count,
+            monthly_sales_points=monthly_sales_points,
+            recent_published_count=recent_published_count,
+            average_paid_price=average_paid_price,
+            latest_published_at=latest_published_at,
+            top_categories=top_categories,
+            top_note=top_note,
         )
 
-    return NoteMetricsResponse(
-        total_notes=total_notes,
-        published_notes=published_notes,
-        draft_notes=draft_notes,
-        paid_notes=paid_notes,
-        free_notes=free_notes,
-        total_sales_count=total_sales_count,
-        total_sales_points=total_sales_points,
-        monthly_sales_count=monthly_sales_count,
-        monthly_sales_points=monthly_sales_points,
-        recent_published_count=recent_published_count,
-        average_paid_price=average_paid_price,
-        latest_published_at=latest_published_at,
-        top_categories=top_categories,
-        top_note=top_note,
-    )
+    except Exception as exc:
+        logger.exception("Failed to compute note metrics for user %s", user_id)
+        return NoteMetricsResponse(
+            total_notes=0,
+            published_notes=0,
+            draft_notes=0,
+            paid_notes=0,
+            free_notes=0,
+            total_sales_count=0,
+            total_sales_points=0,
+            monthly_sales_count=0,
+            monthly_sales_points=0,
+            recent_published_count=0,
+            average_paid_price=0,
+            latest_published_at=None,
+            top_categories=[],
+            top_note=None,
+        )
 
 
 @router.get("/public", response_model=PublicNoteListResponse)
