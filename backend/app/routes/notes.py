@@ -810,7 +810,7 @@ async def share_note_to_x(
             "note_id", note_id
         ).eq("user_id", user_id).maybe_single().execute()
         
-        if existing_share.data:
+        if existing_share and existing_share.data:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="既にこのNOTEをシェア済みです"
@@ -821,7 +821,7 @@ async def share_note_to_x(
             "access_token, x_user_id, x_username, account_created_at, followers_count, is_verified"
         ).eq("user_id", user_id).maybe_single().execute()
         
-        if not x_connection.data:
+        if not x_connection or not x_connection.data:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="X連携が必要です。設定画面でXアカウントを連携してください。"
