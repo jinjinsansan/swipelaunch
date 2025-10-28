@@ -109,6 +109,7 @@ def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
         published_at=record.get("published_at"),
         updated_at=record.get("updated_at"),
         categories=list(record.get("categories") or []),
+        allow_share_unlock=bool(record.get("allow_share_unlock", False)),
     )
 
 

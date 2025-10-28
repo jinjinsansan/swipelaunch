@@ -102,6 +102,7 @@ class NoteSummaryResponse(BaseModel):
     published_at: Optional[datetime] = None
     updated_at: datetime
     categories: List[str] = Field(default_factory=list)
+    allow_share_unlock: Optional[bool] = False
 
     class Config:
         from_attributes = True
