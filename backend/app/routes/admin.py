@@ -248,6 +248,7 @@ class AdminUserNoteSchema(BaseModel):
     updated_at: str
     published_at: Optional[str] = None
     total_purchases: int = 0
+    categories: List[str] = Field(default_factory=list)
 
 
 class AdminUserDetailResponse(AdminUserSummarySchema):
@@ -726,7 +727,7 @@ async def get_admin_user_detail(
         notes_response = (
             supabase
             .table("notes")
-            .select("id,title,slug,status,is_paid,price_points,created_at,updated_at,published_at")
+            .select("id,title,slug,status,is_paid,price_points,created_at,updated_at,published_at,categories")
             .eq("author_id", user_id)
             .order("updated_at", desc=True)
             .execute()
@@ -760,6 +761,7 @@ async def get_admin_user_detail(
                 updated_at=note.get("updated_at", now_utc_iso()),
                 published_at=note.get("published_at"),
                 total_purchases=note_purchase_counts.get(note.get("id"), 0),
+                categories=list(note.get("categories") or []),
             )
             for note in note_rows
             if note.get("id")

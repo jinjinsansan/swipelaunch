@@ -103,6 +103,7 @@ def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
         status=record.get("status", "draft"),
         published_at=record.get("published_at"),
         updated_at=record.get("updated_at"),
+        categories=list(record.get("categories") or []),
     )
 
 
@@ -141,6 +142,7 @@ async def create_note(
         "is_paid": data.is_paid,
         "price_points": data.price_points or 0,
         "status": "draft",
+        "categories": data.categories,
     }
 
     response = supabase.table("notes").insert(note_data).execute()
@@ -267,6 +269,9 @@ async def update_note(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="有料記事の価格は1ポイント以上です")
         update_data["price_points"] = data.price_points
 
+    if data.categories is not None:
+        update_data["categories"] = data.categories
+
     response = supabase.table("notes").update(update_data).eq("id", note_id).execute()
     if not response.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="ノートの更新に失敗しました")
@@ -388,13 +393,14 @@ async def list_public_notes(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     search: Optional[str] = Query(None, min_length=1),
+    categories: Optional[List[str]] = Query(None),
 ):
     supabase = get_supabase()
 
     query = (
         supabase
         .table("notes")
-        .select("id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,users(username)", count="exact")
+        .select("id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users(username)", count="exact")
         .eq("status", "published")
         .order("published_at", desc=True)
         .range(offset, offset + limit - 1)
@@ -403,6 +409,11 @@ async def list_public_notes(
     if search:
         ilike_pattern = f"%{search}%"
         query = query.ilike("title", ilike_pattern)
+
+    if categories:
+        filtered = [c.strip() for c in categories if isinstance(c, str) and c.strip()]
+        if filtered:
+            query = query.contains("categories", filtered)
 
     response = query.execute()
     items: List[PublicNoteSummary] = []
@@ -419,6 +430,7 @@ async def list_public_notes(
                 price_points=int(record.get("price_points") or 0),
                 author_username=user.get("username"),
                 published_at=record.get("published_at"),
+                categories=list(record.get("categories") or []),
             )
         )
 
@@ -492,6 +504,7 @@ async def get_public_note(
         has_access=has_access,
         content_blocks=visible_blocks,
         published_at=note.get("published_at"),
+        categories=list(note.get("categories") or []),
     )
 
 
