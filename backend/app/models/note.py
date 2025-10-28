@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import List, Optional, Literal, Any
 from datetime import datetime
-
 from pydantic import BaseModel, Field, validator
 
 
@@ -158,5 +157,32 @@ class PublicNoteDetailResponse(BaseModel):
 class NotePurchaseResponse(BaseModel):
     note_id: str
     points_spent: int
+    remaining_points: int
+    purchased_at: Optional[datetime] = None
+
+
+class NoteMetricsTopNote(BaseModel):
+    note_id: str
+    title: str
+    slug: Optional[str] = None
+    purchase_count: int
+    points_earned: int
+
+
+class NoteMetricsResponse(BaseModel):
+    total_notes: int
+    published_notes: int
+    draft_notes: int
+    paid_notes: int
+    free_notes: int
+    total_sales_count: int
+    total_sales_points: int
+    monthly_sales_count: int
+    monthly_sales_points: int
+    recent_published_count: int
+    average_paid_price: int
+    latest_published_at: Optional[datetime] = None
+    top_categories: List[str] = Field(default_factory=list)
+    top_note: Optional[NoteMetricsTopNote] = None
     remaining_points: int
     purchased_at: datetime
