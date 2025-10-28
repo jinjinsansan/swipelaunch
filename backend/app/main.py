@@ -37,9 +37,10 @@ def health_check():
     }
 
 # ルート追加
-from app.routes import test, auth, lp, media, public, analytics, products, points, ai, admin, announcements, webhooks, line, notes
+from app.routes import test, auth, lp, media, public, analytics, products, points, ai, admin, announcements, webhooks, line, notes, x_auth
 app.include_router(test.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
+app.include_router(x_auth.router, prefix="/api")
 app.include_router(lp.router, prefix="/api")
 app.include_router(media.router, prefix="/api")
 app.include_router(public.router, prefix="/api")

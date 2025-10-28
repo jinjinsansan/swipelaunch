@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, HTTPException, status, Depends, Query
+from fastapi import APIRouter, HTTPException, status, Depends, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from supabase import create_client, Client
 from postgrest.exceptions import APIError
@@ -728,3 +728,332 @@ async def purchase_note(
         remaining_points=remaining_points,
         purchased_at=result.get("purchased_at"),
     )
+
+
+# ========================================
+# X (Twitter) Share to Unlock
+# ========================================
+
+@router.post("/notes/{note_id}/share", status_code=status.HTTP_200_OK)
+async def share_note_to_x(
+    note_id: str,
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    NOTEをXでシェアして無料解放
+    
+    Flow:
+    1. X連携確認
+    2. 不正検知チェック
+    3. Xにツイート投稿
+    4. ツイート検証
+    5. アクセス権付与
+    6. 著者に即時ポイント報酬付与
+    
+    Returns:
+        {
+            "message": "シェアが完了しました",
+            "tweet_url": "https://x.com/username/status/123",
+            "has_access": true,
+            "author_reward_points": 1
+        }
+    """
+    from app.services.x_api import XAPIClient, XAPIError
+    from app.services.fraud_detection import FraudDetector
+    from app.services.share_rewards import ShareRewardService
+    
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+    
+    # IPアドレス取得
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent", "")
+    
+    try:
+        # 1. NOTE存在確認 & シェア許可確認
+        note_response = supabase.table("notes").select(
+            "id, title, slug, author_id, is_paid, allow_share_unlock"
+        ).eq("id", note_id).eq("status", "published").single().execute()
+        
+        if not note_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="NOTEが見つかりません"
+            )
+        
+        note = note_response.data
+        
+        if not note.get("is_paid"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="このNOTEは無料です"
+            )
+        
+        if not note.get("allow_share_unlock"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="このNOTEはシェア解放が許可されていません"
+            )
+        
+        # 自分の記事はシェアできない
+        if note["author_id"] == user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="自分のNOTEはシェアできません"
+            )
+        
+        # 2. 既にシェア済みかチェック
+        existing_share = supabase.table("note_shares").select("id").eq(
+            "note_id", note_id
+        ).eq("user_id", user_id).maybe_single().execute()
+        
+        if existing_share.data:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="既にこのNOTEをシェア済みです"
+            )
+        
+        # 3. X連携確認
+        x_connection = supabase.table("user_x_connections").select(
+            "access_token, x_user_id, x_username, account_created_at, followers_count, is_verified"
+        ).eq("user_id", user_id).maybe_single().execute()
+        
+        if not x_connection.data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="X連携が必要です。設定画面でXアカウントを連携してください。"
+            )
+        
+        access_token = x_connection.data["access_token"]
+        x_info = x_connection.data
+        
+        # 4. 不正検知チェック
+        fraud_detector = FraudDetector(supabase)
+        
+        fraud_data = {
+            "user_id": user_id,
+            "ip_address": ip_address,
+            "account_created_at": x_info.get("account_created_at"),
+            "followers_count": x_info.get("followers_count", 0),
+            "is_verified": x_info.get("is_verified", False)
+        }
+        
+        fraud_score, severity = await fraud_detector.calculate_fraud_score(fraud_data)
+        is_suspicious = fraud_score >= 30  # MEDIUM以上を疑わしいとする
+        
+        # 5. Xにツイート投稿
+        x_client = XAPIClient(access_token)
+        
+        # ツイート本文生成
+        note_url = f"https://d-swipe.com/notes/{note['slug']}"
+        tweet_text = f"{note['title']} | D-swipe {note_url} #Dswipe #NOTE"
+        
+        try:
+            tweet_result = await x_client.post_tweet(tweet_text)
+        except XAPIError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"ツイート投稿に失敗しました: {str(e)}"
+            )
+        
+        tweet_id = tweet_result["tweet_id"]
+        tweet_url = f"https://x.com/{x_info['x_username']}/status/{tweet_id}"
+        
+        # 6. ツイート検証
+        try:
+            is_verified = await x_client.verify_tweet(tweet_id, note_url)
+        except XAPIError:
+            is_verified = True  # 検証失敗時は一旦許可（後で手動確認）
+        
+        # 7. note_sharesレコード作成
+        share_data = {
+            "note_id": note_id,
+            "user_id": user_id,
+            "tweet_id": tweet_id,
+            "tweet_url": tweet_url,
+            "verified": is_verified,
+            "verified_at": datetime.utcnow().isoformat() if is_verified else None,
+            "ip_address": ip_address,
+            "user_agent": user_agent,
+            "is_suspicious": is_suspicious
+        }
+        
+        share_response = supabase.table("note_shares").insert(share_data).execute()
+        
+        if not share_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="シェア記録の作成に失敗しました"
+            )
+        
+        share_record = share_response.data[0] if isinstance(share_response.data, list) else share_response.data
+        share_id = share_record["id"]
+        
+        # 8. 不正疑いがある場合はアラート生成
+        if is_suspicious:
+            await fraud_detector.create_alert(
+                alert_type="suspicious_share_pattern",
+                note_share_id=share_id,
+                note_id=note_id,
+                user_id=user_id,
+                severity=severity,
+                description=f"不正スコア: {fraud_score} - 手動確認が必要です"
+            )
+        
+        # 9. ポイント報酬付与（不正スコアが高い場合は保留）
+        reward_service = ShareRewardService(supabase)
+        reward_points = 0
+        
+        should_block = await fraud_detector.should_block_reward(fraud_score)
+        
+        if not should_block:
+            # 報酬レート取得
+            reward_rate = await reward_service.get_current_reward_rate()
+            
+            # 著者にポイント付与
+            reward_result = await reward_service.grant_share_reward(
+                author_id=note["author_id"],
+                note_id=note_id,
+                shared_by_user_id=user_id,
+                points_amount=reward_rate,
+                share_id=share_id
+            )
+            
+            if reward_result:
+                reward_points = reward_result["points_granted"]
+        else:
+            logger.warning(
+                f"Share reward blocked due to high fraud score: "
+                f"score={fraud_score}, share_id={share_id}"
+            )
+        
+        return {
+            "message": "シェアが完了しました",
+            "tweet_url": tweet_url,
+            "has_access": True,
+            "author_reward_points": reward_points,
+            "note_id": note_id,
+            "share_id": share_id
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Share to X failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"シェア処理に失敗しました: {str(e)}"
+        )
+
+
+@router.get("/notes/{note_id}/share-status")
+async def get_share_status(
+    note_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    ユーザーのシェア状態確認
+    
+    Returns:
+        {
+            "has_shared": bool,
+            "tweet_url": str | null,
+            "shared_at": str | null
+        }
+    """
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+    
+    try:
+        share_response = supabase.table("note_shares").select(
+            "tweet_url, shared_at, verified"
+        ).eq("note_id", note_id).eq("user_id", user_id).maybe_single().execute()
+        
+        if share_response.data:
+            return {
+                "has_shared": True,
+                "tweet_url": share_response.data.get("tweet_url"),
+                "shared_at": share_response.data.get("shared_at"),
+                "verified": share_response.data.get("verified", False)
+            }
+        else:
+            return {
+                "has_shared": False,
+                "tweet_url": None,
+                "shared_at": None,
+                "verified": False
+            }
+    
+    except Exception as e:
+        logger.error(f"Failed to get share status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="シェア状態の取得に失敗しました"
+        )
+
+
+@router.get("/notes/{note_id}/share-stats")
+async def get_share_stats(
+    note_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    NOTE全体のシェア統計（著者向け）
+    
+    Returns:
+        {
+            "total_shares": int,
+            "total_reward_points": int,
+            "verified_shares": int,
+            "suspicious_shares": int
+        }
+    """
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+    
+    try:
+        # NOTE存在確認 & 著者確認
+        note_response = supabase.table("notes").select(
+            "id, author_id"
+        ).eq("id", note_id).single().execute()
+        
+        if not note_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="NOTEが見つかりません"
+            )
+        
+        if note_response.data["author_id"] != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="このNOTEの統計情報を閲覧する権限がありません"
+            )
+        
+        # シェア統計取得
+        shares_response = supabase.table("note_shares").select(
+            "id, verified, is_suspicious, points_amount"
+        ).eq("note_id", note_id).execute()
+        
+        shares = shares_response.data if shares_response.data else []
+        
+        total_shares = len(shares)
+        verified_shares = sum(1 for s in shares if s.get("verified"))
+        suspicious_shares = sum(1 for s in shares if s.get("is_suspicious"))
+        total_reward_points = sum(s.get("points_amount", 0) for s in shares)
+        
+        return {
+            "total_shares": total_shares,
+            "total_reward_points": total_reward_points,
+            "verified_shares": verified_shares,
+            "suspicious_shares": suspicious_shares
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get share stats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="シェア統計の取得に失敗しました"
+        )

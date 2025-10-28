@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     one_lat_api_base_url: str = "https://api.one.lat"
     one_lat_checkout_base_url: str = "https://one.lat/checkout"
     
+    # X (Twitter) API
+    x_api_client_id: str = ""
+    x_api_client_secret: str = ""
+    x_api_bearer_token: str = ""
+    x_oauth_callback_url: str = "https://swipelaunch-backend.onrender.com/api/auth/x/callback"
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

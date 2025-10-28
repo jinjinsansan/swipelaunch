@@ -1545,3 +1545,516 @@ async def search_users(
         for item in summaries
     ]
     return UserListResponse(data=users, total=total)
+
+
+# ========================================
+# NOTE Share Management (シェア管理)
+# ========================================
+
+class ShareOverviewStats(BaseModel):
+    total_shares: int
+    total_reward_points: int
+    today_shares: int
+    this_week_shares: int
+    this_month_shares: int
+
+
+class TopCreator(BaseModel):
+    user_id: str
+    username: str
+    email: str
+    total_shares: int
+    total_reward_points: int
+
+
+class TopNote(BaseModel):
+    note_id: str
+    title: str
+    author_username: str
+    share_count: int
+    total_reward_points: int
+
+
+class UserShareStats(BaseModel):
+    user_id: str
+    username: str
+    email: str
+    total_shares: int
+    total_reward_points: int
+    last_share_at: Optional[str]
+
+
+class NoteShareStats(BaseModel):
+    note_id: str
+    title: str
+    author_username: str
+    share_count: int
+    total_reward_points: int
+
+
+class ShareLogItem(BaseModel):
+    id: str
+    note_id: str
+    note_title: str
+    author_username: str
+    shared_by_user_id: str
+    shared_by_username: str
+    tweet_id: str
+    tweet_url: str
+    shared_at: str
+    verified: bool
+    points_amount: int
+    is_suspicious: bool
+    ip_address: Optional[str]
+    admin_notes: Optional[str]
+
+
+class FraudAlert(BaseModel):
+    id: str
+    alert_type: str
+    severity: str
+    description: Optional[str]
+    note_id: Optional[str]
+    note_title: Optional[str]
+    user_id: Optional[str]
+    username: Optional[str]
+    resolved: bool
+    resolved_by: Optional[str]
+    resolved_at: Optional[str]
+    created_at: str
+
+
+class RewardSettings(BaseModel):
+    id: str
+    points_per_share: int
+    updated_by: Optional[str]
+    updated_at: str
+
+
+@router.get("/share-stats/overview", response_model=ShareOverviewStats)
+async def get_share_overview_stats(admin: dict = Depends(require_admin)):
+    """
+    全体シェア統計サマリー
+    """
+    try:
+        supabase = get_supabase()
+        
+        # 全シェア取得
+        all_shares = supabase.table("note_shares").select("shared_at, points_amount").execute()
+        shares = all_shares.data if all_shares.data else []
+        
+        total_shares = len(shares)
+        total_reward_points = sum(s.get("points_amount", 0) for s in shares)
+        
+        # 今日・今週・今月のシェア数
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = now - timedelta(days=7)
+        month_start = now - timedelta(days=30)
+        
+        today_shares = sum(
+            1 for s in shares
+            if parse_iso_datetime(s.get("shared_at", "")) and parse_iso_datetime(s.get("shared_at", "")) >= today_start
+        )
+        
+        this_week_shares = sum(
+            1 for s in shares
+            if parse_iso_datetime(s.get("shared_at", "")) and parse_iso_datetime(s.get("shared_at", "")) >= week_start
+        )
+        
+        this_month_shares = sum(
+            1 for s in shares
+            if parse_iso_datetime(s.get("shared_at", "")) and parse_iso_datetime(s.get("shared_at", "")) >= month_start
+        )
+        
+        return ShareOverviewStats(
+            total_shares=total_shares,
+            total_reward_points=total_reward_points,
+            today_shares=today_shares,
+            this_week_shares=this_week_shares,
+            this_month_shares=this_month_shares
+        )
+    
+    except Exception as e:
+        logger.exception("Failed to get share overview stats")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"統計取得に失敗しました: {str(e)}"
+        )
+
+
+@router.get("/share-stats/top-creators")
+async def get_top_creators(
+    limit: int = Query(10, ge=1, le=100),
+    admin: dict = Depends(require_admin)
+):
+    """
+    トップインフォプレナー（シェア数順）
+    """
+    try:
+        supabase = get_supabase()
+        
+        # 全シェアとNOTE情報を結合
+        shares_response = supabase.table("note_shares").select(
+            "note_id, points_amount"
+        ).execute()
+        
+        shares = shares_response.data if shares_response.data else []
+        
+        # note_id -> author_id のマッピング
+        note_ids = list(set(s["note_id"] for s in shares))
+        
+        if not note_ids:
+            return []
+        
+        notes_response = supabase.table("notes").select("id, author_id").in_("id", note_ids).execute()
+        notes = notes_response.data if notes_response.data else []
+        
+        note_to_author = {n["id"]: n["author_id"] for n in notes}
+        
+        # author_id ごとに集計
+        author_stats = defaultdict(lambda: {"share_count": 0, "reward_points": 0})
+        
+        for share in shares:
+            author_id = note_to_author.get(share["note_id"])
+            if author_id:
+                author_stats[author_id]["share_count"] += 1
+                author_stats[author_id]["reward_points"] += share.get("points_amount", 0)
+        
+        # ユーザー情報取得
+        author_ids = list(author_stats.keys())
+        users_response = supabase.table("users").select("id, username, email").in_("id", author_ids).execute()
+        users = users_response.data if users_response.data else []
+        
+        user_map = {u["id"]: u for u in users}
+        
+        # トップクリエイター作成
+        top_creators = []
+        for author_id, stats in author_stats.items():
+            user = user_map.get(author_id)
+            if user:
+                top_creators.append(TopCreator(
+                    user_id=author_id,
+                    username=user.get("username", "Unknown"),
+                    email=user.get("email", ""),
+                    total_shares=stats["share_count"],
+                    total_reward_points=stats["reward_points"]
+                ))
+        
+        # ソート
+        top_creators.sort(key=lambda x: x.total_shares, reverse=True)
+        
+        return top_creators[:limit]
+    
+    except Exception as e:
+        logger.exception("Failed to get top creators")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"トップクリエイター取得に失敗しました: {str(e)}"
+        )
+
+
+@router.get("/share-stats/top-notes")
+async def get_top_notes(
+    limit: int = Query(10, ge=1, le=100),
+    admin: dict = Depends(require_admin)
+):
+    """
+    トップNOTE（シェア数順）
+    """
+    try:
+        supabase = get_supabase()
+        
+        # シェア集計
+        shares_response = supabase.table("note_shares").select("note_id, points_amount").execute()
+        shares = shares_response.data if shares_response.data else []
+        
+        note_stats = defaultdict(lambda: {"count": 0, "points": 0})
+        for share in shares:
+            note_id = share["note_id"]
+            note_stats[note_id]["count"] += 1
+            note_stats[note_id]["points"] += share.get("points_amount", 0)
+        
+        # NOTE情報取得
+        note_ids = list(note_stats.keys())
+        if not note_ids:
+            return []
+        
+        notes_response = supabase.table("notes").select("id, title, author_id").in_("id", note_ids).execute()
+        notes = notes_response.data if notes_response.data else []
+        
+        # 著者情報取得
+        author_ids = [n["author_id"] for n in notes]
+        users_response = supabase.table("users").select("id, username").in_("id", author_ids).execute()
+        users = users_response.data if users_response.data else []
+        
+        user_map = {u["id"]: u["username"] for u in users}
+        
+        # トップNOTE作成
+        top_notes = []
+        for note in notes:
+            note_id = note["id"]
+            stats = note_stats.get(note_id, {"count": 0, "points": 0})
+            top_notes.append(TopNote(
+                note_id=note_id,
+                title=note.get("title", "Untitled"),
+                author_username=user_map.get(note["author_id"], "Unknown"),
+                share_count=stats["count"],
+                total_reward_points=stats["points"]
+            ))
+        
+        # ソート
+        top_notes.sort(key=lambda x: x.share_count, reverse=True)
+        
+        return top_notes[:limit]
+    
+    except Exception as e:
+        logger.exception("Failed to get top notes")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"トップNOTE取得に失敗しました: {str(e)}"
+        )
+
+
+@router.get("/shares")
+async def get_all_shares(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    suspicious_only: bool = Query(False),
+    admin: dict = Depends(require_admin)
+):
+    """
+    全シェアログ（詳細）
+    """
+    try:
+        supabase = get_supabase()
+        
+        # クエリ構築
+        query = supabase.table("note_shares").select(
+            "id, note_id, user_id, tweet_id, tweet_url, shared_at, verified, points_amount, is_suspicious, ip_address, admin_notes"
+        )
+        
+        if suspicious_only:
+            query = query.eq("is_suspicious", True)
+        
+        query = query.order("shared_at", desc=True).range(offset, offset + limit - 1)
+        
+        shares_response = query.execute()
+        shares = shares_response.data if shares_response.data else []
+        
+        # NOTE情報取得
+        note_ids = list(set(s["note_id"] for s in shares))
+        notes_map = {}
+        if note_ids:
+            notes_response = supabase.table("notes").select("id, title, author_id").in_("id", note_ids).execute()
+            notes = notes_response.data if notes_response.data else []
+            notes_map = {n["id"]: n for n in notes}
+        
+        # ユーザー情報取得
+        user_ids = list(set(s["user_id"] for s in shares))
+        author_ids = [notes_map[s["note_id"]]["author_id"] for s in shares if s["note_id"] in notes_map]
+        all_user_ids = list(set(user_ids + author_ids))
+        
+        users_map = {}
+        if all_user_ids:
+            users_response = supabase.table("users").select("id, username").in_("id", all_user_ids).execute()
+            users = users_response.data if users_response.data else []
+            users_map = {u["id"]: u["username"] for u in users}
+        
+        # シェアログ構築
+        share_logs = []
+        for share in shares:
+            note = notes_map.get(share["note_id"], {})
+            share_logs.append(ShareLogItem(
+                id=share["id"],
+                note_id=share["note_id"],
+                note_title=note.get("title", "Unknown"),
+                author_username=users_map.get(note.get("author_id"), "Unknown"),
+                shared_by_user_id=share["user_id"],
+                shared_by_username=users_map.get(share["user_id"], "Unknown"),
+                tweet_id=share["tweet_id"],
+                tweet_url=share["tweet_url"],
+                shared_at=share["shared_at"],
+                verified=share["verified"],
+                points_amount=share.get("points_amount", 0),
+                is_suspicious=share["is_suspicious"],
+                ip_address=share.get("ip_address"),
+                admin_notes=share.get("admin_notes")
+            ))
+        
+        return share_logs
+    
+    except Exception as e:
+        logger.exception("Failed to get share logs")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"シェアログ取得に失敗しました: {str(e)}"
+        )
+
+
+@router.get("/fraud-alerts")
+async def get_fraud_alerts(
+    resolved: bool = Query(False),
+    admin: dict = Depends(require_admin)
+):
+    """
+    不正検知アラート一覧
+    """
+    try:
+        supabase = get_supabase()
+        
+        query = supabase.table("share_fraud_alerts").select(
+            "id, alert_type, severity, description, note_id, user_id, resolved, resolved_by, resolved_at, created_at"
+        ).eq("resolved", resolved).order("created_at", desc=True)
+        
+        alerts_response = query.execute()
+        alerts = alerts_response.data if alerts_response.data else []
+        
+        # NOTE・ユーザー情報取得
+        note_ids = [a["note_id"] for a in alerts if a.get("note_id")]
+        user_ids = [a["user_id"] for a in alerts if a.get("user_id")]
+        resolved_by_ids = [a["resolved_by"] for a in alerts if a.get("resolved_by")]
+        
+        all_user_ids = list(set(user_ids + resolved_by_ids))
+        
+        notes_map = {}
+        if note_ids:
+            notes_response = supabase.table("notes").select("id, title").in_("id", note_ids).execute()
+            notes = notes_response.data if notes_response.data else []
+            notes_map = {n["id"]: n["title"] for n in notes}
+        
+        users_map = {}
+        if all_user_ids:
+            users_response = supabase.table("users").select("id, username").in_("id", all_user_ids).execute()
+            users = users_response.data if users_response.data else []
+            users_map = {u["id"]: u["username"] for u in users}
+        
+        # アラート構築
+        fraud_alerts = []
+        for alert in alerts:
+            fraud_alerts.append(FraudAlert(
+                id=alert["id"],
+                alert_type=alert["alert_type"],
+                severity=alert["severity"],
+                description=alert.get("description"),
+                note_id=alert.get("note_id"),
+                note_title=notes_map.get(alert.get("note_id")) if alert.get("note_id") else None,
+                user_id=alert.get("user_id"),
+                username=users_map.get(alert.get("user_id")) if alert.get("user_id") else None,
+                resolved=alert["resolved"],
+                resolved_by=users_map.get(alert.get("resolved_by")) if alert.get("resolved_by") else None,
+                resolved_at=alert.get("resolved_at"),
+                created_at=alert["created_at"]
+            ))
+        
+        return fraud_alerts
+    
+    except Exception as e:
+        logger.exception("Failed to get fraud alerts")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"不正アラート取得に失敗しました: {str(e)}"
+        )
+
+
+@router.patch("/fraud-alerts/{alert_id}/resolve")
+async def resolve_fraud_alert(
+    alert_id: str,
+    admin: dict = Depends(require_admin)
+):
+    """
+    不正アラートを解決済みにする
+    """
+    try:
+        supabase = get_supabase()
+        
+        supabase.table("share_fraud_alerts").update({
+            "resolved": True,
+            "resolved_by": admin["id"],
+            "resolved_at": now_utc_iso()
+        }).eq("id", alert_id).execute()
+        
+        return {"message": "アラートを解決済みにしました"}
+    
+    except Exception as e:
+        logger.exception("Failed to resolve fraud alert")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"アラート解決に失敗しました: {str(e)}"
+        )
+
+
+@router.get("/share-reward-settings", response_model=RewardSettings)
+async def get_reward_settings(admin: dict = Depends(require_admin)):
+    """
+    現在の報酬レート取得
+    """
+    try:
+        supabase = get_supabase()
+        
+        response = supabase.table("share_reward_settings").select(
+            "id, points_per_share, updated_by, updated_at"
+        ).order("updated_at", desc=True).limit(1).execute()
+        
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="報酬設定が見つかりません"
+            )
+        
+        settings_data = response.data[0]
+        
+        return RewardSettings(
+            id=settings_data["id"],
+            points_per_share=settings_data["points_per_share"],
+            updated_by=settings_data.get("updated_by"),
+            updated_at=settings_data["updated_at"]
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to get reward settings")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"報酬設定取得に失敗しました: {str(e)}"
+        )
+
+
+class UpdateRewardRateRequest(BaseModel):
+    points_per_share: int = Field(..., ge=0, le=1000)
+
+
+@router.put("/share-reward-settings")
+async def update_reward_settings(
+    request: UpdateRewardRateRequest,
+    admin: dict = Depends(require_admin)
+):
+    """
+    報酬レート更新
+    """
+    try:
+        supabase = get_supabase()
+        
+        new_setting = {
+            "points_per_share": request.points_per_share,
+            "updated_by": admin["id"]
+        }
+        
+        supabase.table("share_reward_settings").insert(new_setting).execute()
+        
+        create_moderation_event(
+            supabase,
+            action="share_reward_rate_update",
+            performed_by=admin["id"],
+            reason=f"報酬レートを {request.points_per_share}P/シェア に変更"
+        )
+        
+        return {"message": f"報酬レートを{request.points_per_share}ポイント/シェアに更新しました"}
+    
+    except Exception as e:
+        logger.exception("Failed to update reward settings")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"報酬設定更新に失敗しました: {str(e)}"
+        )
