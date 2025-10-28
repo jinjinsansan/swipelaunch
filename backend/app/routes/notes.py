@@ -398,14 +398,24 @@ async def list_public_notes(
 ):
     supabase = get_supabase()
 
-    select_columns = "id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users(username)"
+    target_author_id: Optional[str] = None
     if author_username:
-        select_columns = "id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users!inner(username)"
+        user_response = (
+            supabase
+            .table("users")
+            .select("id")
+            .eq("username", author_username)
+            .single()
+            .execute()
+        )
+        if not user_response.data:
+            return PublicNoteListResponse(data=[], total=0, limit=limit, offset=offset)
+        target_author_id = user_response.data.get("id")
 
     query = (
         supabase
         .table("notes")
-        .select(select_columns, count="exact")
+        .select("id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users(username)", count="exact")
         .eq("status", "published")
         .order("published_at", desc=True)
         .range(offset, offset + limit - 1)
@@ -420,8 +430,8 @@ async def list_public_notes(
         if filtered:
             query = query.contains("categories", filtered)
 
-    if author_username:
-        query = query.eq("users.username", author_username)
+    if target_author_id:
+        query = query.eq("author_id", target_author_id)
 
     response = query.execute()
     items: List[PublicNoteSummary] = []
