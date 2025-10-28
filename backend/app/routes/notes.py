@@ -188,6 +188,131 @@ async def list_notes(
     )
 
 
+@router.get("/public", response_model=PublicNoteListResponse)
+async def list_public_notes(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    search: Optional[str] = Query(None, min_length=1),
+    categories: Optional[List[str]] = Query(None),
+    author_username: Optional[str] = Query(None, min_length=1, max_length=120),
+):
+    supabase = get_supabase()
+
+    target_author_id: Optional[str] = None
+    if author_username:
+        user_response = (
+            supabase
+            .table("users")
+            .select("id")
+            .eq("username", author_username)
+            .single()
+            .execute()
+        )
+        if not user_response.data:
+            return PublicNoteListResponse(data=[], total=0, limit=limit, offset=offset)
+        target_author_id = user_response.data.get("id")
+
+    query = (
+        supabase
+        .table("notes")
+        .select("id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users(username)", count="exact")
+        .eq("status", "published")
+        .order("published_at", desc=True)
+        .range(offset, offset + limit - 1)
+    )
+
+    if search:
+        ilike_pattern = f"%{search}%"
+        query = query.ilike("title", ilike_pattern)
+
+    if categories:
+        filtered = [c.strip() for c in categories if isinstance(c, str) and c.strip()]
+        if filtered:
+            query = query.contains("categories", filtered)
+
+    if target_author_id:
+        query = query.eq("author_id", target_author_id)
+
+    response = query.execute()
+    items: List[PublicNoteSummary] = []
+    for record in response.data or []:
+        user = (record.get("users") or {})
+        items.append(
+            PublicNoteSummary(
+                id=record["id"],
+                title=record.get("title", ""),
+                slug=record.get("slug", ""),
+                cover_image_url=record.get("cover_image_url"),
+                excerpt=record.get("excerpt"),
+                is_paid=bool(record.get("is_paid")),
+                price_points=int(record.get("price_points") or 0),
+                author_username=user.get("username"),
+                published_at=record.get("published_at"),
+                categories=list(record.get("categories") or []),
+            )
+        )
+
+    total = getattr(response, "count", None) or len(items)
+    return PublicNoteListResponse(data=items, total=total, limit=limit, offset=offset)
+
+
+@router.get("/public/{slug}", response_model=PublicNoteDetailResponse)
+async def get_public_note(
+    slug: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    supabase = get_supabase()
+    user_id = get_optional_user_id(credentials)
+
+    response = (
+        supabase
+        .table("notes")
+        .select("*, users(username)")
+        .eq("slug", slug)
+        .eq("status", "published")
+        .single()
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
+
+    note = response.data
+    user = note.get("users") or {}
+
+    has_access = False
+    if not note.get("is_paid"):
+        has_access = True
+    elif user_id:
+        if note.get("author_id") == user_id:
+            has_access = True
+        else:
+            has_access = _user_has_purchased(supabase, note["id"], user_id)
+
+    content_blocks = note.get("content_blocks") or []
+    visible_blocks: List[Any] = []
+    for block in content_blocks:
+        access = block.get("access", "public")
+        if access != "paid" or has_access:
+            visible_blocks.append(block)
+
+    return PublicNoteDetailResponse(
+        id=note["id"],
+        title=note.get("title", ""),
+        slug=note.get("slug", ""),
+        author_id=note.get("author_id"),
+        author_username=user.get("username"),
+        cover_image_url=note.get("cover_image_url"),
+        excerpt=note.get("excerpt"),
+        is_paid=bool(note.get("is_paid")),
+        price_points=int(note.get("price_points") or 0),
+        has_access=has_access,
+        content_blocks=visible_blocks,
+        published_at=note.get("published_at"),
+        categories=list(note.get("categories") or []),
+    )
+
+
 @router.get("/{note_id}", response_model=NoteDetailResponse)
 async def get_note_detail(
     note_id: str,
@@ -388,74 +513,6 @@ async def unpublish_note(
     return map_note_detail(response.data[0])
 
 
-@router.get("/public", response_model=PublicNoteListResponse)
-async def list_public_notes(
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    search: Optional[str] = Query(None, min_length=1),
-    categories: Optional[List[str]] = Query(None),
-    author_username: Optional[str] = Query(None, min_length=1, max_length=120),
-):
-    supabase = get_supabase()
-
-    target_author_id: Optional[str] = None
-    if author_username:
-        user_response = (
-            supabase
-            .table("users")
-            .select("id")
-            .eq("username", author_username)
-            .single()
-            .execute()
-        )
-        if not user_response.data:
-            return PublicNoteListResponse(data=[], total=0, limit=limit, offset=offset)
-        target_author_id = user_response.data.get("id")
-
-    query = (
-        supabase
-        .table("notes")
-        .select("id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users(username)", count="exact")
-        .eq("status", "published")
-        .order("published_at", desc=True)
-        .range(offset, offset + limit - 1)
-    )
-
-    if search:
-        ilike_pattern = f"%{search}%"
-        query = query.ilike("title", ilike_pattern)
-
-    if categories:
-        filtered = [c.strip() for c in categories if isinstance(c, str) and c.strip()]
-        if filtered:
-            query = query.contains("categories", filtered)
-
-    if target_author_id:
-        query = query.eq("author_id", target_author_id)
-
-    response = query.execute()
-    items: List[PublicNoteSummary] = []
-    for record in response.data or []:
-        user = (record.get("users") or {})
-        items.append(
-            PublicNoteSummary(
-                id=record["id"],
-                title=record.get("title", ""),
-                slug=record.get("slug", ""),
-                cover_image_url=record.get("cover_image_url"),
-                excerpt=record.get("excerpt"),
-                is_paid=bool(record.get("is_paid")),
-                price_points=int(record.get("price_points") or 0),
-                author_username=user.get("username"),
-                published_at=record.get("published_at"),
-                categories=list(record.get("categories") or []),
-            )
-        )
-
-    total = getattr(response, "count", None) or len(items)
-    return PublicNoteListResponse(data=items, total=total, limit=limit, offset=offset)
-
-
 def _user_has_purchased(supabase: Client, note_id: str, user_id: str) -> bool:
     purchase_response = (
         supabase
@@ -467,63 +524,6 @@ def _user_has_purchased(supabase: Client, note_id: str, user_id: str) -> bool:
         .execute()
     )
     return bool(purchase_response.data)
-
-
-@router.get("/public/{slug}", response_model=PublicNoteDetailResponse)
-async def get_public_note(
-    slug: str,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-):
-    supabase = get_supabase()
-    user_id = get_optional_user_id(credentials)
-
-    response = (
-        supabase
-        .table("notes")
-        .select("*, users(username)")
-        .eq("slug", slug)
-        .eq("status", "published")
-        .single()
-        .execute()
-    )
-
-    if not response.data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
-
-    note = response.data
-    user = note.get("users") or {}
-
-    has_access = False
-    if not note.get("is_paid"):
-        has_access = True
-    elif user_id:
-        if note.get("author_id") == user_id:
-            has_access = True
-        else:
-            has_access = _user_has_purchased(supabase, note["id"], user_id)
-
-    content_blocks = note.get("content_blocks") or []
-    visible_blocks: List[Any] = []
-    for block in content_blocks:
-        access = block.get("access", "public")
-        if access != "paid" or has_access:
-            visible_blocks.append(block)
-
-    return PublicNoteDetailResponse(
-        id=note["id"],
-        title=note.get("title", ""),
-        slug=note.get("slug", ""),
-        author_id=note.get("author_id"),
-        author_username=user.get("username"),
-        cover_image_url=note.get("cover_image_url"),
-        excerpt=note.get("excerpt"),
-        is_paid=bool(note.get("is_paid")),
-        price_points=int(note.get("price_points") or 0),
-        has_access=has_access,
-        content_blocks=visible_blocks,
-        published_at=note.get("published_at"),
-        categories=list(note.get("categories") or []),
-    )
 
 
 @router.post("/{note_id}/purchase", response_model=NotePurchaseResponse, status_code=status.HTTP_201_CREATED)
