@@ -736,7 +736,7 @@ async def purchase_note(
 # X (Twitter) Share to Unlock
 # ========================================
 
-@router.post("/notes/{note_id}/share", status_code=status.HTTP_200_OK)
+@router.post("/{note_id}/share", status_code=status.HTTP_200_OK)
 async def share_note_to_x(
     note_id: str,
     request: Request,
@@ -949,7 +949,7 @@ async def share_note_to_x(
         )
 
 
-@router.get("/notes/{note_id}/share-status")
+@router.get("/{note_id}/share-status")
 async def get_share_status(
     note_id: str,
     credentials: HTTPAuthorizationCredentials = Depends(security)
@@ -995,7 +995,7 @@ async def get_share_status(
         )
 
 
-@router.get("/notes/{note_id}/share-stats")
+@router.get("/{note_id}/share-stats")
 async def get_share_stats(
     note_id: str,
     credentials: HTTPAuthorizationCredentials = Depends(security)
