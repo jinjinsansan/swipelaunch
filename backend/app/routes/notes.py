@@ -776,9 +776,9 @@ async def share_note_to_x(
         # 1. NOTE存在確認 & シェア許可確認
         note_response = supabase.table("notes").select(
             "id, title, slug, author_id, is_paid, allow_share_unlock"
-        ).eq("id", note_id).eq("status", "published").single().execute()
+        ).eq("id", note_id).eq("status", "published").maybe_single().execute()
         
-        if not note_response.data:
+        if not note_response or not note_response.data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="NOTEが見つかりません"
@@ -942,10 +942,10 @@ async def share_note_to_x(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Share to X failed: {e}")
+        logger.exception(f"Share to X failed: note_id={note_id}, user_id={user_id}, error={str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"シェア処理に失敗しました: {str(e)}"
+            detail=f"シェア処理に失敗しました。もう一度お試しください。"
         )
 
 
