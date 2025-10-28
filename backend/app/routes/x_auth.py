@@ -78,7 +78,14 @@ async def x_authorize(
     
     認証URLにリダイレクトするか、JSONでURLを返す
     """
-    user_id = get_current_user_id(credentials)
+    try:
+        user_id = get_current_user_id(credentials)
+    except HTTPException as e:
+        # 認証エラーをログに記録
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Authentication failed in /authorize: {e.detail}")
+        raise
     
     # OAuth クライアント初期化
     oauth_client = XOAuthClient(
