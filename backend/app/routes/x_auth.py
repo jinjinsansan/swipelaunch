@@ -70,12 +70,13 @@ class XConnectionResponse(BaseModel):
 
 @router.get("/authorize")
 async def x_authorize(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    redirect: bool = Query(True, description="Whether to redirect or return JSON")
 ):
     """
     X OAuth認証開始
     
-    認証URLにリダイレクトし、ユーザーにX連携を承認させる
+    認証URLにリダイレクトするか、JSONでURLを返す
     """
     user_id = get_current_user_id(credentials)
     
@@ -100,7 +101,11 @@ async def x_authorize(
     # 認証URLを生成
     auth_url = oauth_client.get_authorization_url(state, code_challenge)
     
-    return RedirectResponse(url=auth_url)
+    # クエリパラメータでリダイレクトするか、JSONで返すか選択
+    if redirect:
+        return RedirectResponse(url=auth_url)
+    else:
+        return {"authorization_url": auth_url}
 
 
 @router.get("/callback")
