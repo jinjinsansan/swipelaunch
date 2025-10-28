@@ -895,7 +895,7 @@ async def share_note_to_x(
         # 7.5. アクセス権を付与（note_purchasesテーブルに追加）
         purchase_data = {
             "note_id": note_id,
-            "user_id": user_id,
+            "buyer_id": user_id,  # note_purchasesテーブルはbuyer_idカラムを使用
             "points_spent": 0,  # シェアなのでポイント消費なし
             "purchased_at": datetime.utcnow().isoformat()
         }
