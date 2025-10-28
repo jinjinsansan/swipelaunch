@@ -400,6 +400,7 @@ async def list_public_notes(
                 author_username=user.get("username"),
                 published_at=record.get("published_at"),
                 categories=list(record.get("categories") or []),
+                allow_share_unlock=bool(record.get("allow_share_unlock", False)),
             )
         )
 
@@ -461,6 +462,7 @@ async def get_public_note(
         content_blocks=visible_blocks,
         published_at=note.get("published_at"),
         categories=list(note.get("categories") or []),
+        allow_share_unlock=bool(note.get("allow_share_unlock", False)),
     )
 
 

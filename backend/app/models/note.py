@@ -129,6 +129,7 @@ class PublicNoteSummary(BaseModel):
     author_username: Optional[str] = None
     published_at: Optional[datetime] = None
     categories: List[str] = Field(default_factory=list)
+    allow_share_unlock: Optional[bool] = False
 
 
 class PublicNoteListResponse(BaseModel):
@@ -152,6 +153,7 @@ class PublicNoteDetailResponse(BaseModel):
     content_blocks: List[Any] = Field(default_factory=list)
     published_at: Optional[datetime] = None
     categories: List[str] = Field(default_factory=list)
+    allow_share_unlock: Optional[bool] = False
 
 
 class NotePurchaseResponse(BaseModel):
