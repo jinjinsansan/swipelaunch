@@ -892,6 +892,19 @@ async def share_note_to_x(
         share_record = share_response.data[0] if isinstance(share_response.data, list) else share_response.data
         share_id = share_record["id"]
         
+        # 7.5. アクセス権を付与（note_purchasesテーブルに追加）
+        purchase_data = {
+            "note_id": note_id,
+            "user_id": user_id,
+            "points_spent": 0,  # シェアなのでポイント消費なし
+            "purchased_at": datetime.utcnow().isoformat()
+        }
+        
+        try:
+            supabase.table("note_purchases").insert(purchase_data).execute()
+        except Exception as e:
+            logger.warning(f"Failed to create note_purchase record (might already exist): {e}")
+        
         # 8. 不正疑いがある場合はアラート生成
         if is_suspicious:
             await fraud_detector.create_alert(
