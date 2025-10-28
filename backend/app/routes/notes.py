@@ -972,7 +972,7 @@ async def get_share_status(
             "tweet_url, shared_at, verified"
         ).eq("note_id", note_id).eq("user_id", user_id).maybe_single().execute()
         
-        if share_response.data:
+        if share_response and share_response.data:
             return {
                 "has_shared": True,
                 "tweet_url": share_response.data.get("tweet_url"),
@@ -1018,9 +1018,9 @@ async def get_share_stats(
         # NOTE存在確認 & 著者確認
         note_response = supabase.table("notes").select(
             "id, author_id"
-        ).eq("id", note_id).single().execute()
+        ).eq("id", note_id).maybe_single().execute()
         
-        if not note_response.data:
+        if not note_response or not note_response.data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="NOTEが見つかりません"
@@ -1037,7 +1037,7 @@ async def get_share_stats(
             "id, verified, is_suspicious, points_amount"
         ).eq("note_id", note_id).execute()
         
-        shares = shares_response.data if shares_response.data else []
+        shares = shares_response.data if shares_response and shares_response.data else []
         
         total_shares = len(shares)
         verified_shares = sum(1 for s in shares if s.get("verified"))
