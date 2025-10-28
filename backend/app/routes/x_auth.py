@@ -224,7 +224,7 @@ async def get_x_connection_status(
             "user_id", user_id
         ).maybe_single().execute()
         
-        if response.data:
+        if response and response.data:
             return XConnectionStatus(
                 is_connected=True,
                 x_username=response.data.get("x_username"),
@@ -236,10 +236,8 @@ async def get_x_connection_status(
             return XConnectionStatus(is_connected=False)
     
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"連携状態の確認に失敗しました: {str(e)}"
-        )
+        # エラーが発生しても未連携として返す（フロントエンドでエラー表示しない）
+        return XConnectionStatus(is_connected=False)
 
 
 @router.delete("/disconnect")
