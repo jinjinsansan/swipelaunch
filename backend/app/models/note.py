@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import List, Optional, Literal, Any
+from typing import List, Optional, Literal, Any, Dict
 from datetime import datetime
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, root_validator
 
 
 class NoteBlock(BaseModel):
@@ -206,11 +206,13 @@ class OfficialShareSetupRequest(BaseModel):
     tweet_id: Optional[str] = Field(None, min_length=1, max_length=64)
     tweet_url: Optional[str] = Field(None, max_length=512)
 
-    @validator("tweet_id", always=True)
-    def ensure_identifier(cls, value: Optional[str], values: dict) -> Optional[str]:
-        if not value and not values.get("tweet_url"):
+    @root_validator(pre=True)
+    def ensure_identifier(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        tweet_id = values.get("tweet_id")
+        tweet_url = values.get("tweet_url")
+        if not tweet_id and not tweet_url:
             raise ValueError("tweet_id か tweet_url のいずれかを指定してください")
-        return value
+        return values
 
 
 class OfficialShareConfigResponse(BaseModel):
