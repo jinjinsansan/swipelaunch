@@ -28,6 +28,7 @@ class UserResponse(BaseModel):
     line_url: Optional[str] = None
     profile_image_url: Optional[str] = None
     last_login_at: Optional[datetime] = None
+    x_connection_status: bool = False
     
     class Config:
         from_attributes = True

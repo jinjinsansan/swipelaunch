@@ -44,6 +44,19 @@ def generate_unique_username(supabase: Client, base_name: str) -> str:
 
 def build_user_response(user_info: dict) -> UserResponse:
     created_at = user_info.get("created_at") or user_info.get("updated_at") or datetime.utcnow().isoformat()
+    if "x_connection_status" in user_info:
+        has_x_connection = bool(user_info.get("x_connection_status"))
+    else:
+        supabase = get_supabase()
+        x_connection = (
+            supabase
+            .table("user_x_connections")
+            .select("user_id")
+            .eq("user_id", user_info["id"])
+            .maybe_single()
+            .execute()
+        )
+        has_x_connection = bool(x_connection and x_connection.data)
     return UserResponse(
         id=user_info["id"],
         email=user_info["email"],
@@ -55,7 +68,8 @@ def build_user_response(user_info: dict) -> UserResponse:
         sns_url=user_info.get("sns_url"),
         line_url=user_info.get("line_url"),
         profile_image_url=user_info.get("profile_image_url"),
-        last_login_at=user_info.get("last_login_at")
+        last_login_at=user_info.get("last_login_at"),
+        x_connection_status=has_x_connection
     )
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -301,6 +315,15 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             )
         
         user_info = user_response.data
+        x_connection = (
+            supabase
+            .table("user_x_connections")
+            .select("user_id")
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        user_info["x_connection_status"] = bool(x_connection and x_connection.data)
         return build_user_response(user_info)
         
     except HTTPException:
