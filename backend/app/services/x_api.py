@@ -320,3 +320,81 @@ class XOAuthClient:
         
         except httpx.HTTPError as e:
             raise XAPIError(f"ネットワークエラー: {str(e)}")
+    
+    async def create_repost(self, tweet_id: str) -> Dict[str, Any]:
+        """
+        指定のツイートをリポスト（RT）する
+        
+        Args:
+            tweet_id: リポストするツイートID
+        
+        Returns:
+            {"retweeted": True}
+        
+        Raises:
+            XAPIError: API呼び出し失敗時
+        """
+        # まずユーザーIDを取得
+        user_info = await self.get_user_info()
+        user_id = user_info.get("x_user_id")
+        
+        url = f"{self.BASE_URL}/users/{user_id}/retweets"
+        payload = {"tweet_id": tweet_id}
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    url,
+                    headers=self.headers,
+                    json=payload
+                )
+                
+                if response.status_code in [200, 201]:
+                    return {"retweeted": True, "tweet_id": tweet_id}
+                else:
+                    error_data = response.json()
+                    error_msg = error_data.get("detail", "リポスト失敗")
+                    raise XAPIError(f"リポストエラー: {error_msg}")
+        
+        except httpx.HTTPError as e:
+            raise XAPIError(f"ネットワークエラー: {str(e)}")
+    
+    async def check_user_retweeted(self, tweet_id: str, user_id: str) -> bool:
+        """
+        指定のユーザーが指定のツイートをリポストしているか確認
+        
+        Args:
+            tweet_id: チェックするツイートID
+            user_id: チェックするユーザーのX ID
+        
+        Returns:
+            True: リポスト済み, False: 未リポスト
+        
+        Raises:
+            XAPIError: API呼び出し失敗時
+        """
+        # X API v2: GET /2/tweets/:id/retweeted_by
+        url = f"{self.BASE_URL}/tweets/{tweet_id}/retweeted_by"
+        params = {"max_results": 100}  # 最大100件まで
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params, headers=self.headers)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    retweeters = data.get("data", [])
+                    
+                    # ユーザーIDがリポストしたユーザーリストに含まれているかチェック
+                    for user in retweeters:
+                        if user.get("id") == user_id:
+                            return True
+                    
+                    return False
+                else:
+                    # エラーの場合はFalseを返す（寛容）
+                    return False
+        
+        except httpx.HTTPError:
+            # ネットワークエラーの場合もFalseを返す（寛容）
+            return False

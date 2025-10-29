@@ -1088,3 +1088,366 @@ async def get_share_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="シェア統計の取得に失敗しました"
         )
+
+
+@router.post("/{note_id}/create-official-share-post")
+async def create_official_share_post(
+    note_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """
+    著者が公式シェア投稿を作成（note.comのリポスト方式用）
+    
+    著者がNOTEの公式シェア投稿をXに投稿し、そのツイートIDを保存。
+    読者はこの公式投稿をリポストすることで記事を無料解放できる。
+    
+    Returns:
+        {
+            "official_post_id": "uuid",
+            "tweet_id": "1234567890",
+            "tweet_url": "https://x.com/...",
+            "tweet_text": "..."
+        }
+    """
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+    
+    try:
+        # 1. NOTEの存在確認と著者チェック
+        note_response = supabase.table("notes").select("*").eq("id", note_id).maybe_single().execute()
+        
+        if not note_response or not note_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="NOTEが見つかりません"
+            )
+        
+        note = note_response.data
+        
+        if note.get("author_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="この操作は著者のみ実行できます"
+            )
+        
+        # 2. X連携確認
+        x_connection = get_x_connection(supabase, user_id)
+        if not x_connection:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="X連携が必要です"
+            )
+        
+        # 3. X API クライアント作成
+        x_client = XAPIClient(
+            access_token=x_connection.get("access_token"),
+            refresh_token=x_connection.get("refresh_token")
+        )
+        
+        # 4. 公式シェア投稿のツイート作成
+        note_title = note.get("title", "NOTE")
+        note_slug = note.get("slug", "")
+        note_url = f"https://d-swipe.com/notes/{note_slug}"
+        
+        tweet_text = f"{note_title}\n\n{note_url}\n\n#Dswipe #NOTE"
+        
+        if len(tweet_text) > 280:
+            # 280文字制限対応
+            max_title_length = 280 - len(f"\n\n{note_url}\n\n#Dswipe #NOTE")
+            truncated_title = note_title[:max_title_length - 3] + "..."
+            tweet_text = f"{truncated_title}\n\n{note_url}\n\n#Dswipe #NOTE"
+        
+        tweet_result = await x_client.post_tweet(tweet_text)
+        tweet_id = tweet_result.get("tweet_id")
+        tweet_url = f"https://x.com/i/web/status/{tweet_id}"
+        
+        # 5. 既存のアクティブな公式投稿を無効化
+        supabase.table("official_share_posts").update({
+            "is_active": False,
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("note_id", note_id).eq("is_active", True).execute()
+        
+        # 6. 新しい公式投稿を保存
+        official_post_data = {
+            "note_id": note_id,
+            "author_id": user_id,
+            "tweet_id": tweet_id,
+            "tweet_url": tweet_url,
+            "tweet_text": tweet_text,
+            "is_active": True,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        
+        post_response = supabase.table("official_share_posts").insert(official_post_data).execute()
+        
+        if not post_response or not post_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="公式シェア投稿の保存に失敗しました"
+            )
+        
+        official_post = post_response.data[0] if isinstance(post_response.data, list) else post_response.data
+        
+        return {
+            "official_post_id": official_post["id"],
+            "tweet_id": tweet_id,
+            "tweet_url": tweet_url,
+            "tweet_text": tweet_text,
+            "note_url": note_url
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to create official share post: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="公式シェア投稿の作成に失敗しました"
+        )
+
+
+@router.get("/{note_id}/official-share-post")
+async def get_official_share_post(
+    note_id: str,
+):
+    """
+    NOTE の公式シェア投稿を取得
+    
+    Returns:
+        {
+            "official_post_id": "uuid",
+            "tweet_id": "1234567890",
+            "tweet_url": "https://x.com/...",
+            "tweet_text": "..."
+        }
+        または null
+    """
+    supabase = get_supabase()
+    
+    try:
+        post_response = supabase.table("official_share_posts").select("*").eq(
+            "note_id", note_id
+        ).eq("is_active", True).maybe_single().execute()
+        
+        if not post_response or not post_response.data:
+            return None
+        
+        post = post_response.data
+        
+        return {
+            "official_post_id": post["id"],
+            "tweet_id": post["tweet_id"],
+            "tweet_url": post["tweet_url"],
+            "tweet_text": post["tweet_text"]
+        }
+    
+    except Exception as e:
+        logger.error(f"Failed to get official share post: {e}")
+        return None
+
+
+@router.post("/{note_id}/share-by-repost")
+async def share_by_repost(
+    note_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """
+    公式投稿をリポストしてNOTEを無料解放（note.com方式）
+    
+    1. ユーザーが公式投稿をリポスト
+    2. リポストを検証
+    3. 検証成功 → アクセス権付与 + 著者にポイント報酬
+    
+    Returns:
+        {
+            "message": "リポストが完了しました",
+            "has_access": True,
+            "author_reward_points": 1,
+            "share_id": "uuid"
+        }
+    """
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+    
+    try:
+        # 1. NOTEの存在確認
+        note_response = supabase.table("notes").select("*").eq("id", note_id).maybe_single().execute()
+        
+        if not note_response or not note_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="NOTEが見つかりません"
+            )
+        
+        note = note_response.data
+        
+        # 2. 有料NOTEかつシェア解放が有効か確認
+        if not note.get("is_paid") or not note.get("allow_share_unlock"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="このNOTEはシェア解放に対応していません"
+            )
+        
+        # 3. 既にシェア済みか確認
+        existing_share = supabase.table("note_shares").select("id").eq(
+            "note_id", note_id
+        ).eq("user_id", user_id).maybe_single().execute()
+        
+        if existing_share and existing_share.data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="既にこのNOTEをシェア済みです"
+            )
+        
+        # 4. 公式シェア投稿の取得
+        official_post = await get_official_share_post(note_id)
+        
+        if not official_post:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="公式シェア投稿が見つかりません。著者が公式投稿を作成する必要があります。"
+            )
+        
+        # 5. X連携確認
+        x_connection = get_x_connection(supabase, user_id)
+        if not x_connection:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="X連携が必要です"
+            )
+        
+        # 6. X API クライアント作成
+        x_client = XAPIClient(
+            access_token=x_connection.get("access_token"),
+            refresh_token=x_connection.get("refresh_token")
+        )
+        
+        # 7. ユーザー情報取得
+        user_info = await x_client.get_user_info()
+        x_user_id = user_info.get("x_user_id")
+        
+        # 8. リポスト実行
+        repost_result = await x_client.create_repost(official_post["tweet_id"])
+        
+        if not repost_result.get("retweeted"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="リポストに失敗しました"
+            )
+        
+        # 9. リポスト検証（確認）
+        is_retweeted = await x_client.check_user_retweeted(
+            official_post["tweet_id"],
+            x_user_id
+        )
+        
+        if not is_retweeted:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="リポストの検証に失敗しました。もう一度お試しください。"
+            )
+        
+        # 10. 不正検知（リポスト方式でも実行）
+        fraud_detector = FraudDetector()
+        fraud_score = await fraud_detector.calculate_fraud_score(
+            user_id=user_id,
+            note_id=note_id,
+            ip_address="0.0.0.0",  # リポストではIP不要
+            user_agent="repost",
+            x_user_info=user_info
+        )
+        
+        is_suspicious = fraud_score >= 50
+        
+        # 11. シェア記録を作成
+        share_data = {
+            "note_id": note_id,
+            "user_id": user_id,
+            "share_mode": "repost",  # リポストモード
+            "retweeted_post_id": official_post["tweet_id"],
+            "tweet_url": official_post["tweet_url"],
+            "verified": not is_suspicious,
+            "fraud_score": fraud_score,
+            "is_suspicious": is_suspicious,
+            "shared_at": datetime.utcnow().isoformat(),
+            "points_amount": 0  # 後で更新
+        }
+        
+        share_response = supabase.table("note_shares").insert(share_data).execute()
+        
+        if not share_response or not share_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="シェア記録の作成に失敗しました"
+            )
+        
+        share_record = share_response.data[0] if isinstance(share_response.data, list) else share_response.data
+        share_id = share_record["id"]
+        
+        # 12. アクセス権を付与
+        expires_at = datetime.utcnow() + timedelta(days=7)
+        purchase_data = {
+            "note_id": note_id,
+            "buyer_id": user_id,
+            "points_spent": 0,
+            "purchased_at": datetime.utcnow().isoformat(),
+            "expires_at": expires_at.isoformat()
+        }
+        
+        try:
+            supabase.table("note_purchases").insert(purchase_data).execute()
+        except Exception as e:
+            logger.warning(f"Failed to create note_purchase record: {e}")
+        
+        # 13. 報酬処理
+        reward_points = 0
+        
+        if not is_suspicious:
+            # 報酬設定取得
+            reward_service = ShareRewardService(supabase)
+            reward_rate = await reward_service.get_reward_rate()
+            reward_points = reward_rate
+            
+            # 著者にポイント付与
+            author_id = note.get("author_id")
+            await reward_service.grant_reward_to_author(
+                author_id=author_id,
+                share_id=share_id,
+                points=reward_points
+            )
+            
+            # シェア記録にポイント額を更新
+            supabase.table("note_shares").update({
+                "points_amount": reward_points
+            }).eq("id", share_id).execute()
+        else:
+            # 不正疑いアラート生成
+            alert_data = {
+                "share_id": share_id,
+                "user_id": user_id,
+                "note_id": note_id,
+                "fraud_score": fraud_score,
+                "reason": "リポストの不正スコアが高い",
+                "status": "pending",
+                "created_at": datetime.utcnow().isoformat()
+            }
+            supabase.table("share_fraud_alerts").insert(alert_data).execute()
+        
+        return {
+            "message": "リポストが完了しました",
+            "has_access": True,
+            "author_reward_points": reward_points,
+            "note_id": note_id,
+            "share_id": share_id,
+            "expires_at": expires_at.isoformat()
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Share by repost failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="リポスト処理に失敗しました"
+        )
