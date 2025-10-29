@@ -4,7 +4,7 @@ import logging
 import re
 import secrets
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query, Request
@@ -671,13 +671,25 @@ def _user_has_purchased(supabase: Client, note_id: str, user_id: str) -> bool:
     purchase_response = (
         supabase
         .table("note_purchases")
-        .select("id")
+        .select("id, expires_at")
         .eq("note_id", note_id)
         .eq("buyer_id", user_id)
         .limit(1)
         .execute()
     )
-    return bool(purchase_response.data)
+    
+    if not purchase_response.data:
+        return False
+    
+    purchase = purchase_response.data[0]
+    
+    # expires_atがない場合は永久アクセス（通常購入）
+    if not purchase.get("expires_at"):
+        return True
+    
+    # expires_atがある場合は期限をチェック
+    expires_at = datetime.fromisoformat(purchase["expires_at"].replace("Z", "+00:00"))
+    return datetime.utcnow().replace(tzinfo=timezone.utc) < expires_at
 
 
 @router.post("/{note_id}/purchase", response_model=NotePurchaseResponse, status_code=status.HTTP_201_CREATED)
@@ -894,11 +906,14 @@ async def share_note_to_x(
         share_id = share_record["id"]
         
         # 7.5. アクセス権を付与（note_purchasesテーブルに追加）
+        # シェアによるアクセスは7日間有効
+        expires_at = datetime.utcnow() + timedelta(days=7)
         purchase_data = {
             "note_id": note_id,
             "buyer_id": user_id,  # note_purchasesテーブルはbuyer_idカラムを使用
             "points_spent": 0,  # シェアなのでポイント消費なし
-            "purchased_at": datetime.utcnow().isoformat()
+            "purchased_at": datetime.utcnow().isoformat(),
+            "expires_at": expires_at.isoformat()
         }
         
         try:
