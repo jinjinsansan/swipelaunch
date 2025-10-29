@@ -3,6 +3,7 @@ X (Twitter) API v2 Client
 OAuth 2.0認証とツイート投稿・検証機能
 """
 
+import asyncio
 import httpx
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
@@ -148,6 +149,166 @@ class XAPIClient:
         except httpx.HTTPError as e:
             raise XAPIError(f"ネットワークエラー: {str(e)}")
     
+    async def get_tweet(self, tweet_id: str) -> Dict[str, Any]:
+        """ツイート詳細を取得"""
+        url = f"{self.BASE_URL}/tweets/{tweet_id}"
+        params = {
+            "tweet.fields": "text,author_id,created_at",
+            "expansions": "author_id",
+            "user.fields": "username"
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params, headers=self.headers)
+
+            if response.status_code == 200:
+                payload = response.json()
+                tweet_data = payload.get("data")
+                if not tweet_data:
+                    raise XAPIError("ツイート情報の取得に失敗しました")
+
+                author_id = tweet_data.get("author_id")
+                author_username = None
+                includes = payload.get("includes", {})
+                users = includes.get("users") or []
+                if author_id:
+                    for user in users:
+                        if user.get("id") == author_id:
+                            author_username = user.get("username")
+                            break
+
+                tweet_url = None
+                if author_username:
+                    tweet_url = f"https://x.com/{author_username}/status/{tweet_data.get('id')}"
+
+                return {
+                    "tweet_id": tweet_data.get("id"),
+                    "text": tweet_data.get("text"),
+                    "author_id": author_id,
+                    "author_username": author_username,
+                    "created_at": tweet_data.get("created_at"),
+                    "tweet_url": tweet_url,
+                }
+
+            if response.status_code == 404:
+                raise XAPIError("ツイートが見つかりませんでした")
+            if response.status_code == 401:
+                raise XAPIError("認証エラー: アクセストークンが無効です")
+
+            error_msg = response.json().get("detail", "ツイート取得に失敗しました")
+            raise XAPIError(f"X API エラー ({response.status_code}): {error_msg}")
+
+        except httpx.TimeoutException:
+            raise XAPIError("X API タイムアウト")
+        except httpx.HTTPError as e:
+            raise XAPIError(f"ネットワークエラー: {str(e)}")
+
+    async def retweet(self, user_id: str, tweet_id: str) -> Dict[str, Any]:
+        """指定ツイートをリツイート"""
+        url = f"{self.BASE_URL}/users/{user_id}/retweets"
+        payload = {"tweet_id": tweet_id}
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, json=payload, headers=self.headers)
+
+            if response.status_code in (200, 201):
+                data = response.json().get("data", {})
+                if data.get("retweeted") is True:
+                    return {"retweeted": True}
+                raise XAPIError("リツイートに失敗しました")
+
+            if response.status_code == 403:
+                raise XAPIError("権限エラー: このツイートをリツイートできません")
+            if response.status_code == 404:
+                raise XAPIError("ツイートが見つかりませんでした")
+            if response.status_code == 401:
+                raise XAPIError("認証エラー: アクセストークンが無効です")
+            if response.status_code == 429:
+                reset_at = response.headers.get("x-rate-limit-reset")
+                if reset_at:
+                    try:
+                        reset_time = datetime.fromtimestamp(int(reset_at))
+                        raise XAPIError(f"レート制限: {reset_time.isoformat()} までお待ちください")
+                    except ValueError:
+                        pass
+                raise XAPIError("レート制限: しばらく時間をおいてから再試行してください")
+
+            error_msg = response.json().get("detail", "リツイートに失敗しました")
+            raise XAPIError(f"X API エラー ({response.status_code}): {error_msg}")
+
+        except httpx.TimeoutException:
+            raise XAPIError("X API タイムアウト")
+        except httpx.HTTPError as e:
+            raise XAPIError(f"ネットワークエラー: {str(e)}")
+
+    async def _fetch_recent_tweets(self, user_id: str, max_results: int = 20) -> Dict[str, Any]:
+        url = f"{self.BASE_URL}/users/{user_id}/tweets"
+        params = {
+            "max_results": max_results,
+            "tweet.fields": "created_at,referenced_tweets",
+            "exclude": "replies",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params, headers=self.headers)
+        except httpx.TimeoutException:
+            raise XAPIError("X API タイムアウト")
+        except httpx.HTTPError as e:
+            raise XAPIError(f"ネットワークエラー: {str(e)}")
+
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code == 401:
+            raise XAPIError("認証エラー: アクセストークンが無効です")
+        if response.status_code == 404:
+            raise XAPIError("ユーザーが見つかりませんでした")
+        if response.status_code == 429:
+            raise XAPIError("レート制限: 後でもう一度お試しください")
+
+        error_msg = response.json().get("detail", "ユーザータイムラインの取得に失敗しました")
+        raise XAPIError(f"X API エラー ({response.status_code}): {error_msg}")
+
+    async def find_retweet(
+        self,
+        user_id: str,
+        target_tweet_id: str,
+        max_results: int = 20,
+    ) -> Optional[Dict[str, Any]]:
+        """ユーザータイムラインから指定ツイートのリツイートを探索"""
+        try:
+            payload = await self._fetch_recent_tweets(user_id, max_results=max_results)
+        except XAPIError as exc:
+            logger.warning("Failed to fetch recent tweets for verification: %s", exc)
+            return None
+
+        for tweet in payload.get("data", []) or []:
+            for reference in tweet.get("referenced_tweets", []) or []:
+                if reference.get("type") == "retweeted" and reference.get("id") == target_tweet_id:
+                    return {
+                        "retweet_id": tweet.get("id"),
+                        "created_at": tweet.get("created_at"),
+                    }
+        return None
+
+    async def verify_retweet(
+        self,
+        user_id: str,
+        target_tweet_id: str,
+        attempts: int = 3,
+        delay_seconds: float = 2.0,
+    ) -> Optional[Dict[str, Any]]:
+        """指定ツイートがユーザーによってリツイートされたか確認"""
+        for attempt in range(attempts):
+            retweet_info = await self.find_retweet(user_id, target_tweet_id)
+            if retweet_info:
+                return retweet_info
+            if attempt < attempts - 1:
+                await asyncio.sleep(delay_seconds)
+        return None
+
     async def get_user_info(self) -> Dict[str, Any]:
         """
         認証済みユーザーの情報を取得

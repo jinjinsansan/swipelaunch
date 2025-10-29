@@ -103,6 +103,11 @@ class NoteSummaryResponse(BaseModel):
     updated_at: datetime
     categories: List[str] = Field(default_factory=list)
     allow_share_unlock: Optional[bool] = False
+    official_share_tweet_id: Optional[str] = None
+    official_share_tweet_url: Optional[str] = None
+    official_share_x_user_id: Optional[str] = None
+    official_share_x_username: Optional[str] = None
+    official_share_set_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -131,6 +136,9 @@ class PublicNoteSummary(BaseModel):
     published_at: Optional[datetime] = None
     categories: List[str] = Field(default_factory=list)
     allow_share_unlock: Optional[bool] = False
+    official_share_tweet_id: Optional[str] = None
+    official_share_tweet_url: Optional[str] = None
+    official_share_x_username: Optional[str] = None
 
 
 class PublicNoteListResponse(BaseModel):
@@ -155,6 +163,9 @@ class PublicNoteDetailResponse(BaseModel):
     published_at: Optional[datetime] = None
     categories: List[str] = Field(default_factory=list)
     allow_share_unlock: Optional[bool] = False
+    official_share_tweet_id: Optional[str] = None
+    official_share_tweet_url: Optional[str] = None
+    official_share_x_username: Optional[str] = None
 
 
 class NotePurchaseResponse(BaseModel):
@@ -189,3 +200,24 @@ class NoteMetricsResponse(BaseModel):
     top_note: Optional[NoteMetricsTopNote] = None
     remaining_points: int
     purchased_at: datetime
+
+
+class OfficialShareSetupRequest(BaseModel):
+    tweet_id: Optional[str] = Field(None, min_length=1, max_length=64)
+    tweet_url: Optional[str] = Field(None, max_length=512)
+
+    @validator("tweet_id", always=True)
+    def ensure_identifier(cls, value: Optional[str], values: dict) -> Optional[str]:
+        if not value and not values.get("tweet_url"):
+            raise ValueError("tweet_id か tweet_url のいずれかを指定してください")
+        return value
+
+
+class OfficialShareConfigResponse(BaseModel):
+    note_id: str
+    tweet_id: Optional[str] = None
+    tweet_url: Optional[str] = None
+    tweet_text: Optional[str] = None
+    author_x_user_id: Optional[str] = None
+    author_x_username: Optional[str] = None
+    configured_at: Optional[datetime] = None

@@ -236,6 +236,99 @@ class TestXAPIClient:
                 await x_client.post_tweet("Test")
     
     @pytest.mark.asyncio
+    async def test_get_tweet_success(self, x_client):
+        """ツイート詳細取得成功"""
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "data": {
+                    "id": "1111",
+                    "text": "Official tweet",
+                    "author_id": "author123",
+                    "created_at": "2024-10-29T00:00:00Z"
+                },
+                "includes": {
+                    "users": [
+                        {"id": "author123", "username": "author_user"}
+                    ]
+                }
+            }
+
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=mock_response)
+
+            result = await x_client.get_tweet("1111")
+
+            assert result["tweet_id"] == "1111"
+            assert result["author_username"] == "author_user"
+            assert result["tweet_url"] == "https://x.com/author_user/status/1111"
+
+    @pytest.mark.asyncio
+    async def test_get_tweet_not_found(self, x_client):
+        """ツイート取得で404"""
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 404
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=mock_response)
+
+            with pytest.raises(XAPIError, match="ツイートが見つかりません"):
+                await x_client.get_tweet("9999")
+
+    @pytest.mark.asyncio
+    async def test_retweet_success(self, x_client):
+        """リツイート成功"""
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"data": {"retweeted": True}}
+
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            result = await x_client.retweet("user123", "tweet456")
+
+            assert result["retweeted"] is True
+
+    @pytest.mark.asyncio
+    async def test_retweet_rate_limit(self, x_client):
+        """リツイートでレート制限"""
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 429
+            mock_response.headers = {"x-rate-limit-reset": "1700000000"}
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            with pytest.raises(XAPIError, match="レート制限"):
+                await x_client.retweet("user123", "tweet456")
+
+    @pytest.mark.asyncio
+    async def test_verify_retweet_success(self, x_client):
+        """リツイート検証成功"""
+        with patch.object(XAPIClient, "_fetch_recent_tweets", new=AsyncMock(return_value={
+            "data": [
+                {
+                    "id": "retweet789",
+                    "referenced_tweets": [
+                        {"type": "retweeted", "id": "tweet456"}
+                    ],
+                    "created_at": "2024-10-29T12:00:00Z"
+                }
+            ]
+        })):
+            result = await x_client.verify_retweet("user123", "tweet456")
+
+            assert result is not None
+            assert result["retweet_id"] == "retweet789"
+
+    @pytest.mark.asyncio
+    async def test_verify_retweet_not_found(self, x_client):
+        """リツイート検証失敗"""
+        with patch.object(XAPIClient, "_fetch_recent_tweets", new=AsyncMock(return_value={"data": []})):
+            with patch("asyncio.sleep", new=AsyncMock(return_value=None)):
+                result = await x_client.verify_retweet("user123", "tweet456", attempts=2, delay_seconds=0.1)
+
+            assert result is None
+
+    @pytest.mark.asyncio
     async def test_verify_tweet_success(self, x_client):
         """ツイート検証成功（URLを含む）"""
         with patch("httpx.AsyncClient") as mock_client:

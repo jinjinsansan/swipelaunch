@@ -25,6 +25,8 @@ from app.models.note import (
     NotePurchaseResponse,
     NoteMetricsResponse,
     NoteMetricsTopNote,
+    OfficialShareSetupRequest,
+    OfficialShareConfigResponse,
 )
 from app.utils.auth import decode_access_token
 
@@ -81,6 +83,28 @@ def normalize_slug(value: str) -> str:
     return slug[:120]
 
 
+TWEET_ID_REGEX = re.compile(r"(?:status|statuses)/(?P<tweet_id>\d+)")
+
+
+def extract_tweet_id(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    candidate = raw.strip()
+    if candidate.isdigit():
+        return candidate
+
+    match = TWEET_ID_REGEX.search(candidate)
+    if match:
+        return match.group("tweet_id")
+
+    # fallback for direct ID query parameter (?tweet_id=123)
+    query_match = re.search(r"tweet_id=(\d+)", candidate)
+    if query_match:
+        return query_match.group(1)
+
+    return None
+
+
 def generate_unique_slug(supabase: Client, base_slug: str, exclude_note_id: Optional[str] = None) -> str:
     slug = base_slug
     suffix = 1
@@ -110,6 +134,11 @@ def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
         updated_at=record.get("updated_at"),
         categories=list(record.get("categories") or []),
         allow_share_unlock=bool(record.get("allow_share_unlock", False)),
+        official_share_tweet_id=record.get("official_share_tweet_id"),
+        official_share_tweet_url=record.get("official_share_tweet_url"),
+        official_share_x_user_id=record.get("official_share_x_user_id"),
+        official_share_x_username=record.get("official_share_x_username"),
+        official_share_set_at=record.get("official_share_set_at"),
     )
 
 
@@ -402,6 +431,9 @@ async def list_public_notes(
                 published_at=record.get("published_at"),
                 categories=list(record.get("categories") or []),
                 allow_share_unlock=bool(record.get("allow_share_unlock", False)),
+                official_share_tweet_id=record.get("official_share_tweet_id"),
+                official_share_tweet_url=record.get("official_share_tweet_url"),
+                official_share_x_username=record.get("official_share_x_username"),
             )
         )
 
@@ -464,6 +496,9 @@ async def get_public_note(
         published_at=note.get("published_at"),
         categories=list(note.get("categories") or []),
         allow_share_unlock=bool(note.get("allow_share_unlock", False)),
+        official_share_tweet_id=note.get("official_share_tweet_id"),
+        official_share_tweet_url=note.get("official_share_tweet_url"),
+        official_share_x_username=note.get("official_share_x_username"),
     )
 
 
@@ -556,6 +591,171 @@ async def update_note(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="ノートの更新に失敗しました")
 
     return map_note_detail(response.data[0])
+
+
+@router.get("/{note_id}/official-share", response_model=OfficialShareConfigResponse)
+async def get_official_share_config(
+    note_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+
+    note_response = (
+        supabase
+        .table("notes")
+        .select("*")
+        .eq("id", note_id)
+        .single()
+        .execute()
+    )
+
+    if not note_response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ノートが見つかりません")
+
+    note = note_response.data
+    ensure_note_access(note, user_id)
+
+    return OfficialShareConfigResponse(
+        note_id=note_id,
+        tweet_id=note.get("official_share_tweet_id"),
+        tweet_url=note.get("official_share_tweet_url"),
+        author_x_user_id=note.get("official_share_x_user_id"),
+        author_x_username=note.get("official_share_x_username"),
+        configured_at=note.get("official_share_set_at"),
+    )
+
+
+@router.post("/{note_id}/official-share", response_model=OfficialShareConfigResponse)
+async def set_official_share_config(
+    note_id: str,
+    payload: OfficialShareSetupRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    from app.services.x_api import XAPIClient, XAPIError
+
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+
+    note_response = (
+        supabase
+        .table("notes")
+        .select("*")
+        .eq("id", note_id)
+        .single()
+        .execute()
+    )
+
+    if not note_response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ノートが見つかりません")
+
+    note = note_response.data
+    ensure_note_access(note, user_id)
+
+    if not note.get("is_paid"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="有料NOTEのみ設定できます")
+
+    if not note.get("allow_share_unlock"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="シェア解放を有効にしてください")
+
+    tweet_id = payload.tweet_id or extract_tweet_id(payload.tweet_url)
+    if not tweet_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="有効なツイートIDまたはURLを指定してください")
+
+    x_connection = (
+        supabase
+        .table("user_x_connections")
+        .select("access_token, x_user_id, x_username")
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+
+    if not x_connection or not x_connection.data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X連携が必要です。設定画面でXアカウントを連携してください。"
+        )
+
+    access_token = x_connection.data["access_token"]
+    x_client = XAPIClient(access_token)
+
+    try:
+        tweet_info = await x_client.get_tweet(tweet_id)
+    except XAPIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ツイートの検証に失敗しました: {str(exc)}"
+        ) from exc
+
+    author_id = tweet_info.get("author_id")
+    if author_id != x_connection.data.get("x_user_id"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="このツイートは連携済みXアカウントの投稿ではありません"
+        )
+
+    update_data = {
+        "official_share_tweet_id": tweet_info.get("tweet_id"),
+        "official_share_tweet_url": tweet_info.get("tweet_url"),
+        "official_share_x_user_id": tweet_info.get("author_id"),
+        "official_share_x_username": tweet_info.get("author_username"),
+        "official_share_set_at": datetime.utcnow().isoformat(),
+    }
+
+    update_response = (
+        supabase
+        .table("notes")
+        .update(update_data)
+        .eq("id", note_id)
+        .execute()
+    )
+
+    if not update_response.data:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="公式ポスト設定の更新に失敗しました")
+
+    return OfficialShareConfigResponse(
+        note_id=note_id,
+        tweet_id=tweet_info.get("tweet_id"),
+        tweet_url=tweet_info.get("tweet_url"),
+        tweet_text=tweet_info.get("text"),
+        author_x_user_id=tweet_info.get("author_id"),
+        author_x_username=tweet_info.get("author_username"),
+        configured_at=update_data["official_share_set_at"],
+    )
+
+
+@router.delete("/{note_id}/official-share", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_official_share_config(
+    note_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+
+    note_response = (
+        supabase
+        .table("notes")
+        .select("id, author_id")
+        .eq("id", note_id)
+        .single()
+        .execute()
+    )
+
+    if not note_response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ノートが見つかりません")
+
+    ensure_note_access(note_response.data, user_id)
+
+    supabase.table("notes").update({
+        "official_share_tweet_id": None,
+        "official_share_tweet_url": None,
+        "official_share_x_user_id": None,
+        "official_share_x_username": None,
+        "official_share_set_at": None,
+    }).eq("id", note_id).execute()
+
+    return None
 
 
 @router.delete("/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -756,19 +956,21 @@ async def share_note_to_x(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
-    NOTEをXでシェアして無料解放
+    NOTEをXでリツイートして無料解放
     
     Flow:
-    1. X連携確認
-    2. 不正検知チェック
-    3. Xにツイート投稿
-    4. ツイート検証
-    5. アクセス権付与
-    6. 著者に即時ポイント報酬付与
+    1. NOTE存在確認 & シェア許可確認
+    2. シェア済みチェック
+    3. X連携確認
+    4. 不正検知チェック
+    5. 公式ポストをリツイート
+    6. リツイート検証
+    7. アクセス権付与
+    8. 著者に即時ポイント報酬付与
     
     Returns:
         {
-            "message": "シェアが完了しました",
+            "message": "リツイートが完了しました",
             "tweet_url": "https://x.com/username/status/123",
             "has_access": true,
             "author_reward_points": 1
@@ -811,6 +1013,17 @@ async def share_note_to_x(
                 detail="このNOTEはシェア解放が許可されていません"
             )
         
+        official_tweet_id = note.get("official_share_tweet_id")
+        official_author_id = note.get("official_share_x_user_id")
+        official_tweet_url = note.get("official_share_tweet_url")
+        official_author_username = note.get("official_share_x_username")
+
+        if not official_tweet_id or not official_author_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="このNOTEには公式リツイート対象が設定されていません"
+            )
+
         # 自分の記事はシェアできない
         if note["author_id"] == user_id:
             raise HTTPException(
@@ -857,36 +1070,48 @@ async def share_note_to_x(
         fraud_score, severity = await fraud_detector.calculate_fraud_score(fraud_data)
         is_suspicious = fraud_score >= 30  # MEDIUM以上を疑わしいとする
         
-        # 5. Xにツイート投稿
+        # 5. 公式ポストをリツイート
         x_client = XAPIClient(access_token)
-        
-        # ツイート本文生成
-        note_url = f"https://d-swipe.com/notes/{note['slug']}"
-        tweet_text = f"{note['title']} | D-swipe {note_url} #Dswipe #NOTE"
-        
+
+        buyer_x_user_id = x_info.get("x_user_id")
+        buyer_username = x_info.get("x_username")
+
+        if not buyer_x_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Xアカウント情報の取得に失敗しました。再連携をお試しください。"
+            )
+
         try:
-            tweet_result = await x_client.post_tweet(tweet_text)
+            await x_client.retweet(buyer_x_user_id, official_tweet_id)
         except XAPIError as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"ツイート投稿に失敗しました: {str(e)}"
+                detail=f"リツイートに失敗しました: {str(e)}"
             )
-        
-        tweet_id = tweet_result["tweet_id"]
-        tweet_url = f"https://x.com/{x_info['x_username']}/status/{tweet_id}"
-        
-        # 6. ツイート検証
-        try:
-            is_verified = await x_client.verify_tweet(tweet_id, note_url)
-        except XAPIError:
-            is_verified = True  # 検証失敗時は一旦許可（後で手動確認）
-        
+
+        # 6. リツイート検証
+        retweet_info = await x_client.verify_retweet(buyer_x_user_id, official_tweet_id)
+        is_verified = retweet_info is not None
+        retweet_id = retweet_info.get("retweet_id") if retweet_info else None
+        retweet_url = None
+        if retweet_id and buyer_username:
+            retweet_url = f"https://x.com/{buyer_username}/status/{retweet_id}"
+
+        canonical_tweet_url = official_tweet_url
+        if not canonical_tweet_url and official_author_username:
+            canonical_tweet_url = f"https://x.com/{official_author_username}/status/{official_tweet_id}"
+        if not canonical_tweet_url:
+            canonical_tweet_url = f"https://x.com/i/web/status/{official_tweet_id}"
+
         # 7. note_sharesレコード作成
         share_data = {
             "note_id": note_id,
             "user_id": user_id,
-            "tweet_id": tweet_id,
-            "tweet_url": tweet_url,
+            "tweet_id": official_tweet_id,
+            "tweet_url": canonical_tweet_url,
+            "retweet_tweet_id": retweet_id,
+            "retweet_url": retweet_url,
             "verified": is_verified,
             "verified_at": datetime.utcnow().isoformat() if is_verified else None,
             "ip_address": ip_address,
@@ -960,8 +1185,8 @@ async def share_note_to_x(
             )
         
         return {
-            "message": "シェアが完了しました",
-            "tweet_url": tweet_url,
+            "message": "リツイートが完了しました",
+            "tweet_url": retweet_url or canonical_tweet_url,
             "has_access": True,
             "author_reward_points": reward_points,
             "note_id": note_id,
@@ -998,13 +1223,14 @@ async def get_share_status(
     
     try:
         share_response = supabase.table("note_shares").select(
-            "tweet_url, shared_at, verified"
+            "tweet_url, retweet_url, shared_at, verified"
         ).eq("note_id", note_id).eq("user_id", user_id).maybe_single().execute()
         
         if share_response and share_response.data:
             return {
                 "has_shared": True,
-                "tweet_url": share_response.data.get("tweet_url"),
+                "tweet_url": share_response.data.get("retweet_url") or share_response.data.get("tweet_url"),
+                "retweet_url": share_response.data.get("retweet_url"),
                 "shared_at": share_response.data.get("shared_at"),
                 "verified": share_response.data.get("verified", False)
             }
@@ -1012,6 +1238,7 @@ async def get_share_status(
             return {
                 "has_shared": False,
                 "tweet_url": None,
+                "retweet_url": None,
                 "shared_at": None,
                 "verified": False
             }
