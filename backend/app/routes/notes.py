@@ -990,7 +990,9 @@ async def share_note_to_x(
     try:
         # 1. NOTE存在確認 & シェア許可確認
         note_response = supabase.table("notes").select(
-            "id, title, slug, author_id, is_paid, allow_share_unlock"
+            "id, title, slug, author_id, is_paid, allow_share_unlock, "
+            "official_share_tweet_id, official_share_tweet_url, "
+            "official_share_x_user_id, official_share_x_username"
         ).eq("id", note_id).eq("status", "published").maybe_single().execute()
         
         if not note_response or not note_response.data:
