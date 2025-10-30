@@ -85,10 +85,8 @@ async def purchase_points_one_lat(
         # 一意のExternal ID生成
         external_id = f"point_purchase_{user_id}_{uuid.uuid4().hex[:8]}"
         
-        # Webhook URL（本番環境では実際のURLに変更）
-        # TODO: 本番環境では環境変数から取得
-        backend_url = "https://swipelaunch-backend.onrender.com"
-        frontend_url = "https://d-swipe.com"
+        backend_url = settings.backend_public_url.rstrip("/")
+        frontend_url = settings.frontend_url.rstrip("/")
         webhook_url = f"{backend_url}/api/webhooks/one-lat"
         success_url = f"{frontend_url}/points/purchase/success"
         error_url = f"{frontend_url}/points/purchase/error"

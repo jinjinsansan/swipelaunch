@@ -37,7 +37,24 @@ def health_check():
     }
 
 # ルート追加
-from app.routes import test, auth, lp, media, public, analytics, products, points, ai, admin, announcements, webhooks, line, notes, x_auth
+from app.routes import (
+    admin,
+    ai,
+    analytics,
+    announcements,
+    auth,
+    line,
+    lp,
+    media,
+    notes,
+    points,
+    products,
+    public,
+    subscriptions,
+    test,
+    webhooks,
+    x_auth,
+)
 app.include_router(test.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(x_auth.router, prefix="/api")
@@ -53,6 +70,7 @@ app.include_router(line.router, prefix="/api")
 app.include_router(announcements.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
+app.include_router(subscriptions.router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from pydantic import Field
 from typing import Optional
 from supabase import create_client, Client
 
@@ -20,7 +21,8 @@ class Settings(BaseSettings):
     # App
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    frontend_url: str = "https://swipe.dlogicai.in"
+    frontend_url: str = Field(default="https://d-swipe.com", env="FRONTEND_URL")
+    backend_public_url: str = Field(default="https://swipelaunch-backend.onrender.com", env="BACKEND_PUBLIC_URL")
     
     # Security
     jwt_secret: str = "your-super-secret-jwt-key-change-this-in-production"
@@ -39,6 +41,11 @@ class Settings(BaseSettings):
     one_lat_api_secret: str = ""
     one_lat_api_base_url: str = "https://api.one.lat"
     one_lat_checkout_base_url: str = "https://one.lat/checkout"
+    one_lat_plan_980_id: str = Field(default="1N7ZtYUvoEy5F4RDwn", env="ONE_LAT_PLAN_980_ID")
+    one_lat_plan_1980_id: str = Field(default="Y6Dm9IXNUL4Jj1BuqP", env="ONE_LAT_PLAN_1980_ID")
+    one_lat_plan_2980_id: str = Field(default="vE7JKQGEJE1bHd8Cj6", env="ONE_LAT_PLAN_2980_ID")
+    one_lat_plan_4980_id: str = Field(default="dbTiCPa2593wT5vNEX", env="ONE_LAT_PLAN_4980_ID")
+    one_lat_plan_9980_id: str = Field(default="uwBFYVO2g7JFQ2Dqnc", env="ONE_LAT_PLAN_9980_ID")
     
     # X (Twitter) API
     x_api_client_id: str = ""

@@ -41,7 +41,9 @@ class OneLatClient:
         payer_name: Optional[str] = None,
         payer_last_name: Optional[str] = None,
         payer_phone: Optional[str] = None,
-        expiration_minutes: int = 15
+        expiration_minutes: int = 15,
+        preference_type: str = "PAYMENT",
+        payment_link_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Checkout Preferenceを作成
@@ -65,10 +67,8 @@ class OneLatClient:
         """
         expiration_date = (datetime.utcnow() + timedelta(minutes=expiration_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
         
-        payload = {
-            "type": "PAYMENT",
-            "amount": amount,
-            "currency": currency,
+        payload: Dict[str, Any] = {
+            "type": preference_type,
             "title": title,
             "origin": "API",
             "external_id": external_id,
@@ -77,8 +77,16 @@ class OneLatClient:
                 "status_changes_webhook": webhook_url,
                 "success_payment_redirect": success_url,
                 "error_payment_redirect": error_url
-            }
+            },
         }
+
+        if preference_type.upper() == "SUBSCRIPTION":
+            if not payment_link_id:
+                raise ValueError("payment_link_id is required for subscription checkout preferences")
+            payload["payment_link_id"] = payment_link_id
+        else:
+            payload["amount"] = amount
+            payload["currency"] = currency
         
         # Payerの情報を追加（オプション）
         if payer_email or payer_name:
@@ -142,6 +150,57 @@ class OneLatClient:
             raise Exception(f"ONE.lat API Error: {e.response.text}")
         except Exception as e:
             logger.error(f"❌ Failed to get payment order: {str(e)}")
+            raise
+
+    async def get_recurrent_payment(self, recurrent_payment_id: str) -> Dict[str, Any]:
+        """Retrieve recurrent payment details."""
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/v1/recurrent_payments/{recurrent_payment_id}",
+                    headers=self._get_headers(),
+                )
+
+                response.raise_for_status()
+                data = response.json()
+                logger.info(
+                    "✅ Recurrent payment retrieved",
+                    extra={"recurrent_payment_id": recurrent_payment_id, "status": data.get("status")},
+                )
+                return data
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ ONE.lat API Error: {e.response.status_code} - {e.response.text}")
+            raise Exception(f"ONE.lat API Error: {e.response.text}")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(f"❌ Failed to get recurrent payment: {str(e)}")
+            raise
+
+    async def cancel_recurrent_payment(self, recurrent_payment_id: str, deleted_by: str = "merchant") -> Dict[str, Any]:
+        """Cancel an active recurrent payment."""
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.delete(
+                    f"{self.base_url}/v1/recurrent_payments/{recurrent_payment_id}",
+                    headers=self._get_headers(),
+                    params={"deleted_by": deleted_by},
+                )
+
+                response.raise_for_status()
+                data = response.json()
+                logger.info(
+                    "✅ Recurrent payment cancelled",
+                    extra={"recurrent_payment_id": recurrent_payment_id},
+                )
+                return data
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ ONE.lat API Error: {e.response.status_code} - {e.response.text}")
+            raise Exception(f"ONE.lat API Error: {e.response.text}")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(f"❌ Failed to cancel recurrent payment: {str(e)}")
             raise
 
 
