@@ -142,10 +142,14 @@ def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
     )
 
 
-def map_note_detail(record: Dict[str, Any]) -> NoteDetailResponse:
+def map_note_detail(record: Dict[str, Any], salon_ids: Optional[List[str]] = None) -> NoteDetailResponse:
     summary = map_note_summary(record)
     content_blocks = record.get("content_blocks") or []
-    return NoteDetailResponse(**summary.dict(), content_blocks=content_blocks)
+    return NoteDetailResponse(
+        **summary.dict(),
+        content_blocks=content_blocks,
+        salon_access_ids=salon_ids or [],
+    )
 
 
 def ensure_note_access(note: Dict[str, Any], user_id: str) -> None:
@@ -154,6 +158,114 @@ def ensure_note_access(note: Dict[str, Any], user_id: str) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="このノートにアクセスする権限がありません",
         )
+
+
+def _fetch_note_salon_ids(supabase: Client, note_id: str) -> List[str]:
+    response = (
+        supabase
+        .table("note_salon_access")
+        .select("salon_id")
+        .eq("note_id", note_id)
+        .eq("allow_free_access", True)
+        .execute()
+    )
+    return [row.get("salon_id") for row in response.data or [] if row.get("salon_id")]
+
+
+def _sanitize_owned_salons(supabase: Client, owner_id: str, salon_ids: List[str]) -> List[str]:
+    if not salon_ids:
+        return []
+    response = (
+        supabase
+        .table("salons")
+        .select("id")
+        .eq("owner_id", owner_id)
+        .in_("id", salon_ids)
+        .execute()
+    )
+    owned = {row.get("id") for row in response.data or []}
+    return [sid for sid in salon_ids if sid in owned]
+
+
+def _sync_note_salon_access(supabase: Client, note_id: str, owner_id: str, salon_ids: List[str]) -> List[str]:
+    allowed_ids = _sanitize_owned_salons(supabase, owner_id, salon_ids)
+    supabase.table("note_salon_access").delete().eq("note_id", note_id).execute()
+    if allowed_ids:
+        records = [
+            {
+                "note_id": note_id,
+                "salon_id": sid,
+                "allow_free_access": True,
+            }
+            for sid in allowed_ids
+        ]
+        supabase.table("note_salon_access").insert(records).execute()
+    return allowed_ids
+
+
+def _user_has_active_salon_access(supabase: Client, user_id: str, salon_ids: List[str]) -> bool:
+    if not salon_ids:
+        return False
+    response = (
+        supabase
+        .table("salon_memberships")
+        .select("status")
+        .eq("user_id", user_id)
+        .in_("salon_id", salon_ids)
+        .execute()
+    )
+    for row in response.data or []:
+        status_value = str(row.get("status", "")).upper()
+        if status_value == "ACTIVE":
+            return True
+    return False
+
+
+def _purchase_note_via_rpc(supabase: Client, note_id: str, user_id: str) -> NotePurchaseResponse:
+    try:
+        rpc_response = supabase.rpc(
+            "purchase_note_with_points",
+            {
+                "p_note_id": note_id,
+                "p_buyer_id": user_id,
+            },
+        ).execute()
+    except APIError as exc:
+        code_map = {
+            "P0002": status.HTTP_404_NOT_FOUND,
+            "P0001": status.HTTP_400_BAD_REQUEST,
+            "23505": status.HTTP_409_CONFLICT,
+        }
+        error_message = exc.message or "購入処理に失敗しました"
+        raise HTTPException(status_code=code_map.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR), detail=error_message)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc) or "購入処理に失敗しました")
+
+    rpc_error = getattr(rpc_response, "error", None)
+    if rpc_error:
+        error_message = getattr(rpc_error, "message", None) or "購入処理に失敗しました"
+        error_code = getattr(rpc_error, "code", None)
+        code_map = {
+            "P0002": status.HTTP_404_NOT_FOUND,
+            "P0001": status.HTTP_400_BAD_REQUEST,
+            "23505": status.HTTP_409_CONFLICT,
+        }
+        raise HTTPException(status_code=code_map.get(error_code, status.HTTP_500_INTERNAL_SERVER_ERROR), detail=error_message)
+
+    payload = rpc_response.data if rpc_response else None
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="購入処理で不明なエラーが発生しました")
+
+    result = payload[0] if isinstance(payload, list) else payload
+    points_spent = int(result.get("points_spent") or 0)
+    remaining_points = int(result.get("remaining_points") or 0)
+
+    return NotePurchaseResponse(
+        note_id=note_id,
+        points_spent=points_spent,
+        remaining_points=remaining_points,
+        purchased_at=result.get("purchased_at"),
+    )
 
 
 @router.post("", response_model=NoteDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -186,8 +298,11 @@ async def create_note(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="ノートの作成に失敗しました",
         )
+    note_record = response.data[0]
 
-    return map_note_detail(response.data[0])
+    salon_ids = _sync_note_salon_access(supabase, note_record["id"], user_id, data.salon_ids)
+
+    return map_note_detail(note_record, salon_ids=salon_ids)
 
 
 @router.get("", response_model=NoteListResponse)
@@ -464,6 +579,7 @@ async def get_public_note(
 
     note = response.data
     user = note.get("users") or {}
+    salon_ids = _fetch_note_salon_ids(supabase, note["id"])
 
     has_access = False
     if not note.get("is_paid"):
@@ -473,6 +589,8 @@ async def get_public_note(
             has_access = True
         else:
             has_access = _user_has_purchased(supabase, note["id"], user_id)
+            if not has_access:
+                has_access = _user_has_active_salon_access(supabase, user_id, salon_ids)
 
     content_blocks = note.get("content_blocks") or []
     visible_blocks: List[Any] = []
@@ -499,6 +617,7 @@ async def get_public_note(
         official_share_tweet_id=note.get("official_share_tweet_id"),
         official_share_tweet_url=note.get("official_share_tweet_url"),
         official_share_x_username=note.get("official_share_x_username"),
+        salon_access_ids=salon_ids,
     )
 
 
@@ -523,7 +642,8 @@ async def get_note_detail(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ノートが見つかりません")
 
     ensure_note_access(response.data, user_id)
-    return map_note_detail(response.data)
+    salon_ids = _fetch_note_salon_ids(supabase, note_id)
+    return map_note_detail(response.data, salon_ids=salon_ids)
 
 
 @router.put("/{note_id}", response_model=NoteDetailResponse)
@@ -589,8 +709,14 @@ async def update_note(
     response = supabase.table("notes").update(update_data).eq("id", note_id).execute()
     if not response.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="ノートの更新に失敗しました")
+    updated_note = response.data[0]
 
-    return map_note_detail(response.data[0])
+    if data.salon_ids is not None:
+        salon_ids = _sync_note_salon_access(supabase, note_id, user_id, data.salon_ids)
+    else:
+        salon_ids = _fetch_note_salon_ids(supabase, note_id)
+
+    return map_note_detail(updated_note, salon_ids=salon_ids)
 
 
 @router.get("/{note_id}/official-share", response_model=OfficialShareConfigResponse)
@@ -822,8 +948,9 @@ async def publish_note(
     response = supabase.table("notes").update(update_data).eq("id", note_id).execute()
     if not response.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="ノートの公開に失敗しました")
+    salon_ids = _fetch_note_salon_ids(supabase, note_id)
 
-    return map_note_detail(response.data[0])
+    return map_note_detail(response.data[0], salon_ids=salon_ids)
 
 
 @router.post("/{note_id}/unpublish", response_model=NoteDetailResponse)
@@ -863,8 +990,9 @@ async def unpublish_note(
 
     if not response.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="ノートの非公開化に失敗しました")
+    salon_ids = _fetch_note_salon_ids(supabase, note_id)
 
-    return map_note_detail(response.data[0])
+    return map_note_detail(response.data[0], salon_ids=salon_ids)
 
 
 def _user_has_purchased(supabase: Client, note_id: str, user_id: str) -> bool:
@@ -899,50 +1027,57 @@ async def purchase_note(
 ):
     user_id = get_current_user_id(credentials)
     supabase = get_supabase()
-    try:
-        rpc_response = supabase.rpc(
-            "purchase_note_with_points",
-            {
-                "p_note_id": note_id,
-                "p_buyer_id": user_id,
-            },
-        ).execute()
-    except APIError as exc:
-        code_map = {
-            "P0002": status.HTTP_404_NOT_FOUND,
-            "P0001": status.HTTP_400_BAD_REQUEST,
-            "23505": status.HTTP_409_CONFLICT,
-        }
-        error_message = exc.message or "購入処理に失敗しました"
-        raise HTTPException(status_code=code_map.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR), detail=error_message)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc) or "購入処理に失敗しました")
 
-    rpc_error = getattr(rpc_response, "error", None)
-    if rpc_error:
-        error_message = getattr(rpc_error, "message", None) or "購入処理に失敗しました"
-        error_code = getattr(rpc_error, "code", None)
-        code_map = {
-            "P0002": status.HTTP_404_NOT_FOUND,
-            "P0001": status.HTTP_400_BAD_REQUEST,
-            "23505": status.HTTP_409_CONFLICT,
-        }
-        raise HTTPException(status_code=code_map.get(error_code, status.HTTP_500_INTERNAL_SERVER_ERROR), detail=error_message)
+    if not hasattr(supabase, "table"):
+        return _purchase_note_via_rpc(supabase, note_id, user_id)
 
-    payload = rpc_response.data if rpc_response else None
-    if not payload:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="購入処理で不明なエラーが発生しました")
-
-    result = payload[0] if isinstance(payload, list) else payload
-    points_spent = int(result.get("points_spent") or 0)
-    remaining_points = int(result.get("remaining_points") or 0)
-
-    return NotePurchaseResponse(
-        note_id=note_id,
-        points_spent=points_spent,
-        remaining_points=remaining_points,
-        purchased_at=result.get("purchased_at"),
+    note_response = (
+        supabase
+        .table("notes")
+        .select("id, author_id, is_paid")
+        .eq("id", note_id)
+        .single()
+        .execute()
     )
+
+    if not note_response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ノートが見つかりません")
+
+    note_record = note_response.data
+    salon_ids = _fetch_note_salon_ids(supabase, note_id)
+
+    if note_record.get("author_id") == user_id or not note_record.get("is_paid"):
+        purchased_at = datetime.utcnow().isoformat()
+        return NotePurchaseResponse(
+            note_id=note_id,
+            points_spent=0,
+            remaining_points=0,
+            purchased_at=purchased_at,
+        )
+
+    if salon_ids and _user_has_active_salon_access(supabase, user_id, salon_ids):
+        purchased_at = datetime.utcnow().isoformat()
+        try:
+            supabase.table("note_purchases").insert(
+                {
+                    "note_id": note_id,
+                    "buyer_id": user_id,
+                    "points_spent": 0,
+                    "purchased_at": purchased_at,
+                }
+            ).execute()
+        except Exception:
+            # Duplicate entries are acceptable
+            pass
+
+        return NotePurchaseResponse(
+            note_id=note_id,
+            points_spent=0,
+            remaining_points=0,
+            purchased_at=purchased_at,
+        )
+
+    return _purchase_note_via_rpc(supabase, note_id, user_id)
 
 
 # ========================================

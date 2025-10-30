@@ -22,6 +22,7 @@ class NoteCreateRequest(BaseModel):
     is_paid: bool = Field(False, description="有料記事フラグ")
     price_points: Optional[int] = Field(None, ge=0, description="有料記事の価格（ポイント）")
     categories: List[str] = Field(default_factory=list, description="カテゴリー一覧")
+    salon_ids: List[str] = Field(default_factory=list, description="無料閲覧を許可するサロンID一覧")
 
     @validator("content_blocks")
     def validate_blocks(cls, value: List[NoteBlock]) -> List[NoteBlock]:
@@ -54,6 +55,26 @@ class NoteCreateRequest(BaseModel):
             raise ValueError("カテゴリは最大8件まで指定できます")
         return normalized
 
+    @validator("salon_ids", pre=True, always=True)
+    def normalize_salons(cls, value: Optional[List[str]]) -> List[str]:
+        if not value:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("salon_ids は配列で指定してください")
+        sanitized: List[str] = []
+        seen = set()
+        for raw in value:
+            if not isinstance(raw, str):
+                raise ValueError("サロンIDは文字列で指定してください")
+            key = raw.strip()
+            if not key or key in seen:
+                continue
+            if len(key) > 64:
+                raise ValueError("サロンIDが長すぎます")
+            sanitized.append(key)
+            seen.add(key)
+        return sanitized
+
 
 class NoteUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
@@ -63,6 +84,7 @@ class NoteUpdateRequest(BaseModel):
     is_paid: Optional[bool] = None
     price_points: Optional[int] = Field(None, ge=0)
     categories: Optional[List[str]] = Field(None, description="カテゴリー一覧")
+    salon_ids: Optional[List[str]] = Field(None, description="無料閲覧を許可するサロンID一覧")
 
     @validator("price_points")
     def validate_price(cls, value: Optional[int]) -> Optional[int]:
@@ -87,6 +109,26 @@ class NoteUpdateRequest(BaseModel):
         if len(normalized) > 8:
             raise ValueError("カテゴリは最大8件まで指定できます")
         return normalized
+
+    @validator("salon_ids")
+    def normalize_salons(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("salon_ids は配列で指定してください")
+        sanitized: List[str] = []
+        seen = set()
+        for raw in value:
+            if not isinstance(raw, str):
+                raise ValueError("サロンIDは文字列で指定してください")
+            key = raw.strip()
+            if not key or key in seen:
+                continue
+            if len(key) > 64:
+                raise ValueError("サロンIDが長すぎます")
+            sanitized.append(key)
+            seen.add(key)
+        return sanitized
 
 
 class NoteSummaryResponse(BaseModel):
@@ -115,6 +157,7 @@ class NoteSummaryResponse(BaseModel):
 
 class NoteDetailResponse(NoteSummaryResponse):
     content_blocks: List[Any] = Field(default_factory=list)
+    salon_access_ids: List[str] = Field(default_factory=list)
 
 
 class NoteListResponse(BaseModel):
@@ -166,6 +209,7 @@ class PublicNoteDetailResponse(BaseModel):
     official_share_tweet_id: Optional[str] = None
     official_share_tweet_url: Optional[str] = None
     official_share_x_username: Optional[str] = None
+    salon_access_ids: List[str] = Field(default_factory=list)
 
 
 class NotePurchaseResponse(BaseModel):

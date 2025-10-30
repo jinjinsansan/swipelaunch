@@ -1,5 +1,5 @@
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
-from typing import Optional, List
 from datetime import datetime
 
 # 商品作成リクエスト
@@ -7,11 +7,13 @@ class ProductCreateRequest(BaseModel):
     lp_id: Optional[str] = Field(None, description="関連するLP ID（オプション）")
     title: str = Field(..., min_length=1, max_length=255, description="商品タイトル")
     description: Optional[str] = Field(None, description="商品説明")
-    price_in_points: int = Field(..., ge=0, description="ポイント価格")
+    price_in_points: Optional[int] = Field(None, ge=0, description="ポイント価格（オンラインサロンの場合は自動設定）")
     stock_quantity: Optional[int] = Field(None, ge=0, description="在庫数（nullで無制限）")
     is_available: bool = Field(default=True, description="販売可能か")
     redirect_url: Optional[str] = Field(None, description="購入完了後のリダイレクトURL（外部URL）")
     thanks_lp_id: Optional[str] = Field(None, description="購入完了後のサンクスページLP ID（サイト内）")
+    product_type: Literal["points", "salon"] = Field("points", description="商品タイプ")
+    salon_id: Optional[str] = Field(None, description="紐付けるサロンID（product_type='salon' の場合必須）")
 
 # 商品更新リクエスト
 class ProductUpdateRequest(BaseModel):
@@ -23,12 +25,16 @@ class ProductUpdateRequest(BaseModel):
     is_available: Optional[bool] = None
     redirect_url: Optional[str] = None
     thanks_lp_id: Optional[str] = None
+    product_type: Optional[Literal["points", "salon"]] = None
+    salon_id: Optional[str] = None
 
 # 商品レスポンス
 class ProductResponse(BaseModel):
     id: str
     seller_id: str
     lp_id: Optional[str] = None
+    product_type: str
+    salon_id: Optional[str] = None
     title: str
     description: Optional[str] = None
     price_in_points: int
@@ -72,6 +78,8 @@ class ProductWithSellerResponse(BaseModel):
     seller_id: str
     seller_username: str
     lp_id: Optional[str] = None
+    product_type: str
+    salon_id: Optional[str] = None
     lp_slug: Optional[str] = None
     lp_title: Optional[str] = None
     lp_thumbnail_url: Optional[str] = None

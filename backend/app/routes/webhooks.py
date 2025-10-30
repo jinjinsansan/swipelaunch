@@ -288,10 +288,20 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
         session = insert_response.data[0] if insert_response.data else session_payload
 
     # Keep session in sync
+    salon_id: Optional[str] = session.get("salon_id") if isinstance(session, dict) else None
+    if not salon_id and isinstance(subscription, dict):
+        salon_id = subscription.get("salon_id")
+    if not salon_id:
+        metadata = session.get("metadata") if isinstance(session, dict) else None
+        if isinstance(metadata, dict):
+            salon_id = metadata.get("salon_id") or metadata.get("salon")
+
     session_update = {
         "status": status or event_type,
         "recurrent_payment_id": recurrent_payment_id,
     }
+    if salon_id:
+        session_update["salon_id"] = salon_id
     supabase.table("one_lat_subscription_sessions").update(session_update).eq(
         "id", session.get("id")
     ).execute()
@@ -325,6 +335,8 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
         "seller_username": session.get("seller_username"),
         "metadata": session.get("metadata") or {},
     }
+    if salon_id:
+        subscription_update["salon_id"] = salon_id
 
     if subscription:
         supabase.table("user_subscriptions").update(subscription_update).eq(
@@ -348,6 +360,8 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
             "seller_username": session.get("seller_username"),
             "metadata": session.get("metadata") or {},
         }
+        if salon_id:
+            subscription_payload["salon_id"] = salon_id
         insert_subscription = (
             supabase.table("user_subscriptions").insert(subscription_payload).execute()
         )
@@ -375,6 +389,7 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
 
     success_events = {"RECURRENT_PAYMENT.ACTIVE", "RECURRENT_PAYMENT.COMPLETE"}
     cancel_events = {"RECURRENT_PAYMENT.CANCELED", "RECURRENT_PAYMENT.CANCELLED"}
+    unpaid_events = {"RECURRENT_PAYMENT.UNPAID", "RECURRENT_PAYMENT.PAUSED"}
 
     history_check = (
         supabase.table("subscription_charge_history")
@@ -407,6 +422,50 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
 
     if event_type in cancel_events:
         subscription_update["status"] = "CANCELED"
+    elif status and str(status).upper() == "UNPAID":
+        subscription_update["status"] = "UNPAID"
+
+    if salon_id and subscription_id:
+        membership_status = subscription_update["status"]
+        if event_type in success_events:
+            membership_status = "ACTIVE"
+        elif event_type in cancel_events:
+            membership_status = "CANCELED"
+        elif event_type in unpaid_events or (status and str(status).upper() == "UNPAID"):
+            membership_status = "UNPAID"
+
+        membership_response = (
+            supabase.table("salon_memberships")
+            .select("id")
+            .eq("salon_id", salon_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+
+        membership_data = {
+            "salon_id": salon_id,
+            "user_id": user_id,
+            "status": membership_status,
+            "recurrent_payment_id": recurrent_payment_id,
+            "subscription_session_external_id": session.get("external_id"),
+            "last_event_type": event_type,
+            "next_charge_at": next_charge_at,
+        }
+
+        if event_type in success_events:
+            membership_data["last_charged_at"] = now.isoformat()
+            if not membership_response.data:
+                membership_data["joined_at"] = now.isoformat()
+        if event_type in cancel_events:
+            membership_data["canceled_at"] = now.isoformat()
+
+        if membership_response.data:
+            supabase.table("salon_memberships").update(membership_data).eq(
+                "id", membership_response.data["id"]
+            ).execute()
+        else:
+            supabase.table("salon_memberships").insert(membership_data).execute()
 
     supabase.table("user_subscriptions").update(subscription_update).eq(
         "id", subscription_id
@@ -433,6 +492,8 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
                 "recurrent_payment": recurrent_payment,
             },
         }
+        if salon_id:
+            history_payload["salon_id"] = salon_id
         supabase.table("subscription_charge_history").insert(history_payload).execute()
 
     logger.info(

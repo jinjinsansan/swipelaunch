@@ -41,6 +41,10 @@ class SubscriptionCheckoutRequest(BaseModel):
         default=None,
         description="Frontend path to redirect upon failure (overrides default)",
     )
+    salon_id: Optional[str] = Field(
+        default=None,
+        description="Salon identifier to link the subscription with an online community",
+    )
     metadata: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Additional metadata to persist with the subscription",
@@ -67,6 +71,7 @@ class UserSubscriptionResponse(BaseModel):
     last_event_type: Optional[str] = None
     seller_id: Optional[str] = None
     seller_username: Optional[str] = None
+    salon_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     cancelable: bool = True
     created_at: datetime

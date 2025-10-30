@@ -13,6 +13,7 @@ from app.models.product import (
     PublicProductListResponse
 )
 from typing import Optional, Dict, Any, List
+import logging
 
 from app.utils.auth import decode_access_token
 
@@ -102,17 +103,58 @@ async def create_product(
                     detail="指定されたLPが見つかりません"
                 )
         
-        # 商品作成
+        product_type = data.product_type or "points"
+        salon_record = None
+
+        if product_type == "points":
+            if data.price_in_points is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="ポイント商品には price_in_points が必須です"
+                )
+            price_in_points = data.price_in_points
+        else:
+            # オンラインサロン商品
+            if not data.salon_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="サロン商品には salon_id が必須です"
+                )
+            salon_response = (
+                supabase
+                .table("salons")
+                .select("id, owner_id, subscription_plan_id")
+                .eq("id", data.salon_id)
+                .single()
+                .execute()
+            )
+            if not salon_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="指定されたサロンが見つかりません"
+                )
+            salon_record = salon_response.data
+            if salon_record.get("owner_id") != user["id"]:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="このサロンに商品を紐付ける権限がありません"
+                )
+            price_in_points = 0
+
         product_data = {
             "seller_id": user["id"],
             "lp_id": data.lp_id,
             "title": data.title,
             "description": data.description,
-            "price_in_points": data.price_in_points,
-            "stock_quantity": data.stock_quantity,
-            "is_available": data.is_available
+            "price_in_points": price_in_points,
+            "stock_quantity": data.stock_quantity if product_type == "points" else None,
+            "is_available": data.is_available,
+            "redirect_url": data.redirect_url,
+            "thanks_lp_id": data.thanks_lp_id,
+            "product_type": product_type,
+            "salon_id": salon_record.get("id") if salon_record else None,
         }
-        
+
         response = supabase.table("products").insert(product_data).execute()
         
         if not response.data:
@@ -120,8 +162,22 @@ async def create_product(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="商品作成に失敗しました"
             )
-        
-        return ProductResponse(**response.data[0])
+        product_row = response.data[0]
+
+        if product_type == "salon":
+            try:
+                supabase.table("salon_products").insert(
+                    {
+                        "salon_id": salon_record.get("id"),
+                        "product_id": product_row["id"],
+                        "subscription_plan_id": salon_record.get("subscription_plan_id"),
+                    }
+                ).execute()
+            except Exception as exc:
+                logger = logging.getLogger(__name__)
+                logger.warning("Failed to register salon product linkage", extra={"error": str(exc)})
+
+        return ProductResponse(**product_row)
         
     except HTTPException:
         raise
@@ -135,6 +191,8 @@ async def create_product(
 async def get_products(
     is_available: Optional[bool] = Query(None, description="販売可能フィルター"),
     lp_id: Optional[str] = Query(None, description="LP IDでフィルター"),
+    product_type: Optional[str] = Query(None, description="商品タイプフィルター(points/salon)"),
+    salon_id: Optional[str] = Query(None, description="サロンIDでフィルター"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     credentials: HTTPAuthorizationCredentials = Depends(security)
@@ -167,6 +225,12 @@ async def get_products(
         
         if lp_id:
             query = query.eq("lp_id", lp_id)
+
+        if product_type:
+            query = query.eq("product_type", product_type)
+
+        if salon_id:
+            query = query.eq("salon_id", salon_id)
         
         # 件数取得
         count_response = query.execute()
@@ -375,6 +439,8 @@ async def get_public_products(
                 seller_id=product["seller_id"],
                 seller_username=seller_data.get("username", "Unknown"),
                 lp_id=lp_id,
+                product_type=product.get("product_type", "points"),
+                salon_id=product.get("salon_id"),
                 lp_slug=lp_info.get("slug") if lp_info else None,
                 lp_title=lp_info.get("title") if lp_info else None,
                 lp_thumbnail_url=selected_thumbnail,
@@ -477,12 +543,14 @@ async def update_product(
         
         # 商品存在確認と所有者チェック
         product_response = supabase.table("products").select("*").eq("id", product_id).eq("seller_id", user["id"]).single().execute()
-        
+
         if not product_response.data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="商品が見つかりません"
             )
+
+        current_product = product_response.data
         
         # 更新データ準備
         update_data = data.model_dump(exclude_unset=True)
@@ -502,11 +570,86 @@ async def update_product(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="指定されたLPが見つかりません"
                 )
-        
-        # 更新
+
+        new_product_type = update_data.get("product_type") or current_product.get("product_type", "points")
+        salon_record = None
+
+        if new_product_type not in {"points", "salon"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不正な商品タイプです")
+
+        if new_product_type == "points":
+            price = update_data.get("price_in_points", current_product.get("price_in_points"))
+            if price is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="ポイント商品には price_in_points が必要です"
+                )
+            update_data["price_in_points"] = price
+            if "stock_quantity" not in update_data and current_product.get("stock_quantity") is None:
+                update_data["stock_quantity"] = None
+            update_data["salon_id"] = None
+        else:
+            salon_id = update_data.get("salon_id") or current_product.get("salon_id")
+            if not salon_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="サロン商品には salon_id が必要です"
+                )
+            salon_response = (
+                supabase
+                .table("salons")
+                .select("id, owner_id, subscription_plan_id")
+                .eq("id", salon_id)
+                .single()
+                .execute()
+            )
+            if not salon_response.data:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="サロンが見つかりません")
+            salon_record = salon_response.data
+            if salon_record.get("owner_id") != user["id"]:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="このサロンに紐付けできません")
+            update_data["salon_id"] = salon_record.get("id")
+            update_data["price_in_points"] = 0
+            update_data["stock_quantity"] = None
+
         response = supabase.table("products").update(update_data).eq("id", product_id).execute()
-        
-        return ProductResponse(**response.data[0])
+
+        updated_product = response.data[0]
+
+        if new_product_type == "salon":
+            salon_link_resp = (
+                supabase
+                .table("salon_products")
+                .select("id")
+                .eq("product_id", product_id)
+                .limit(1)
+                .execute()
+            )
+            if not salon_record:
+                salon_lookup = (
+                    supabase
+                    .table("salons")
+                    .select("id, subscription_plan_id")
+                    .eq("id", update_data.get("salon_id"))
+                    .single()
+                    .execute()
+                )
+                salon_record = salon_lookup.data if salon_lookup.data else None
+            if not salon_record:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="サロンが見つかりません")
+            payload = {
+                "salon_id": update_data.get("salon_id"),
+                "subscription_plan_id": salon_record.get("subscription_plan_id"),
+            }
+            if salon_link_resp.data:
+                supabase.table("salon_products").update(payload).eq("product_id", product_id).execute()
+            else:
+                payload.update({"product_id": product_id})
+                supabase.table("salon_products").insert(payload).execute()
+        else:
+            supabase.table("salon_products").delete().eq("product_id", product_id).execute()
+
+        return ProductResponse(**updated_product)
         
     except HTTPException:
         raise
@@ -545,6 +688,9 @@ async def delete_product(
                 detail="商品が見つかりません"
             )
         
+        # サロン連携削除
+        supabase.table("salon_products").delete().eq("product_id", product_id).execute()
+
         # 削除
         supabase.table("products").delete().eq("id", product_id).execute()
         
@@ -590,6 +736,12 @@ async def purchase_product(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="この商品は現在販売されていません"
+            )
+
+        if product.get("product_type", "points") == "salon":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="オンラインサロン商品はサブスクリプションから購入してください"
             )
         
         # 在庫チェック

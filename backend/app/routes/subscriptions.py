@@ -97,6 +97,31 @@ async def create_subscription_checkout(
 
     supabase = get_supabase_client()
 
+    salon_id: Optional[str] = None
+    if payload.salon_id:
+        salon_response = (
+            supabase.table("salons")
+            .select("id, owner_id, subscription_plan_id")
+            .eq("id", payload.salon_id)
+            .single()
+            .execute()
+        )
+        if not salon_response.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="サロンが見つかりません")
+
+        salon_record = salon_response.data
+        if salon_record.get("subscription_plan_id") != plan.subscription_plan_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="サロンに設定されたプランと選択したプランが一致しません",
+            )
+        if payload.seller_id and payload.seller_id != salon_record.get("owner_id"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="サロンと販売者情報が一致しません",
+            )
+        salon_id = salon_record.get("id")
+
     user_response = (
         supabase.table("users").select("email, username").eq("id", user_id).single().execute()
     )
@@ -151,6 +176,10 @@ async def create_subscription_checkout(
         expiration_minutes=30,
     )
 
+    metadata = dict(payload.metadata or {})
+    if salon_id:
+        metadata.setdefault("salon_id", salon_id)
+
     session_record = {
         "user_id": user_id,
         "plan_key": plan.key,
@@ -164,7 +193,8 @@ async def create_subscription_checkout(
         "seller_username": payload.seller_username,
         "success_url": success_url,
         "error_url": error_url,
-        "metadata": payload.metadata or {},
+        "salon_id": salon_id,
+        "metadata": metadata,
     }
 
     supabase.table("one_lat_subscription_sessions").insert(session_record).execute()
@@ -215,6 +245,7 @@ async def list_user_subscriptions(
                 last_event_type=row.get("last_event_type"),
                 seller_id=row.get("seller_id"),
                 seller_username=row.get("seller_username"),
+                salon_id=row.get("salon_id"),
                 metadata=row.get("metadata"),
                 cancelable=cancelable,
                 created_at=row.get("created_at"),
