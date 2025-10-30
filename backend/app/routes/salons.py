@@ -75,9 +75,9 @@ async def create_salon(
 
     existing = (
         supabase.table("salons")
-        .select("id, owner_id")
+        .select("id")
         .eq("subscription_plan_id", payload.subscription_plan_id)
-        .single()
+        .limit(1)
         .execute()
     )
     if existing.data:
