@@ -73,19 +73,6 @@ async def create_salon(
 
     supabase = get_supabase_client()
 
-    existing = (
-        supabase.table("salons")
-        .select("id")
-        .eq("subscription_plan_id", payload.subscription_plan_id)
-        .limit(1)
-        .execute()
-    )
-    if existing.data:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="このサブスクプランは既にサロンに利用されています",
-        )
-
     salon_data = {
         "owner_id": user["id"],
         "title": payload.title,
