@@ -32,11 +32,9 @@ def get_supabase() -> Client:
 
 def _build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optional[LinkedSalonInfo]:
     if not salon_id:
-        print(f"[DEBUG] _build_linked_salon_info: salon_id is None")
         return None
 
     try:
-        print(f"[DEBUG] _build_linked_salon_info: Fetching salon {salon_id}")
         salon_response = (
             supabase
             .table("salons")
@@ -46,18 +44,14 @@ def _build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optio
         )
 
         salon_data = salon_response.data
-        print(f"[DEBUG] _build_linked_salon_info: salon_data = {salon_data}")
         
         if not salon_data or len(salon_data) == 0:
-            print(f"[DEBUG] _build_linked_salon_info: No salon found for {salon_id}")
             return None
         
         salon_data = salon_data[0]
         if salon_data.get("is_active") is False:
-            print(f"[DEBUG] _build_linked_salon_info: Salon is not active")
             return None
-    except Exception as e:
-        print(f"[ERROR] _build_linked_salon_info: Exception {e}")
+    except Exception:
         return None
 
     owner_username: Optional[str] = None
@@ -76,15 +70,13 @@ def _build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optio
         except Exception:
             pass
 
-    result = LinkedSalonInfo(
+    return LinkedSalonInfo(
         id=salon_data.get("id"),
         title=salon_data.get("title") or "",
         thumbnail_url=salon_data.get("thumbnail_url"),
         owner_username=owner_username,
         public_path=f"/salons/{salon_data.get('id')}/public",
     )
-    print(f"[DEBUG] _build_linked_salon_info: Returning {result}")
-    return result
 
 class ViewRecordRequest(BaseModel):
     session_id: Optional[str] = None
