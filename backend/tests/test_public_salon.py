@@ -202,6 +202,43 @@ def test_get_public_salon_inactive_returns_404(monkeypatch, app_client):
     assert response.status_code == 404
 
 
+def test_get_public_salon_handles_unknown_plan(monkeypatch, app_client):
+    fake_db = {
+        "salons": [
+            {
+                "id": "salon-unknown",
+                "owner_id": "owner-1",
+                "title": "未知プランサロン",
+                "description": "",
+                "thumbnail_url": None,
+                "subscription_plan_id": "plan-custom",
+                "is_active": True,
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-02T00:00:00Z",
+            }
+        ],
+        "users": [
+            {
+                "id": "owner-1",
+                "username": "owner",
+                "display_name": None,
+                "profile_image_url": None,
+            }
+        ],
+        "salon_memberships": [],
+    }
+
+    monkeypatch.setattr(public, "get_supabase", lambda: FakeSupabase(fake_db))
+
+    response = app_client.get("/api/public/salons/salon-unknown")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["plan"]["subscription_plan_id"] == "plan-custom"
+    assert payload["plan"]["label"] == "プラン情報未設定"
+    assert payload["plan"]["points"] == 0
+
+
 def test_get_public_lp_includes_linked_salon(monkeypatch, app_client):
     fake_db = {
         "landing_pages": [

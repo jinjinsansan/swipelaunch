@@ -121,6 +121,56 @@ SALON_FILTER_PRICE_BRACKETS = {
 }
 
 
+def _resolve_public_plan(supabase: Client, subscription_plan_id: Optional[str]) -> SalonPublicPlan:
+    plan_id = str(subscription_plan_id or "")
+    cached_plan = get_subscription_plan_by_id(plan_id)
+    if cached_plan:
+        return SalonPublicPlan(
+            key=cached_plan.key,
+            label=cached_plan.label,
+            points=cached_plan.points,
+            usd_amount=cached_plan.usd_amount,
+            subscription_plan_id=cached_plan.subscription_plan_id,
+        )
+
+    fallback_key = "custom"
+    fallback_label = "プラン情報未設定"
+    fallback_points = 0
+    fallback_usd = 0.0
+
+    if plan_id:
+        try:
+            response = (
+                supabase
+                .table("subscription_plans")
+                .select("plan_key, label, points_per_cycle, usd_amount, points")
+                .eq("id", plan_id)
+                .single()
+                .execute()
+            )
+            record = response.data or {}
+            if record:
+                fallback_key = record.get("plan_key") or fallback_key
+                fallback_label = record.get("label") or fallback_label
+                points_value = record.get("points_per_cycle") or record.get("points")
+                if isinstance(points_value, (int, float)):
+                    fallback_points = int(points_value)
+                usd_value = record.get("usd_amount")
+                if isinstance(usd_value, (int, float)):
+                    fallback_usd = float(usd_value)
+        except Exception:
+            # フォールバック情報が取得できない場合でも静かに続行
+            pass
+
+    return SalonPublicPlan(
+        key=fallback_key,
+        label=fallback_label,
+        points=fallback_points,
+        usd_amount=fallback_usd,
+        subscription_plan_id=plan_id,
+    )
+
+
 @router.get("/salons/{salon_id}", response_model=SalonPublicResponse)
 async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = Header(default=None)):
     """公開サロン詳細を取得（認証任意）。"""
@@ -139,9 +189,7 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
     if not salon_record or not bool(salon_record.get("is_active", False)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="サロンが見つかりません")
 
-    plan = get_subscription_plan_by_id(str(salon_record.get("subscription_plan_id", "")))
-    if not plan:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="サロンのプラン情報が取得できません")
+    plan_payload = _resolve_public_plan(supabase, salon_record.get("subscription_plan_id"))
 
     owner_response = (
         supabase
@@ -195,14 +243,6 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         username=owner_record.get("username"),
         display_name=owner_record.get("display_name"),
         profile_image_url=owner_record.get("profile_image_url"),
-    )
-
-    plan_payload = SalonPublicPlan(
-        key=plan.key,
-        label=plan.label,
-        points=plan.points,
-        usd_amount=plan.usd_amount,
-        subscription_plan_id=plan.subscription_plan_id,
     )
 
     return SalonPublicResponse(
@@ -311,10 +351,11 @@ async def list_public_salons(
 
     items: List[SalonPublicListItem] = []
     for row in rows:
-        plan = get_subscription_plan_by_id(str(row.get("subscription_plan_id", "")))
         owner = owners.get(str(row.get("owner_id")))
-        if not plan or not owner or not owner.get("username"):
+        if not owner or not owner.get("username"):
             continue
+
+        plan_payload = _resolve_public_plan(supabase, row.get("subscription_plan_id"))
 
         items.append(
             SalonPublicListItem(
@@ -326,9 +367,9 @@ async def list_public_salons(
                 owner_username=owner.get("username", ""),
                 owner_display_name=owner.get("display_name"),
                 owner_profile_image_url=owner.get("profile_image_url"),
-                plan_label=plan.label,
-                plan_points=plan.points,
-                plan_usd_amount=plan.usd_amount,
+                plan_label=plan_payload.label,
+                plan_points=plan_payload.points,
+                plan_usd_amount=plan_payload.usd_amount,
                 created_at=row.get("created_at"),
             )
         )
