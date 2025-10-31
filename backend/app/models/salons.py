@@ -12,6 +12,7 @@ class SalonCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=120)
     description: Optional[str] = Field(None, max_length=2000)
     thumbnail_url: Optional[str] = Field(None, max_length=1024)
+    category: Optional[str] = Field(None, max_length=60)
     subscription_plan_id: str = Field(..., min_length=1, max_length=64)
     subscription_external_id: Optional[str] = Field(None, max_length=128)
 
@@ -20,6 +21,7 @@ class SalonUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=120)
     description: Optional[str] = Field(None, max_length=2000)
     thumbnail_url: Optional[str] = Field(None, max_length=1024)
+    category: Optional[str] = Field(None, max_length=60)
     is_active: Optional[bool] = None
 
 
@@ -29,6 +31,7 @@ class SalonResponse(BaseModel):
     title: str
     description: Optional[str]
     thumbnail_url: Optional[str]
+    category: Optional[str]
     subscription_plan_id: str
     subscription_external_id: Optional[str]
     is_active: bool
@@ -39,6 +42,28 @@ class SalonResponse(BaseModel):
 
 class SalonListResponse(BaseModel):
     data: List[SalonResponse]
+
+
+class SalonPublicListItem(BaseModel):
+    id: str
+    title: str
+    description: Optional[str]
+    thumbnail_url: Optional[str]
+    category: Optional[str]
+    owner_username: str
+    owner_display_name: Optional[str]
+    owner_profile_image_url: Optional[str]
+    plan_label: str
+    plan_points: int
+    plan_usd_amount: float
+    created_at: datetime
+
+
+class SalonPublicListResponse(BaseModel):
+    data: List[SalonPublicListItem]
+    total: int
+    limit: int
+    offset: int
 
 
 class SalonPublicOwner(BaseModel):

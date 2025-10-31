@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Query, Header
 from supabase import create_client, Client
 from app.config import settings
-from app.models.landing_page import LPDetailResponse, LPStepResponse, CTAResponse
+from app.models.landing_page import LPDetailResponse, LPStepResponse, CTAResponse, LinkedSalonInfo
 from app.models.required_actions import (
     EmailSubmitRequest,
     LineConfirmRequest,
@@ -13,8 +13,14 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
-from app.constants.subscription_plans import get_subscription_plan_by_id
-from app.models.salons import SalonPublicOwner, SalonPublicPlan, SalonPublicResponse
+from app.constants.subscription_plans import SUBSCRIPTION_PLANS, get_subscription_plan_by_id
+from app.models.salons import (
+    SalonPublicListItem,
+    SalonPublicListResponse,
+    SalonPublicOwner,
+    SalonPublicPlan,
+    SalonPublicResponse,
+)
 from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/public", tags=["public"])
@@ -22,6 +28,47 @@ router = APIRouter(prefix="/public", tags=["public"])
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
     return create_client(settings.supabase_url, settings.supabase_key)
+
+
+def _build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optional[LinkedSalonInfo]:
+    if not salon_id:
+        return None
+
+    salon_response = (
+        supabase
+        .table("salons")
+        .select("id, title, category, thumbnail_url, owner_id, is_active")
+        .eq("id", salon_id)
+        .single()
+        .execute()
+    )
+
+    salon_data = salon_response.data
+    if not salon_data or salon_data.get("is_active") is False:
+        return None
+
+    owner_username: Optional[str] = None
+    owner_id = salon_data.get("owner_id")
+    if owner_id:
+        owner_response = (
+            supabase
+            .table("users")
+            .select("username")
+            .eq("id", owner_id)
+            .single()
+            .execute()
+        )
+        if owner_response.data:
+            owner_username = owner_response.data.get("username")
+
+    return LinkedSalonInfo(
+        id=salon_data.get("id"),
+        title=salon_data.get("title") or "",
+        category=salon_data.get("category"),
+        thumbnail_url=salon_data.get("thumbnail_url"),
+        owner_username=owner_username,
+        public_path=f"/salons/{salon_data.get('id')}/public",
+    )
 
 class ViewRecordRequest(BaseModel):
     session_id: Optional[str] = None
@@ -64,6 +111,14 @@ def _extract_user_id(authorization: Optional[str]) -> Optional[str]:
         return None
     user_id = payload.get("sub") if isinstance(payload, dict) else None
     return user_id if isinstance(user_id, str) else None
+
+
+SALON_FILTER_PRICE_BRACKETS = {
+    "under_1000": (0, 1000),
+    "1000_3000": (1000, 3000),
+    "3000_5000": (3000, 5000),
+    "over_5000": (5000, None),
+}
 
 
 @router.get("/salons/{salon_id}", response_model=SalonPublicResponse)
@@ -164,6 +219,129 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         created_at=salon_record.get("created_at"),
         updated_at=salon_record.get("updated_at"),
     )
+
+
+@router.get("/salons", response_model=SalonPublicListResponse)
+async def list_public_salons(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    category: Optional[str] = Query(None, description="カテゴリフィルタ"),
+    price_range: Optional[str] = Query(None, description="価格帯フィルタ (under_1000 / 1000_3000 / 3000_5000 / over_5000)"),
+    seller_username: Optional[str] = Query(None, description="販売者（オーナー）ユーザー名で絞り込み"),
+    sort: Optional[str] = Query("new", description="ソートキー (new / popular)"),
+):
+    supabase = get_supabase()
+
+    query = (
+        supabase
+        .table("salons")
+        .select("id, owner_id, title, description, thumbnail_url, category, subscription_plan_id, created_at")
+        .eq("is_active", True)
+    )
+
+    if category:
+        query = query.eq("category", category)
+
+    if seller_username:
+        owner_resp = (
+            supabase
+            .table("users")
+            .select("id")
+            .eq("username", seller_username)
+            .single()
+            .execute()
+        )
+        owner_id = owner_resp.data.get("id") if owner_resp.data else None
+        if not owner_id:
+            return SalonPublicListResponse(data=[], total=0, limit=limit, offset=offset)
+        query = query.eq("owner_id", owner_id)
+
+    if price_range:
+        bracket = SALON_FILTER_PRICE_BRACKETS.get(price_range)
+        if bracket:
+            min_points, max_points = bracket
+            allowed_ids = [
+                plan.subscription_plan_id
+                for plan in SUBSCRIPTION_PLANS
+                if (min_points is None or plan.points >= min_points)
+                and (max_points is None or plan.points < max_points)
+            ]
+            if allowed_ids:
+                query = query.in_("subscription_plan_id", allowed_ids)
+            else:
+                return SalonPublicListResponse(data=[], total=0, limit=limit, offset=offset)
+
+    response = query.execute()
+    rows = response.data or []
+
+    salon_ids = [row.get("id") for row in rows if row.get("id")]
+    owner_ids = {row.get("owner_id") for row in rows if row.get("owner_id")}
+
+    owners: dict[str, dict[str, Optional[str]]] = {}
+    if owner_ids:
+        owners_resp = (
+            supabase
+            .table("users")
+            .select("id, username, display_name, profile_image_url")
+            .in_("id", list(owner_ids))
+            .execute()
+        )
+        for record in owners_resp.data or []:
+            owners[str(record.get("id"))] = {
+                "username": record.get("username"),
+                "display_name": record.get("display_name"),
+                "profile_image_url": record.get("profile_image_url"),
+            }
+
+    member_counts: dict[str, int] = {}
+    if salon_ids:
+        memberships_resp = (
+            supabase
+            .table("salon_memberships")
+            .select("salon_id, status")
+            .in_("salon_id", salon_ids)
+            .execute()
+        )
+        for membership in memberships_resp.data or []:
+            if str(membership.get("status", "")).upper() != "ACTIVE":
+                continue
+            salon_id = membership.get("salon_id")
+            if salon_id:
+                member_counts[salon_id] = member_counts.get(salon_id, 0) + 1
+
+    items: List[SalonPublicListItem] = []
+    for row in rows:
+        plan = get_subscription_plan_by_id(str(row.get("subscription_plan_id", "")))
+        owner = owners.get(str(row.get("owner_id")))
+        if not plan or not owner or not owner.get("username"):
+            continue
+
+        items.append(
+            SalonPublicListItem(
+                id=row.get("id"),
+                title=row.get("title", ""),
+                description=row.get("description"),
+                thumbnail_url=row.get("thumbnail_url"),
+                category=row.get("category"),
+                owner_username=owner.get("username", ""),
+                owner_display_name=owner.get("display_name"),
+                owner_profile_image_url=owner.get("profile_image_url"),
+                plan_label=plan.label,
+                plan_points=plan.points,
+                plan_usd_amount=plan.usd_amount,
+                created_at=row.get("created_at"),
+            )
+        )
+
+    if sort == "popular":
+        items.sort(key=lambda item: member_counts.get(item.id, 0), reverse=True)
+    else:
+        items.sort(key=lambda item: item.created_at, reverse=True)
+
+    total = len(items)
+    paged_items = items[offset : offset + limit]
+
+    return SalonPublicListResponse(data=paged_items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/users/{username}", response_model=PublicUserProfileResponse)
@@ -294,12 +472,15 @@ async def get_public_lp(
 
         # 公開URL生成
         public_url = f"{settings.frontend_url}/{lp_data['slug']}"
+
+        linked_salon = _build_linked_salon_info(supabase, lp_data.get("salon_id"))
         
         return LPDetailResponse(
             **lp_data,
             steps=steps,
             ctas=ctas,
-            public_url=public_url
+            public_url=public_url,
+            linked_salon=linked_salon
         )
         
     except HTTPException:

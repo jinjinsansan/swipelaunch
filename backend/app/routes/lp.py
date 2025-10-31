@@ -7,6 +7,7 @@ from app.models.landing_page import (
     LPUpdateRequest,
     LPResponse,
     LPDetailResponse,
+    LinkedSalonInfo,
     LPListResponse,
     StepCreateRequest,
     StepUpdateRequest,
@@ -73,6 +74,82 @@ def generate_unique_slug(supabase: Client, base_slug: str) -> str:
         detail="スラッグの生成に失敗しました"
     )
 
+
+def ensure_owned_salon(supabase: Client, owner_id: str, salon_id: Optional[str]) -> None:
+    """指定したサロンが存在し、ユーザーが所有しているか検証する"""
+    if not salon_id:
+        return
+
+    salon_response = (
+        supabase
+        .table("salons")
+        .select("id, owner_id, is_active")
+        .eq("id", salon_id)
+        .single()
+        .execute()
+    )
+
+    salon_data = salon_response.data
+    if not salon_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="紐づけるサロンが見つかりません"
+        )
+
+    if salon_data.get("owner_id") != owner_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="サロンを紐づける権限がありません"
+        )
+
+    is_active = salon_data.get("is_active")
+    if is_active is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="非公開のサロンは紐づけできません"
+        )
+
+
+def build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optional[LinkedSalonInfo]:
+    if not salon_id:
+        return None
+
+    salon_response = (
+        supabase
+        .table("salons")
+        .select("id, title, category, thumbnail_url, owner_id")
+        .eq("id", salon_id)
+        .single()
+        .execute()
+    )
+
+    salon_data = salon_response.data
+    if not salon_data:
+        return None
+
+    owner_username: Optional[str] = None
+    owner_id = salon_data.get("owner_id")
+    if owner_id:
+        owner_response = (
+            supabase
+            .table("users")
+            .select("username")
+            .eq("id", owner_id)
+            .single()
+            .execute()
+        )
+        if owner_response.data:
+            owner_username = owner_response.data.get("username")
+
+    return LinkedSalonInfo(
+        id=salon_data.get("id"),
+        title=salon_data.get("title") or "",
+        category=salon_data.get("category"),
+        thumbnail_url=salon_data.get("thumbnail_url"),
+        owner_username=owner_username,
+        public_path=f"/salons/{salon_data.get('id')}/public",
+    )
+
 @router.post("", response_model=LPResponse, status_code=status.HTTP_201_CREATED)
 async def create_lp(
     data: LPCreateRequest,
@@ -89,6 +166,8 @@ async def create_lp(
     try:
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
+        salon_id = data.salon_id or None
+        ensure_owned_salon(supabase, user_id, salon_id)
         normalized_slug = normalize_slug(data.slug)
 
         existing_response = supabase.table("landing_pages").select("*").eq("slug", normalized_slug).execute()
@@ -104,6 +183,7 @@ async def create_lp(
                     "fullscreen_media": data.fullscreen_media,
                     "floating_cta": data.floating_cta,
                     "product_id": data.product_id,
+                    "salon_id": salon_id,
                     "meta_title": data.meta_title,
                     "meta_description": data.meta_description,
                     "meta_image_url": data.meta_image_url,
@@ -129,6 +209,7 @@ async def create_lp(
             "is_fullscreen": data.is_fullscreen,
             "status": "draft",
             "product_id": data.product_id,
+            "salon_id": salon_id,
             "show_swipe_hint": data.show_swipe_hint,
             "fullscreen_media": data.fullscreen_media,
             "floating_cta": data.floating_cta,
@@ -245,12 +326,15 @@ async def get_lp(
         
         # 公開URL生成
         public_url = f"{settings.frontend_url}/{lp_data['slug']}"
+
+        linked_salon = build_linked_salon_info(supabase, lp_data.get("salon_id"))
         
         return LPDetailResponse(
             **lp_data,
             steps=steps,
             ctas=ctas,
-            public_url=public_url
+            public_url=public_url,
+            linked_salon=linked_salon
         )
         
     except HTTPException:
@@ -291,6 +375,11 @@ async def update_lp(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="更新するデータがありません"
             )
+
+        if "salon_id" in update_data:
+            salon_id = update_data.get("salon_id") or None
+            update_data["salon_id"] = salon_id
+            ensure_owned_salon(supabase, user_id, salon_id)
         
         # 更新
         response = supabase.table("landing_pages").update(update_data).eq("id", lp_id).execute()
@@ -412,6 +501,7 @@ async def duplicate_lp(
             "is_fullscreen": original_lp.get("is_fullscreen", False),
             "status": "draft",
             "product_id": None,
+            "salon_id": None,
             "show_swipe_hint": original_lp.get("show_swipe_hint", False),
             "fullscreen_media": original_lp.get("fullscreen_media", False),
             "floating_cta": original_lp.get("floating_cta", False),
@@ -517,11 +607,14 @@ async def duplicate_lp(
 
         public_url = f"{settings.frontend_url}/{latest_lp.get('slug', new_slug)}"
 
+        linked_salon = build_linked_salon_info(supabase, latest_lp.get("salon_id"))
+
         return LPDetailResponse(
             **latest_lp,
             steps=steps_models,
             ctas=cta_models,
-            public_url=public_url
+            public_url=public_url,
+            linked_salon=linked_salon
         )
 
     except HTTPException:

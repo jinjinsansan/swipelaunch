@@ -49,6 +49,7 @@ from app.routes import (
     notes,
     points,
     products,
+    purchase_history,
     public,
     salon_announcements,
     salon_assets,
@@ -70,6 +71,7 @@ app.include_router(public.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(products.router, prefix="/api")
 app.include_router(points.router, prefix="/api")
+app.include_router(purchase_history.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(line.router, prefix="/api")
