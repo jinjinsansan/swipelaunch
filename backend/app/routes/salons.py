@@ -160,7 +160,24 @@ async def get_salon(
     )
     member_count = getattr(member_count_resp, "count", 0) or 0
 
-    return _map_salon(record, member_count=member_count)
+    # Find linked LP (reverse lookup from landing_pages.salon_id)
+    try:
+        lp_response = (
+            supabase.table("landing_pages")
+            .select("id")
+            .eq("salon_id", salon_id)
+            .eq("seller_id", user["id"])
+            .execute()
+        )
+        linked_lp_id = lp_response.data[0]["id"] if lp_response.data and len(lp_response.data) > 0 else None
+    except Exception:
+        linked_lp_id = None
+
+    salon_data = _map_salon(record, member_count=member_count)
+    salon_dict = salon_data.model_dump()
+    salon_dict["lp_id"] = linked_lp_id
+    
+    return SalonResponse(**salon_dict)
 
 
 @router.patch("/{salon_id}", response_model=SalonResponse)
@@ -190,36 +207,42 @@ async def update_salon(
 
     # Handle LP linking
     if payload.lp_id is not None:
-        if payload.lp_id:
-            # Verify LP belongs to user
-            lp_response = (
-                supabase.table("landing_pages")
-                .select("id, salon_id")
-                .eq("id", payload.lp_id)
-                .eq("seller_id", user["id"])
-                .single()
-                .execute()
-            )
-            if not lp_response.data:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="指定されたLPが見つかりません")
+        try:
+            if payload.lp_id:
+                # Verify LP belongs to user
+                lp_response = (
+                    supabase.table("landing_pages")
+                    .select("id, salon_id")
+                    .eq("id", payload.lp_id)
+                    .eq("seller_id", user["id"])
+                    .execute()
+                )
+                
+                if not lp_response.data or len(lp_response.data) == 0:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="指定されたLPが見つかりません。自分が作成したLPを選択してください")
 
-            # Update LP to link to this salon
-            supabase.table("landing_pages").update({"salon_id": salon_id}).eq("id", payload.lp_id).execute()
+                # Update LP to link to this salon
+                supabase.table("landing_pages").update({"salon_id": salon_id}).eq("id", payload.lp_id).execute()
 
-            # If there was an old LP linked to this salon, unlink it
-            old_lp_response = (
-                supabase.table("landing_pages")
-                .select("id")
-                .eq("salon_id", salon_id)
-                .neq("id", payload.lp_id)
-                .execute()
-            )
-            if old_lp_response.data:
-                for old_lp in old_lp_response.data:
-                    supabase.table("landing_pages").update({"salon_id": None}).eq("id", old_lp["id"]).execute()
-        else:
-            # Unlink any LP currently linked to this salon
-            supabase.table("landing_pages").update({"salon_id": None}).eq("salon_id", salon_id).execute()
+                # If there was an old LP linked to this salon, unlink it
+                old_lp_response = (
+                    supabase.table("landing_pages")
+                    .select("id")
+                    .eq("salon_id", salon_id)
+                    .neq("id", payload.lp_id)
+                    .execute()
+                )
+                if old_lp_response.data:
+                    for old_lp in old_lp_response.data:
+                        supabase.table("landing_pages").update({"salon_id": None}).eq("id", old_lp["id"]).execute()
+            else:
+                # Unlink any LP currently linked to this salon
+                supabase.table("landing_pages").update({"salon_id": None}).eq("salon_id", salon_id).execute()
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to handle LP linking: {e}", exc_info=True)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"LP紐づけ処理に失敗しました: {str(e)}")
 
     if not update_data:
         # Even if no salon fields changed, LP linking may have happened

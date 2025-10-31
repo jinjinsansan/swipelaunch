@@ -37,6 +37,7 @@ class SalonResponse(BaseModel):
     subscription_external_id: Optional[str]
     is_active: bool
     member_count: int = 0
+    lp_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
