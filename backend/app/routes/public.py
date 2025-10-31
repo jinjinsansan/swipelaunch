@@ -40,7 +40,7 @@ def _build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optio
         salon_response = (
             supabase
             .table("salons")
-            .select("id, title, category, thumbnail_url, owner_id, is_active")
+            .select("id, title, thumbnail_url, owner_id, is_active")
             .eq("id", salon_id)
             .execute()
         )
@@ -79,7 +79,6 @@ def _build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optio
     result = LinkedSalonInfo(
         id=salon_data.get("id"),
         title=salon_data.get("title") or "",
-        category=salon_data.get("category"),
         thumbnail_url=salon_data.get("thumbnail_url"),
         owner_username=owner_username,
         public_path=f"/salons/{salon_data.get('id')}/public",

@@ -296,7 +296,7 @@ def test_get_public_lp_includes_linked_salon(monkeypatch, app_client):
         "id": "salon-1",
         "title": "オンラインサロンA",
         "public_path": "/salons/salon-1/public",
-        "category": "business",
+        "category": None,
         "owner_username": "ownername",
         "thumbnail_url": "https://example.com/thumb.png",
     }
