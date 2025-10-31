@@ -296,7 +296,7 @@ async def list_public_salons(
     query = (
         supabase
         .table("salons")
-        .select("id, owner_id, title, description, thumbnail_url, category, subscription_plan_id, created_at")
+        .select("id, owner_id, title, description, thumbnail_url, subscription_plan_id, created_at")
         .eq("is_active", True)
     )
 
@@ -384,7 +384,7 @@ async def list_public_salons(
                 title=row.get("title", ""),
                 description=row.get("description"),
                 thumbnail_url=row.get("thumbnail_url"),
-                category=row.get("category"),
+                category=None,  # Category field removed from salons table
                 owner_username=owner.get("username", ""),
                 owner_display_name=owner.get("display_name"),
                 owner_profile_image_url=owner.get("profile_image_url"),

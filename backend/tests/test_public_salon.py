@@ -349,7 +349,7 @@ def test_list_public_salons_filters(monkeypatch, app_client):
     payload = response.json()
     assert payload["total"] == 1
     assert payload["data"][0]["id"] == "salon-pro"
-    assert payload["data"][0]["category"] == "ビジネス"
+    assert payload["data"][0]["category"] is None  # Category field removed from salons table
 
     response_popular = app_client.get("/api/public/salons", params={"sort": "popular"})
     assert response_popular.status_code == 200
