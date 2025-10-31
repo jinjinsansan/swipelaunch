@@ -34,32 +34,40 @@ def _build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optio
     if not salon_id:
         return None
 
-    salon_response = (
-        supabase
-        .table("salons")
-        .select("id, title, category, thumbnail_url, owner_id, is_active")
-        .eq("id", salon_id)
-        .single()
-        .execute()
-    )
+    try:
+        salon_response = (
+            supabase
+            .table("salons")
+            .select("id, title, category, thumbnail_url, owner_id, is_active")
+            .eq("id", salon_id)
+            .execute()
+        )
 
-    salon_data = salon_response.data
-    if not salon_data or salon_data.get("is_active") is False:
+        salon_data = salon_response.data
+        if not salon_data or len(salon_data) == 0:
+            return None
+        
+        salon_data = salon_data[0]
+        if salon_data.get("is_active") is False:
+            return None
+    except Exception:
         return None
 
     owner_username: Optional[str] = None
     owner_id = salon_data.get("owner_id")
     if owner_id:
-        owner_response = (
-            supabase
-            .table("users")
-            .select("username")
-            .eq("id", owner_id)
-            .single()
-            .execute()
-        )
-        if owner_response.data:
-            owner_username = owner_response.data.get("username")
+        try:
+            owner_response = (
+                supabase
+                .table("users")
+                .select("username")
+                .eq("id", owner_id)
+                .execute()
+            )
+            if owner_response.data and len(owner_response.data) > 0:
+                owner_username = owner_response.data[0].get("username")
+        except Exception:
+            pass
 
     return LinkedSalonInfo(
         id=salon_data.get("id"),
