@@ -15,6 +15,7 @@ class SubscriptionPlanResponse(BaseModel):
     label: str = Field(..., description="Display label for the plan")
     points: int = Field(..., ge=0, description="Number of points granted per billing cycle")
     usd_amount: float = Field(..., ge=0, description="USD amount charged per cycle")
+    subscription_plan_id: str = Field(..., description="ONE.lat subscription plan identifier")
 
 
 class SubscriptionPlanListResponse(BaseModel):

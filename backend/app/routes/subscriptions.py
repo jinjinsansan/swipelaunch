@@ -77,6 +77,7 @@ async def list_subscription_plans(_: HTTPAuthorizationCredentials = Depends(secu
             label=plan.label,
             points=plan.points,
             usd_amount=plan.usd_amount,
+            subscription_plan_id=plan.subscription_plan_id,
         )
         for plan in SUBSCRIPTION_PLANS
     ]
