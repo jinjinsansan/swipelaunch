@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, HTTPException, status, Query, Header
 from supabase import create_client, Client
 from app.config import settings
 from app.models.landing_page import LPDetailResponse, LPStepResponse, CTAResponse
@@ -12,6 +12,10 @@ from app.models.required_actions import (
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
+
+from app.constants.subscription_plans import get_subscription_plan_by_id
+from app.models.salons import SalonPublicOwner, SalonPublicPlan, SalonPublicResponse
+from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/public", tags=["public"])
 
@@ -40,6 +44,126 @@ class PublicUserProfileResponse(BaseModel):
     sns_url: Optional[str] = None
     line_url: Optional[str] = None
     profile_image_url: Optional[str] = None
+
+
+def _extract_user_id(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    token = authorization.strip()
+    if not token:
+        return None
+    if " " in token:
+        scheme, value = token.split(" ", 1)
+        if scheme.lower() != "bearer":
+            value = token
+        else:
+            token = value
+    try:
+        payload = decode_access_token(token)
+    except Exception:
+        return None
+    user_id = payload.get("sub") if isinstance(payload, dict) else None
+    return user_id if isinstance(user_id, str) else None
+
+
+@router.get("/salons/{salon_id}", response_model=SalonPublicResponse)
+async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = Header(default=None)):
+    """公開サロン詳細を取得（認証任意）。"""
+
+    supabase = get_supabase()
+    salon_response = (
+        supabase
+        .table("salons")
+        .select("id, owner_id, title, description, thumbnail_url, subscription_plan_id, is_active, created_at, updated_at")
+        .eq("id", salon_id)
+        .single()
+        .execute()
+    )
+
+    salon_record = salon_response.data
+    if not salon_record or not bool(salon_record.get("is_active", False)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="サロンが見つかりません")
+
+    plan = get_subscription_plan_by_id(str(salon_record.get("subscription_plan_id", "")))
+    if not plan:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="サロンのプラン情報が取得できません")
+
+    owner_response = (
+        supabase
+        .table("users")
+        .select("id, username, display_name, profile_image_url")
+        .eq("id", salon_record.get("owner_id"))
+        .single()
+        .execute()
+    )
+    owner_record = owner_response.data
+    if not owner_record or not owner_record.get("username"):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="サロンオーナー情報が取得できません")
+
+    member_count_resp = (
+        supabase
+        .table("salon_memberships")
+        .select("id", count="exact")
+        .eq("salon_id", salon_id)
+        .eq("status", "ACTIVE")
+        .execute()
+    )
+    member_count = getattr(member_count_resp, "count", 0) or 0
+
+    viewer_id = _extract_user_id(authorization)
+    is_member = False
+    membership_status: Optional[str] = None
+
+    if viewer_id:
+        if viewer_id == owner_record.get("id"):
+            is_member = True
+            membership_status = "OWNER"
+        else:
+            membership_resp = (
+                supabase
+                .table("salon_memberships")
+                .select("status")
+                .eq("salon_id", salon_id)
+                .eq("user_id", viewer_id)
+                .limit(1)
+                .execute()
+            )
+            for membership in membership_resp.data or []:
+                status_value = str(membership.get("status", "")).upper() or None
+                membership_status = status_value
+                if status_value == "ACTIVE":
+                    is_member = True
+                    break
+
+    owner = SalonPublicOwner(
+        id=owner_record.get("id"),
+        username=owner_record.get("username"),
+        display_name=owner_record.get("display_name"),
+        profile_image_url=owner_record.get("profile_image_url"),
+    )
+
+    plan_payload = SalonPublicPlan(
+        key=plan.key,
+        label=plan.label,
+        points=plan.points,
+        usd_amount=plan.usd_amount,
+        subscription_plan_id=plan.subscription_plan_id,
+    )
+
+    return SalonPublicResponse(
+        id=salon_record.get("id"),
+        title=salon_record.get("title", ""),
+        description=salon_record.get("description"),
+        thumbnail_url=salon_record.get("thumbnail_url"),
+        is_active=bool(salon_record.get("is_active", False)),
+        owner=owner,
+        plan=plan_payload,
+        member_count=member_count,
+        is_member=is_member,
+        membership_status=membership_status,
+        created_at=salon_record.get("created_at"),
+        updated_at=salon_record.get("updated_at"),
+    )
 
 
 @router.get("/users/{username}", response_model=PublicUserProfileResponse)

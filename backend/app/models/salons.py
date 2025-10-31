@@ -41,6 +41,36 @@ class SalonListResponse(BaseModel):
     data: List[SalonResponse]
 
 
+class SalonPublicOwner(BaseModel):
+    id: str
+    username: str
+    display_name: Optional[str] = None
+    profile_image_url: Optional[str] = None
+
+
+class SalonPublicPlan(BaseModel):
+    key: str
+    label: str
+    points: int
+    usd_amount: float
+    subscription_plan_id: str
+
+
+class SalonPublicResponse(BaseModel):
+    id: str
+    title: str
+    description: Optional[str]
+    thumbnail_url: Optional[str]
+    is_active: bool
+    owner: SalonPublicOwner
+    plan: SalonPublicPlan
+    member_count: int
+    is_member: bool
+    membership_status: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class SalonMemberResponse(BaseModel):
     id: str
     salon_id: str
