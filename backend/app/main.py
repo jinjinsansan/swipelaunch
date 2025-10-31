@@ -50,6 +50,7 @@ from app.routes import (
     points,
     products,
     public,
+    salon_posts,
     subscriptions,
     salons,
     test,
@@ -72,6 +73,7 @@ app.include_router(announcements.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
 app.include_router(salons.router, prefix="/api")
+app.include_router(salon_posts.router, prefix="/api")
 app.include_router(subscriptions.router, prefix="/api")
 
 if __name__ == "__main__":
