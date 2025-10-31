@@ -194,7 +194,7 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
     owner_response = (
         supabase
         .table("users")
-        .select("id, username, display_name, profile_image_url")
+        .select("id, username, profile_image_url")
         .eq("id", salon_record.get("owner_id"))
         .single()
         .execute()
@@ -322,7 +322,7 @@ async def list_public_salons(
         owners_resp = (
             supabase
             .table("users")
-            .select("id, username, display_name, profile_image_url")
+            .select("id, username, profile_image_url")
             .in_("id", list(owner_ids))
             .execute()
         )
