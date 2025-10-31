@@ -23,6 +23,7 @@ class SalonUpdateRequest(BaseModel):
     thumbnail_url: Optional[str] = Field(None, max_length=1024)
     category: Optional[str] = Field(None, max_length=60)
     is_active: Optional[bool] = None
+    lp_id: Optional[str] = Field(None, description="Link to LP that will redirect to this salon")
 
 
 class SalonResponse(BaseModel):

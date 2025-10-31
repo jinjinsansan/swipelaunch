@@ -186,21 +186,55 @@ async def update_salon(
     if payload.is_active is not None:
         update_data["is_active"] = payload.is_active
 
-    if not update_data:
-        return _map_salon(current)
-
     supabase = get_supabase_client()
-    response = (
-        supabase.table("salons")
-        .update(update_data)
-        .eq("id", salon_id)
-        .eq("owner_id", user["id"])
-        .execute()
-    )
-    if not response.data:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="サロンの更新に失敗しました")
 
-    updated = response.data[0]
+    # Handle LP linking
+    if payload.lp_id is not None:
+        if payload.lp_id:
+            # Verify LP belongs to user
+            lp_response = (
+                supabase.table("landing_pages")
+                .select("id, salon_id")
+                .eq("id", payload.lp_id)
+                .eq("seller_id", user["id"])
+                .single()
+                .execute()
+            )
+            if not lp_response.data:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="指定されたLPが見つかりません")
+
+            # Update LP to link to this salon
+            supabase.table("landing_pages").update({"salon_id": salon_id}).eq("id", payload.lp_id).execute()
+
+            # If there was an old LP linked to this salon, unlink it
+            old_lp_response = (
+                supabase.table("landing_pages")
+                .select("id")
+                .eq("salon_id", salon_id)
+                .neq("id", payload.lp_id)
+                .execute()
+            )
+            if old_lp_response.data:
+                for old_lp in old_lp_response.data:
+                    supabase.table("landing_pages").update({"salon_id": None}).eq("id", old_lp["id"]).execute()
+        else:
+            # Unlink any LP currently linked to this salon
+            supabase.table("landing_pages").update({"salon_id": None}).eq("salon_id", salon_id).execute()
+
+    if not update_data:
+        # Even if no salon fields changed, LP linking may have happened
+        updated = current
+    else:
+        response = (
+            supabase.table("salons")
+            .update(update_data)
+            .eq("id", salon_id)
+            .eq("owner_id", user["id"])
+            .execute()
+        )
+        if not response.data:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="サロンの更新に失敗しました")
+        updated = response.data[0]
 
     member_count_resp = (
         supabase.table("salon_memberships")
