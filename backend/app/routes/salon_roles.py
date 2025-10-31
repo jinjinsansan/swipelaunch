@@ -116,7 +116,7 @@ async def list_roles(
         .table("salon_roles")
         .select("*")
         .eq("salon_id", salon_id)
-        .order("created_at", desc=False)
+        .order("created_at")
         .range(offset, range_end)
         .execute()
     )

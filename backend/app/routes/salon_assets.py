@@ -114,12 +114,7 @@ async def list_assets(
     total = getattr(count_resp, "count", 0) or 0
 
     range_end = offset + limit - 1
-    data_resp = (
-        data_query
-        .order("created_at", asc=False)
-        .range(offset, range_end)
-        .execute()
-    )
+    data_resp = data_query.order("created_at", desc=True).range(offset, range_end).execute()
     records = data_resp.data or []
 
     data = [_map_asset_record(record) for record in records]

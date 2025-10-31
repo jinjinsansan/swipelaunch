@@ -45,7 +45,7 @@ class _Table:
         self.name = name
         self._filters: List[tuple[str, str, Any]] = []
         self._order_field: Optional[str] = None
-        self._order_asc: bool = True
+        self._order_desc: bool = False
         self._range: Optional[tuple[int, int]] = None
         self._limit: Optional[int] = None
         self._single: bool = False
@@ -86,9 +86,9 @@ class _Table:
         self._filters.append(("in", field, list(values)))
         return self
 
-    def order(self, field: str, asc: bool = True):
+    def order(self, field: str, desc: bool = False):
         self._order_field = field
-        self._order_asc = asc
+        self._order_desc = desc
         return self
 
     def range(self, start: int, end: int):
@@ -147,7 +147,7 @@ class _Table:
         rows = [deepcopy(row) for row in self._matching_rows()]
 
         if self._order_field:
-            rows.sort(key=lambda item: item.get(self._order_field), reverse=not self._order_asc)
+            rows.sort(key=lambda item: item.get(self._order_field), reverse=self._order_desc)
 
         if self._range is not None:
             start, end = self._range
