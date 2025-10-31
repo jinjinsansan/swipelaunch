@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
-from app.constants.subscription_plans import SUBSCRIPTION_PLANS, get_subscription_plan_by_id
+from app.constants.subscription_plans import SUBSCRIPTION_PLANS, get_subscription_plan, get_subscription_plan_by_id
 from app.models.salons import (
     SalonPublicListItem,
     SalonPublicListResponse,
@@ -123,7 +123,20 @@ SALON_FILTER_PRICE_BRACKETS = {
 
 def _resolve_public_plan(supabase: Client, subscription_plan_id: Optional[str]) -> SalonPublicPlan:
     plan_id = str(subscription_plan_id or "")
+    
+    # Try to find plan by ID first (ONE.lat subscription_plan_id)
     cached_plan = get_subscription_plan_by_id(plan_id)
+    if cached_plan:
+        return SalonPublicPlan(
+            key=cached_plan.key,
+            label=cached_plan.label,
+            points=cached_plan.points,
+            usd_amount=cached_plan.usd_amount,
+            subscription_plan_id=cached_plan.subscription_plan_id,
+        )
+    
+    # Fallback: try to find by plan_key (for legacy data)
+    cached_plan = get_subscription_plan(plan_id)
     if cached_plan:
         return SalonPublicPlan(
             key=cached_plan.key,

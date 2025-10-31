@@ -111,7 +111,9 @@ async def create_subscription_checkout(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="サロンが見つかりません")
 
         salon_record = salon_response.data
-        if salon_record.get("subscription_plan_id") != plan.subscription_plan_id:
+        salon_plan_id = salon_record.get("subscription_plan_id")
+        # subscription_plan_idがplan_keyで保存されている場合も対応
+        if salon_plan_id != plan.subscription_plan_id and salon_plan_id != plan.key:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="サロンに設定されたプランと選択したプランが一致しません",
