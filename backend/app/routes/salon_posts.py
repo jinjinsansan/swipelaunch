@@ -21,6 +21,7 @@ from app.models.salon_posts import (
     SalonPostUpdateRequest,
 )
 from app.utils.auth import decode_access_token
+from app.utils.salon_permissions import get_user_permissions
 
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,8 @@ async def list_posts(
     user = _get_current_user(credentials)
     supabase = get_supabase_client()
     _, is_owner = _get_salon_and_access(supabase, salon_id, user["id"])
+    permissions = get_user_permissions(supabase, salon_id, user["id"], is_owner=is_owner)
+    can_manage = is_owner or permissions.manage_feed
 
     count_query = (
         supabase
@@ -200,7 +203,7 @@ async def list_posts(
         .select("id", count="exact")
         .eq("salon_id", salon_id)
     )
-    if not is_owner:
+    if not can_manage:
         count_query = count_query.eq("is_published", True)
     count_resp = count_query.execute()
     total = getattr(count_resp, "count", 0) or 0
@@ -215,7 +218,7 @@ async def list_posts(
         .order("created_at", desc=True)
         .range(offset, range_end)
     )
-    if not is_owner:
+    if not can_manage:
         posts_query = posts_query.eq("is_published", True)
     posts_resp = posts_query.execute()
     records = posts_resp.data or []
@@ -316,9 +319,12 @@ async def get_post(
 ):
     user = _get_current_user(credentials)
     supabase = get_supabase_client()
-    _, _ = _get_salon_and_access(supabase, salon_id, user["id"])
+    _, is_owner = _get_salon_and_access(supabase, salon_id, user["id"])
+    permissions = get_user_permissions(supabase, salon_id, user["id"], is_owner=is_owner)
 
     record = _fetch_post_with_access(supabase, salon_id, post_id)
+    if not record.get("is_published", True) and record.get("user_id") != user["id"] and not (is_owner or permissions.manage_feed):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="この投稿を閲覧する権限がありません")
     like_count, comment_count, liked_by_me = _get_post_metrics(supabase, post_id, user["id"])
     username_map = _get_usernames(supabase, [record.get("user_id")])
     return _map_post_record(record, like_count, comment_count, liked_by_me, username_map.get(record.get("user_id")))
@@ -334,9 +340,12 @@ async def update_post(
     user = _get_current_user(credentials)
     supabase = get_supabase_client()
     _, is_owner = _get_salon_and_access(supabase, salon_id, user["id"])
+    permissions = get_user_permissions(supabase, salon_id, user["id"], is_owner=is_owner)
+    can_moderate = is_owner or permissions.manage_feed
 
     record = _fetch_post_with_access(supabase, salon_id, post_id)
-    if record.get("user_id") != user["id"] and not is_owner:
+    is_author = record.get("user_id") == user["id"]
+    if not is_author and not can_moderate:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="投稿を編集する権限がありません")
 
     update_data: Dict[str, Any] = {}
@@ -347,7 +356,7 @@ async def update_post(
     if payload.is_published is not None:
         update_data["is_published"] = payload.is_published
     if payload.is_pinned is not None:
-        if record.get("user_id") != user["id"] and not is_owner:
+        if not can_moderate:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="ピン留めを変更する権限がありません")
         update_data["is_pinned"] = payload.is_pinned
 
@@ -382,9 +391,11 @@ async def delete_post(
     user = _get_current_user(credentials)
     supabase = get_supabase_client()
     _, is_owner = _get_salon_and_access(supabase, salon_id, user["id"])
+    permissions = get_user_permissions(supabase, salon_id, user["id"], is_owner=is_owner)
+    can_moderate = is_owner or permissions.manage_feed
 
     record = _fetch_post_with_access(supabase, salon_id, post_id)
-    if record.get("user_id") != user["id"] and not is_owner:
+    if record.get("user_id") != user["id"] and not can_moderate:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="投稿を削除する権限がありません")
 
     supabase.table("salon_posts").delete().eq("id", post_id).eq("salon_id", salon_id).execute()
@@ -481,6 +492,8 @@ async def update_comment(
     user = _get_current_user(credentials)
     supabase = get_supabase_client()
     _, is_owner = _get_salon_and_access(supabase, salon_id, user["id"])
+    permissions = get_user_permissions(supabase, salon_id, user["id"], is_owner=is_owner)
+    can_moderate = is_owner or permissions.manage_feed
     _fetch_post_with_access(supabase, salon_id, post_id)
 
     comment_resp = (
@@ -496,7 +509,7 @@ async def update_comment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="コメントが見つかりません")
 
     comment = comment_resp.data
-    if comment.get("user_id") != user["id"] and not is_owner:
+    if comment.get("user_id") != user["id"] and not can_moderate:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="コメントを編集する権限がありません")
 
     response = (
@@ -525,6 +538,8 @@ async def delete_comment(
     user = _get_current_user(credentials)
     supabase = get_supabase_client()
     _, is_owner = _get_salon_and_access(supabase, salon_id, user["id"])
+    permissions = get_user_permissions(supabase, salon_id, user["id"], is_owner=is_owner)
+    can_moderate = is_owner or permissions.manage_feed
     _fetch_post_with_access(supabase, salon_id, post_id)
 
     comment_resp = (
@@ -539,7 +554,7 @@ async def delete_comment(
     if not comment_resp.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="コメントが見つかりません")
 
-    if comment_resp.data.get("user_id") != user["id"] and not is_owner:
+    if comment_resp.data.get("user_id") != user["id"] and not can_moderate:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="コメントを削除する権限がありません")
 
     supabase.table("salon_comments").delete().eq("id", comment_id).eq("post_id", post_id).execute()
