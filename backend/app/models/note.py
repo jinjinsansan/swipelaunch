@@ -293,8 +293,6 @@ class NoteMetricsResponse(BaseModel):
     latest_published_at: Optional[datetime] = None
     top_categories: List[str] = Field(default_factory=list)
     top_note: Optional[NoteMetricsTopNote] = None
-    remaining_points: int
-    purchased_at: datetime
 
 
 class OfficialShareSetupRequest(BaseModel):
