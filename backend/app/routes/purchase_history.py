@@ -390,7 +390,7 @@ async def get_purchase_history(
         salons_data = (
             supabase
             .table("salons")
-            .select("id, title, category, thumbnail_url, owner_id, subscription_plan_id")
+            .select("id, title, thumbnail_url, owner_id, subscription_plan_id")
             .in_("id", salon_ids)
             .execute()
         )
@@ -431,7 +431,7 @@ async def get_purchase_history(
                 membership_id=row.get("id"),
                 salon_id=salon_id or "",
                 salon_title=salon_info.get("title") if salon_info else None,
-                salon_category=salon_info.get("category") if salon_info else None,
+                salon_category=None,
                 salon_thumbnail_url=salon_info.get("thumbnail_url") if salon_info else None,
                 owner_username=owner_info.get("username") if owner_info else None,
                 owner_display_name=owner_info.get("display_name") if owner_info else None,
