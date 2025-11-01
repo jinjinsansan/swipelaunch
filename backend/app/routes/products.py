@@ -299,6 +299,7 @@ async def get_public_products(
     limit: int = Query(5, ge=1, le=50),
     offset: int = Query(0, ge=0),
     seller_username: Optional[str] = Query(None, description="販売者ユーザー名でフィルター"),
+    lp_id: Optional[str] = Query(None, description="特定LPに紐づく商品でフィルター"),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ):
     """
@@ -407,6 +408,9 @@ async def get_public_products(
 
         # 販売中の商品を取得（seller情報をJOIN）
         products_response = supabase.table("products").select("*, seller:users!seller_id(username)").eq("is_available", True)
+
+        if lp_id:
+            products_response = products_response.eq("lp_id", lp_id)
         
         # seller_idでフィルタリング
         if seller_id_filter:
@@ -501,6 +505,8 @@ async def get_public_products(
         count_query = supabase.table("products").select("id", count="exact").eq("is_available", True)
         if seller_id_filter:
             count_query = count_query.eq("seller_id", seller_id_filter)
+        if lp_id:
+            count_query = count_query.eq("lp_id", lp_id)
         count_response = count_query.execute()
         total = count_response.count or 0
         
