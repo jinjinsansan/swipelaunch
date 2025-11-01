@@ -36,6 +36,8 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 security = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
+JPY_TO_USD_RATE = 145.0
+
 
 def get_supabase() -> Client:
     return create_client(settings.supabase_url, settings.supabase_key)
