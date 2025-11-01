@@ -57,6 +57,11 @@ def _map_salon(record: Dict[str, Any], member_count: int = 0) -> SalonResponse:
         category=record.get("category"),
         subscription_plan_id=record.get("subscription_plan_id", ""),
         subscription_external_id=record.get("subscription_external_id"),
+        monthly_price_jpy=record.get("monthly_price_jpy"),
+        allow_point_subscription=bool(record.get("allow_point_subscription", True)),
+        allow_jpy_subscription=bool(record.get("allow_jpy_subscription", False)),
+        tax_rate=record.get("tax_rate"),
+        tax_inclusive=bool(record.get("tax_inclusive", True)),
         is_active=bool(record.get("is_active", True)),
         member_count=member_count,
         created_at=record.get("created_at"),
@@ -82,6 +87,11 @@ async def create_salon(
         "category": payload.category,
         "subscription_plan_id": payload.subscription_plan_id,
         "subscription_external_id": payload.subscription_external_id,
+        "monthly_price_jpy": payload.monthly_price_jpy,
+        "allow_point_subscription": payload.allow_point_subscription,
+        "allow_jpy_subscription": payload.allow_jpy_subscription,
+        "tax_rate": payload.tax_rate,
+        "tax_inclusive": payload.tax_inclusive,
         "is_active": True,
     }
 
@@ -202,6 +212,16 @@ async def update_salon(
         update_data["category"] = payload.category
     if payload.is_active is not None:
         update_data["is_active"] = payload.is_active
+    if payload.monthly_price_jpy is not None:
+        update_data["monthly_price_jpy"] = payload.monthly_price_jpy
+    if payload.allow_point_subscription is not None:
+        update_data["allow_point_subscription"] = payload.allow_point_subscription
+    if payload.allow_jpy_subscription is not None:
+        update_data["allow_jpy_subscription"] = payload.allow_jpy_subscription
+    if payload.tax_rate is not None:
+        update_data["tax_rate"] = payload.tax_rate
+    if payload.tax_inclusive is not None:
+        update_data["tax_inclusive"] = payload.tax_inclusive
 
     supabase = get_supabase_client()
 
