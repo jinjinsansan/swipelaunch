@@ -454,6 +454,10 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
 
     now = datetime.now(timezone.utc)
 
+    session_metadata = _ensure_metadata_dict(session.get("metadata")) if session else {}
+    billing_method = session_metadata.get("billing_method") if isinstance(session_metadata, dict) else None
+    billing_method_normalized = str(billing_method).lower() if billing_method is not None else ""
+
     if not session:
         # Create a minimal session record to keep mappings consistent
         session_payload = {
@@ -465,7 +469,7 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
             "external_id": external_id or f"auto_{recurrent_payment_id}",
             "recurrent_payment_id": recurrent_payment_id,
             "status": status or event_type,
-            "metadata": {},
+            "metadata": session_metadata,
         }
         insert_response = (
             supabase.table("one_lat_subscription_sessions").insert(session_payload).execute()
@@ -487,6 +491,8 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
     }
     if salon_id:
         session_update["salon_id"] = salon_id
+    if session_metadata:
+        session_update["metadata"] = session_metadata
     supabase.table("one_lat_subscription_sessions").update(session_update).eq(
         "id", session.get("id")
     ).execute()
@@ -518,7 +524,7 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
         "next_charge_at": next_charge_at,
         "seller_id": session.get("seller_id"),
         "seller_username": session.get("seller_username"),
-        "metadata": session.get("metadata") or {},
+        "metadata": session_metadata,
     }
     if salon_id:
         subscription_update["salon_id"] = salon_id
@@ -543,7 +549,7 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
             "next_charge_at": next_charge_at,
             "seller_id": session.get("seller_id"),
             "seller_username": session.get("seller_username"),
-            "metadata": session.get("metadata") or {},
+            "metadata": session_metadata,
         }
         if salon_id:
             subscription_payload["salon_id"] = salon_id
@@ -586,24 +592,27 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
 
     points_awarded = 0
     if event_type in success_events and not already_processed:
-        user_response = (
-            supabase.table("users").select("point_balance").eq("id", user_id).single().execute()
-        )
-        current_points = user_response.data.get("point_balance", 0) if user_response.data else 0
-        new_balance = current_points + plan.points
+        if billing_method_normalized in {"salon_yen", "yen"}:
+            subscription_update["last_charge_at"] = now.isoformat()
+        else:
+            user_response = (
+                supabase.table("users").select("point_balance").eq("id", user_id).single().execute()
+            )
+            current_points = user_response.data.get("point_balance", 0) if user_response.data else 0
+            new_balance = current_points + plan.points
 
-        supabase.table("users").update({"point_balance": new_balance}).eq("id", user_id).execute()
+            supabase.table("users").update({"point_balance": new_balance}).eq("id", user_id).execute()
 
-        point_transaction = {
-            "user_id": user_id,
-            "transaction_type": "subscription_credit",
-            "amount": plan.points,
-            "description": f"Subscription auto recharge ({plan.label})",
-        }
-        supabase.table("point_transactions").insert(point_transaction).execute()
+            point_transaction = {
+                "user_id": user_id,
+                "transaction_type": "subscription_credit",
+                "amount": plan.points,
+                "description": f"Subscription auto recharge ({plan.label})",
+            }
+            supabase.table("point_transactions").insert(point_transaction).execute()
 
-        points_awarded = plan.points
-        subscription_update["last_charge_at"] = now.isoformat()
+            points_awarded = plan.points
+            subscription_update["last_charge_at"] = now.isoformat()
 
     if event_type in cancel_events:
         subscription_update["status"] = "CANCELED"
