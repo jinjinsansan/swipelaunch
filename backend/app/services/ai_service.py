@@ -154,33 +154,110 @@ GENERIC_GUARANTEE_BULLETS = {
 }
 
 # 新しいテンプレートライブラリに対応したブロックシーケンス
-ALLOWED_BLOCK_SEQUENCE = [
-    "top-hero-1",          # ヒーロー（動画背景） - 動的に選択
-    "top-problem-1",       # 問題提起
-    "top-highlights-1",    # ハイライト・特徴
-    "top-before-after-1",  # ビフォーアフター
-    "top-testimonials-1",  # お客様の声
-    "top-bonus-1",         # 特典
-    "top-pricing-1",       # 価格表
-    "top-faq-1",           # FAQ
-    "top-guarantee-1",     # 保証
-    "top-countdown-1",     # カウントダウン
-    "top-cta-1",           # CTA
+BLOCK_SEQUENCE = [
+    {
+        "block_type": "top-hero-1",
+        "template_id": None,  # 選択されたヒーローIDを使用
+        "outline_label": "ヒーローセクション",
+    },
+    {
+        "block_type": "top-problem-1",
+        "template_id": "top-problem-swipe-metrics",
+        "outline_label": "スワイプ型の優位性",
+    },
+    {
+        "block_type": "top-highlights-1",
+        "template_id": "top-highlights-differentiator",
+        "outline_label": "競合との差別化",
+    },
+    {
+        "block_type": "top-before-after-1",
+        "template_id": "top-before-after-pricing-contrast",
+        "outline_label": "料金比較",
+    },
+    {
+        "block_type": "top-testimonials-1",
+        "template_id": None,
+        "outline_label": "お客様の声",
+    },
+    {
+        "block_type": "top-bonus-1",
+        "template_id": None,
+        "outline_label": "申込特典",
+    },
+    {
+        "block_type": "top-pricing-1",
+        "template_id": None,
+        "outline_label": "料金プラン",
+    },
+    {
+        "block_type": "top-faq-1",
+        "template_id": None,
+        "outline_label": "よくある質問",
+    },
+    {
+        "block_type": "top-guarantee-1",
+        "template_id": None,
+        "outline_label": "返金保証",
+    },
+    {
+        "block_type": "top-countdown-1",
+        "template_id": None,
+        "outline_label": "締切カウントダウン",
+    },
+    {
+        "block_type": "top-inline-cta-1",
+        "template_id": "top-inline-cta-editor-proof",
+        "outline_label": "LPエディタ証明CTA",
+    },
+    {
+        "block_type": "top-media-spotlight-1",
+        "template_id": "top-media-spotlight-handwritten",
+        "outline_label": "テンプレートギャラリー",
+    },
+    {
+        "block_type": "handwritten-hero-1",
+        "template_id": "handwritten-hero-casual",
+        "outline_label": "手書き風ヒーロー",
+    },
+    {
+        "block_type": "handwritten-features-1",
+        "template_id": "handwritten-features-simple",
+        "outline_label": "手書き風の特徴",
+    },
+    {
+        "block_type": "handwritten-testimonials-1",
+        "template_id": "handwritten-testimonials-friendly",
+        "outline_label": "手書き風の声",
+    },
+    {
+        "block_type": "handwritten-cta-1",
+        "template_id": "handwritten-cta-friendly",
+        "outline_label": "手書き風CTA",
+    },
+    {
+        "block_type": "top-cta-1",
+        "template_id": "top-cta-final-call",
+        "outline_label": "今すぐ申し込む",
+    },
 ]
 
 
-OUTLINE_FALLBACK_LABELS = {
-    "top-hero-1": "ヒーローセクション",
-    "top-problem-1": "課題の共感",
-    "top-highlights-1": "選ばれる理由",
-    "top-before-after-1": "導入前後の変化",
-    "top-testimonials-1": "お客様の声",
-    "top-bonus-1": "申込特典",
-    "top-pricing-1": "料金プラン",
-    "top-faq-1": "よくある質問",
-    "top-guarantee-1": "返金保証",
-    "top-countdown-1": "締切カウントダウン",
-    "top-cta-1": "今すぐ申し込む",
+OUTLINE_FALLBACK_LABELS = {item["block_type"]: item["outline_label"] for item in BLOCK_SEQUENCE}
+
+
+DEFAULT_TEMPLATE_VARIANTS = {
+    "top-hero-1": "top-hero-dswipe-official",
+    "top-problem-1": "top-problem-swipe-metrics",
+    "top-highlights-1": "top-highlights-differentiator",
+    "top-before-after-1": "top-before-after-pricing-contrast",
+    "top-inline-cta-1": "top-inline-cta-editor-proof",
+    "top-media-spotlight-1": "top-media-spotlight-handwritten",
+    "top-cta-1": "top-cta-final-call",
+    "handwritten-hero-1": "handwritten-hero-casual",
+    "handwritten-features-1": "handwritten-features-simple",
+    "handwritten-testimonials-1": "handwritten-testimonials-friendly",
+    "handwritten-cta-1": "handwritten-cta-friendly",
 }
 
 
@@ -225,15 +302,21 @@ class AIService:
         block_sequence_description = "\n".join(
             [
                 "- top-hero-1: 冒頭ヒーローセクション（動画背景・約束・CTA）",
-                "- top-problem-1: 共感と課題提示（3-5個の問題点）",
-                "- top-highlights-1: 選ばれる理由（3個の特徴・アイコン付き）",
-                "- top-before-after-1: 導入前後の変化訴求",
+                "- top-problem-1: 共感と課題提示（データを交えて4-5個の問題点を列挙）",
+                "- top-highlights-1: 競合との差別化ポイントを3項目で提示",
+                "- top-before-after-1: 導入前後の費用・成果ギャップを明示",
                 "- top-testimonials-1: お客様の声・社会的証明（3件）",
                 "- top-bonus-1: 申込特典の一覧（3-5個）",
                 "- top-pricing-1: 料金プラン",
                 "- top-faq-1: よくある質問（3-5個）",
                 "- top-guarantee-1: 返金保証・安心材料",
                 "- top-countdown-1: 締切カウントダウン",
+                "- top-inline-cta-1: LPエディタで制作した証明と即時行動を促すインラインCTA",
+                "- top-media-spotlight-1: テンプレートギャラリーや制作実例の紹介",
+                "- handwritten-hero-1: 手書き風ヒーローで世界観を紹介",
+                "- handwritten-features-1: 手書き風でテンプレートの魅力を列挙",
+                "- handwritten-testimonials-1: 手書き風の声で親近感を補強",
+                "- handwritten-cta-1: 手書き風CTAでやさしく行動を促す",
                 "- top-cta-1: 最終CTA（行動喚起）",
             ]
         )
@@ -386,6 +469,94 @@ class AIService:
   "backgroundColor": "#DC2626"
 }
 
+### top-inline-cta-1 (インラインCTA)
+{
+  "eyebrow": "LP Proof",
+  "title": "このページもエディタで制作されています",
+  "subtitle": "ユーザーの事例や編集体験などを短く紹介してください。",
+  "buttonText": "エディタを試す",
+  "buttonUrl": "/register",
+  "textColor": テーマのテキストカラー,
+  "backgroundColor": テーマの背景カラー,
+  "accentColor": テーマのアクセントカラー,
+  "buttonColor": テーマのプライマリカラー
+}
+
+### top-media-spotlight-1 (テンプレートギャラリー)
+{
+  "tagline": "Template Showcase",
+  "title": "テンプレートギャラリーのタイトル",
+  "subtitle": "テンプレートの特徴や活用シーンを説明するリード文",
+  "caption": "画像キャプションや撮影情報",
+  "buttonText": "テンプレートを見る",
+  "buttonUrl": "/templates",
+  "imageUrl": "テンプレートを象徴する画像URL（未指定でも可）",
+  "textColor": テーマのテキストカラー,
+  "backgroundColor": テーマの背景カラー,
+  "accentColor": テーマのアクセントカラー,
+  "buttonColor": テーマのプライマリカラー
+}
+
+### handwritten-hero-1 (手書き風ヒーロー)
+{
+  "title": "手書き風ヒーローのタイトル（改行も活用）",
+  "subtitle": "やさしいトーンのサブコピー",
+  "tagline": "英語タグライン",
+  "highlightText": "強調テキスト",
+  "buttonText": "行動を促す言葉",
+  "buttonUrl": "/templates",
+  "secondaryButtonText": "詳細CTA",
+  "secondaryButtonUrl": "/about",
+  "backgroundColor": "#FFFBEB",
+  "textColor": "#78350F",
+  "buttonColor": "#F59E0B",
+  "secondaryButtonColor": "#FFFFFF"
+}
+
+### handwritten-features-1 (手書き風特徴)
+{
+  "title": "手書き風で伝える見出し",
+  "tagline": "英語ラベル",
+  "features": [
+    {
+      "icon": "⭐",
+      "title": "特徴タイトル",
+      "description": "詳細説明"
+    }
+  ],
+  "layout": "grid",
+  "backgroundColor": "#FFFFFF",
+  "textColor": "#1F2937"
+}
+
+### handwritten-testimonials-1 (手書き風お客様の声)
+{
+  "title": "お客様の声",
+  "testimonials": [
+    {
+      "quote": "コメント",
+      "name": "名前",
+      "role": "肩書き",
+      "rating": 5
+    }
+  ],
+  "backgroundColor": "#FFFFFF",
+  "textColor": "#1F2937"
+}
+
+### handwritten-cta-1 (手書き風CTA)
+{
+  "eyebrow": "英語ラベル",
+  "title": "やさしい口調のCTAタイトル",
+  "subtitle": "短いサブコピー",
+  "buttonText": "ボタンテキスト",
+  "buttonUrl": "/register",
+  "buttonColor": "#000000",
+  "buttonTextColor": "#FFFFFF",
+  "backgroundColor": "#FFFFFF",
+  "textColor": "#1F2937"
+}
+
 ### top-cta-1 (CTA)
 {
   "title": "今すぐ始めよう",
@@ -485,6 +656,36 @@ class AIService:
 - 「今すぐ始めよう」「まずは資料請求」のような汎用表現は禁止
 - buttonTextはユーザーが入力したCTAテキストを必ず使用
 
+## top-inline-cta-1（インラインCTA）
+- 「このページもエディタで制作」など、即時性・信頼性を訴求する短いコピーを生成
+- CTAボタンには「無料で試す」「今すぐ編集する」などの行動動詞を入れる
+- subtitleには編集体験の簡単さや導入メリットを簡潔に記載
+
+## top-media-spotlight-1（テンプレートギャラリー）
+- テンプレートのバリエーションや制作実例を紹介
+- キャプションにはスクリーンショットの説明や制作裏話など具体情報を入れる
+- 画像URLが未指定の場合は、AI生成では説明文を充実させ、手動差し替えがわかるように
+
+## handwritten-hero-1（手書き風ヒーロー）
+- 改行を活用した柔らかいトーンで、テンプレートの温かさ・親しみやすさを表現
+- ハイライトには「手書き風」「ほっこり」など世界観が伝わる語を入れる
+- 二次CTAは「詳しく見る」「実例をみる」などハードルの低い言葉を選ぶ
+
+## handwritten-features-1（手書き風特徴）
+- 手書きテンプレの魅力・利用シーン・差別化ポイントを3項目で整理
+- アイコンには⭐や✍️など、手書き風を連想させる絵文字を使用
+- 説明文は語りかけるような口調で親しみを出す
+
+## handwritten-testimonials-1（手書き風お客様の声）
+- 手書きテンプレを使ったユーザーの感想を3件生成し、実感ベースのコメントにする
+- 名前と肩書きは親しみやすい仮名や属性を設定（例："都内在住デザイナー・真由美さん"）
+- 手書きの温かみや使いやすさに言及させる
+
+## handwritten-cta-1（手書き風CTA）
+- ボタン文言は「無料ではじめる」「気軽に相談する」などやさしい表現にする
+- サブコピーで"一緒に"や"気軽に"など、伴走感・敷居の低さを強調
+- 迷っている人の背中を押す一言を付け加える
+
 # 出力要件
 - 出力言語は必ず日本語。
 - ヒーローブロックは推奨されたものを使用（blockType: "top-hero-1"、content.backgroundVideoUrl: "{hero_metadata['videoUrl'] if hero_metadata else '/videos/pixta.mp4'}"）
@@ -538,17 +739,27 @@ class AIService:
         outline = ai_result.get("outline") if isinstance(ai_result.get("outline"), list) else []
         outline_missing = len(outline) == 0
 
-        # ブロックマップを作成（重複防止）
-        block_map: Dict[str, Dict[str, Any]] = {}
-        for block in ai_blocks:
-            block_type = block.get("blockType")
-            if block_type in ALLOWED_BLOCK_SEQUENCE and block_type not in block_map:
-                block_map[block_type] = block
+        # シーケンスに沿ってブロックを割り当て（同一blockTypeが複数あっても順番通りに処理）
+        assigned_blocks: List[Optional[Dict[str, Any]]] = [None] * len(BLOCK_SEQUENCE)
+        used_indices: set[int] = set()
+
+        for seq_idx, sequence_item in enumerate(BLOCK_SEQUENCE):
+            block_type = sequence_item["block_type"]
+            for ai_idx, ai_block in enumerate(ai_blocks):
+                if ai_idx in used_indices:
+                    continue
+                if ai_block.get("blockType") == block_type:
+                    assigned_blocks[seq_idx] = ai_block
+                    used_indices.add(ai_idx)
+                    break
 
         processed_blocks: List[Dict[str, Any]] = []
 
-        for block_type in ALLOWED_BLOCK_SEQUENCE:
-            block_data = block_map.get(block_type)
+        for seq_idx, sequence_item in enumerate(BLOCK_SEQUENCE):
+            block_type = sequence_item["block_type"]
+            template_hint = sequence_item.get("template_id")
+
+            block_data = assigned_blocks[seq_idx]
             if not block_data:
                 block_data = {
                     "blockType": block_type,
@@ -556,9 +767,12 @@ class AIService:
                     "content": {},
                 }
 
-            # 選択されたヒーローIDを渡す
+            # 選択されたヒーローIDおよびテンプレートIDを渡す
             processed_block = AIService._apply_defaults(
-                block_data, input_data, selected_hero_id=selected_hero_id
+                block_data,
+                input_data,
+                selected_hero_id=selected_hero_id,
+                template_id=template_hint,
             )
             processed_blocks.append(processed_block)
 
@@ -590,13 +804,23 @@ class AIService:
     def _apply_defaults(
         block: Dict[str, Any], 
         data: AIWizardInput,
-        selected_hero_id: Optional[str] = None
+        selected_hero_id: Optional[str] = None,
+        template_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """各ブロックにデフォルト値を適用"""
         
         block_type = block.get("blockType")
         content = dict(block.get("content") or {})
         reason = block.get("reason") or "ユーザー入力に基づき生成されました。"
+
+        if template_id:
+            block["templateId"] = template_id
+        elif block_type == "top-hero-1" and selected_hero_id:
+            block["templateId"] = selected_hero_id
+        else:
+            default_variant = DEFAULT_TEMPLATE_VARIANTS.get(block_type)
+            if default_variant:
+                block.setdefault("templateId", default_variant)
 
         def _is_blank(value: Optional[str]) -> bool:
             return not isinstance(value, str) or not value.strip()
@@ -953,6 +1177,245 @@ class AIService:
             content.setdefault("textColor", "#FFFFFF")
             content.setdefault("backgroundColor", "#DC2626")
 
+        # ===== top-inline-cta-1: インラインCTA =====
+        elif block_type == "top-inline-cta-1":
+            reason = "LPエディタで制作した実例を示し、即時行動を促すため。"
+
+            eyebrow = content.get("eyebrow") if isinstance(content.get("eyebrow"), str) else ""
+            if _is_blank(eyebrow):
+                content["eyebrow"] = "Product Proof"
+
+            proof_title = content.get("title") if isinstance(content.get("title"), str) else ""
+            if _is_blank(proof_title):
+                product_label = _coalesce(product.name, data.business, fallback="このページ")
+                content["title"] = f"{product_label}もエディタで制作されています"
+            else:
+                content["title"] = proof_title.strip()
+
+            proof_subtitle = content.get("subtitle") if isinstance(content.get("subtitle"), str) else ""
+            if _is_blank(proof_subtitle):
+                base = _coalesce(
+                    product.description,
+                    narrative.origin_story if narrative else None,
+                    data.additional_notes,
+                )
+                content["subtitle"] = base or "実際の制作フローを体験できる無料エディタをご用意しています。"
+            else:
+                content["subtitle"] = proof_subtitle.strip()
+
+            primary_text = content.get("buttonText") if isinstance(content.get("buttonText"), str) else ""
+            if _is_blank(primary_text):
+                content["buttonText"] = call_to_action or "エディタを試す"
+            else:
+                content["buttonText"] = primary_text.strip()
+
+            if _is_blank(content.get("buttonUrl")):
+                content["buttonUrl"] = "/register"
+
+            content.setdefault("textColor", palette["text"])
+            content.setdefault("backgroundColor", palette["background"])
+            content.setdefault("accentColor", palette["accent"])
+            content.setdefault("buttonColor", palette["primary"])
+
+        # ===== top-media-spotlight-1: メディアスポットライト =====
+        elif block_type == "top-media-spotlight-1":
+            reason = "テンプレートや制作実例を紹介し、視覚的な信頼感を補強するため。"
+
+            tagline_value = content.get("tagline") if isinstance(content.get("tagline"), str) else ""
+            if _is_blank(tagline_value):
+                content["tagline"] = "Template Showcase"
+            else:
+                content["tagline"] = tagline_value.strip()
+
+            spotlight_title = content.get("title") if isinstance(content.get("title"), str) else ""
+            if _is_blank(spotlight_title):
+                product_label = _coalesce(product.name, data.business, fallback="テンプレート")
+                content["title"] = f"{product_label}の世界観を体感"
+            else:
+                content["title"] = spotlight_title.strip()
+
+            spotlight_subtitle = content.get("subtitle") if isinstance(content.get("subtitle"), str) else ""
+            if _is_blank(spotlight_subtitle):
+                content["subtitle"] = _coalesce(
+                    product.description,
+                    narrative.unique_mechanism if narrative else None,
+                    fallback="テンプレートの活用シーンと制作の裏側をご紹介します。",
+                )
+            else:
+                content["subtitle"] = spotlight_subtitle.strip()
+
+            caption_value = content.get("caption") if isinstance(content.get("caption"), str) else ""
+            if _is_blank(caption_value):
+                content["caption"] = "D-swipeテンプレートギャラリー"
+            else:
+                content["caption"] = caption_value.strip()
+
+            primary_text = content.get("buttonText") if isinstance(content.get("buttonText"), str) else ""
+            if _is_blank(primary_text):
+                content["buttonText"] = "テンプレート一覧を見る"
+            else:
+                content["buttonText"] = primary_text.strip()
+
+            if _is_blank(content.get("buttonUrl")):
+                content["buttonUrl"] = "/templates"
+
+            if _is_blank(content.get("imageUrl")):
+                content["imageUrl"] = "/gallery/dswipe-template-showcase.png"
+
+            content.setdefault("textColor", palette["text"])
+            content.setdefault("backgroundColor", palette["background"])
+            content.setdefault("accentColor", palette["accent"])
+            content.setdefault("buttonColor", palette["primary"])
+
+        # ===== handwritten-hero-1: 手書き風ヒーロー =====
+        elif block_type == "handwritten-hero-1":
+            reason = "手書き風の世界観でテンプレートの柔らかさと親近感を伝えるため。"
+            product_label = _coalesce(product.name, data.business, fallback="あなたのブランド")
+            content.setdefault("tagline", "HANDWRITTEN STYLE")
+
+            hero_title = content.get("title") if isinstance(content.get("title"), str) else ""
+            if _is_blank(hero_title):
+                desired = _coalesce(desired_outcome, product.transformation, fallback="理想のLPを作ろう")
+                content["title"] = f"{product_label}\n手描きテンプレートで{desired}" if desired else f"{product_label}\n手描きテンプレート"
+            else:
+                content["title"] = hero_title.strip()
+
+            hero_subtitle = content.get("subtitle") if isinstance(content.get("subtitle"), str) else ""
+            if _is_blank(hero_subtitle):
+                base = _coalesce(
+                    product.description,
+                    narrative.origin_story if narrative else None,
+                    data.additional_notes,
+                    fallback="あたたかみのあるレイアウトで、ファンに寄り添うLPをつくりましょう。",
+                )
+                content["subtitle"] = base
+            else:
+                content["subtitle"] = hero_subtitle.strip()
+
+            highlight = content.get("highlightText") if isinstance(content.get("highlightText"), str) else ""
+            if _is_blank(highlight):
+                content["highlightText"] = "全10種テンプレ"
+            else:
+                content["highlightText"] = highlight.strip()
+
+            primary_text = content.get("buttonText") if isinstance(content.get("buttonText"), str) else ""
+            if _is_blank(primary_text):
+                content["buttonText"] = call_to_action or "無料で始める"
+            else:
+                content["buttonText"] = primary_text.strip()
+
+            if _is_blank(content.get("buttonUrl")):
+                content["buttonUrl"] = "/templates"
+
+            secondary_text = content.get("secondaryButtonText") if isinstance(content.get("secondaryButtonText"), str) else ""
+            if _is_blank(secondary_text):
+                content["secondaryButtonText"] = "テンプレートを見る"
+            else:
+                content["secondaryButtonText"] = secondary_text.strip()
+
+            if _is_blank(content.get("secondaryButtonUrl")):
+                content["secondaryButtonUrl"] = "/templates"
+
+            content.setdefault("textColor", "#78350F")
+            content.setdefault("backgroundColor", "#FFFBEB")
+            content.setdefault("buttonColor", "#F59E0B")
+            content.setdefault("secondaryButtonColor", "#FFFFFF")
+
+        # ===== handwritten-features-1: 手書き風特徴 =====
+        elif block_type == "handwritten-features-1":
+            reason = "手書きテンプレの魅力を3つの特徴でわかりやすく伝えるため。"
+            content.setdefault("title", "こんな手書き風テンプレが使えます")
+            content.setdefault("tagline", "HANDWRITTEN TEMPLATE")
+
+            features = content.get("features") if isinstance(content.get("features"), list) else []
+            if not features:
+                key_features = product.key_features or []
+                if key_features:
+                    features = [
+                        {
+                            "icon": "✍️",
+                            "title": feature,
+                            "description": f"手描きスタイルで{feature}を魅力的に表現できます。",
+                        }
+                        for feature in key_features[:3]
+                    ]
+                else:
+                    features = [
+                        {"icon": "⭐", "title": "温かみのある紙質テクスチャ", "description": "既存LPにはない親近感が生まれます。"},
+                        {"icon": "📒", "title": "メモ風の補足エリア", "description": "重要ポイントを手書きメモとして強調できます。"},
+                        {"icon": "💬", "title": "吹き出しコメント", "description": "講師や受講生の声を手描き感で配置できます。"},
+                    ]
+            content["features"] = features[:3]
+            content.setdefault("layout", "grid")
+            content.setdefault("textColor", "#1F2937")
+            content.setdefault("backgroundColor", "#FFFFFF")
+
+        # ===== handwritten-testimonials-1: 手書き風お客様の声 =====
+        elif block_type == "handwritten-testimonials-1":
+            reason = "手書き風の言葉で親しみやすい実績を見せ、導入ハードルを下げるため。"
+            testimonials = AIService._testimonials_to_dict(
+                content.get("testimonials"), proof, audience.persona or data.target
+            )
+            if not testimonials:
+                testimonials = [
+                    {
+                        "name": "真由美さん",
+                        "role": "都内在住デザイナー",
+                        "quote": "手書きテンプレでブランドの温度感がそのまま伝わりました。",
+                    },
+                    {
+                        "name": "健太さん",
+                        "role": "オンライン講師",
+                        "quote": "受講生から『手書き風がかわいい！』と反応をもらえました。",
+                    },
+                    {
+                        "name": "あかりさん",
+                        "role": "コミュニティ運営",
+                        "quote": "テンプレを差し替えるだけで一気に親近感が高まりました。",
+                    },
+                ]
+            content["testimonials"] = testimonials[:3]
+            content.setdefault("title", "手書きテンプレ利用者の声")
+            content.setdefault("textColor", "#1F2937")
+            content.setdefault("backgroundColor", "#FFFFFF")
+
+        # ===== handwritten-cta-1: 手書き風CTA =====
+        elif block_type == "handwritten-cta-1":
+            reason = "手書き風のやさしいトーンで、行動のハードルを下げるため。"
+            content.setdefault("eyebrow", "LET'S START")
+
+            cta_title = content.get("title") if isinstance(content.get("title"), str) else ""
+            if _is_blank(cta_title):
+                product_label = _coalesce(product.name, data.business, fallback="一緒にはじめましょう")
+                content["title"] = f"{product_label}を、やさしくスタート"
+            else:
+                content["title"] = cta_title.strip()
+
+            cta_subtitle = content.get("subtitle") if isinstance(content.get("subtitle"), str) else ""
+            if _is_blank(cta_subtitle):
+                base = _coalesce(
+                    product.description,
+                    narrative.roadmap if narrative else None,
+                    fallback="わからないところは一緒に伴走するので、安心してください。",
+                )
+                content["subtitle"] = base
+            else:
+                content["subtitle"] = cta_subtitle.strip()
+
+            primary_text = content.get("buttonText") if isinstance(content.get("buttonText"), str) else ""
+            if _is_blank(primary_text):
+                content["buttonText"] = call_to_action or "無料ではじめる"
+            else:
+                content["buttonText"] = primary_text.strip()
+
+            if _is_blank(content.get("buttonUrl")):
+                content["buttonUrl"] = "/register"
+
+            content.setdefault("buttonColor", "#000000")
+            content.setdefault("buttonTextColor", "#FFFFFF")
+            content.setdefault("textColor", "#1F2937")
+            content.setdefault("backgroundColor", "#FFFFFF")
+
         # ===== top-cta-1: CTA =====
         elif block_type == "top-cta-1":
             reason = "最終的な行動喚起で、明確な次のステップを提示するため。"
@@ -1042,11 +1505,16 @@ class AIService:
             content.setdefault("textColor", "#0F172A")
             content.setdefault("backgroundColor", "#E0F2FE")
 
-        return {
+        result_block = {
             "blockType": block_type,
             "content": content,
             "reason": reason,
         }
+        template_identifier = block.get("templateId") or template_id
+        if template_identifier:
+            result_block["templateId"] = template_identifier
+
+        return result_block
 
     @staticmethod
     def _bonuses_to_dict(existing: Any, bonuses: Optional[List[BonusItem]]) -> List[Dict[str, str]]:
