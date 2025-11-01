@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
+
 from app.config import settings
+from app.middleware import SlowRequestMiddleware
 
 security = HTTPBearer()
 
@@ -20,6 +22,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(SlowRequestMiddleware, threshold_ms=600)
 
 @app.get("/")
 def read_root():
