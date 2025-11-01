@@ -143,7 +143,7 @@ async def get_purchase_history(
         sellers_data = (
             supabase
             .table("users")
-            .select("id, username, display_name, profile_image_url")
+            .select("id, username, profile_image_url")
             .in_("id", _ensure_non_empty(set(seller_ids)))
             .execute()
         )
@@ -300,7 +300,7 @@ async def get_purchase_history(
         authors_data = (
             supabase
             .table("users")
-            .select("id, username, display_name")
+            .select("id, username")
             .in_("id", _ensure_non_empty(set(author_ids)))
             .execute()
         )
@@ -407,7 +407,7 @@ async def get_purchase_history(
         owners_data = (
             supabase
             .table("users")
-            .select("id, username, display_name")
+            .select("id, username")
             .in_("id", _ensure_non_empty(set(salon_owner_ids)))
             .execute()
         )
