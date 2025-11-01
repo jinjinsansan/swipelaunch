@@ -30,6 +30,7 @@ from app.models.note import (
     OfficialShareConfigResponse,
 )
 from app.utils.auth import decode_access_token
+from app.services.one_lat import one_lat_client
 
 
 router = APIRouter(prefix="/notes", tags=["notes"])
