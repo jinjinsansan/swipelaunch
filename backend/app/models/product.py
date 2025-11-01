@@ -8,6 +8,11 @@ class ProductCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=255, description="商品タイトル")
     description: Optional[str] = Field(None, description="商品説明")
     price_in_points: Optional[int] = Field(None, ge=0, description="ポイント価格（オンラインサロンの場合は自動設定）")
+    price_jpy: Optional[int] = Field(None, ge=0, description="日本円での販売価格")
+    allow_point_purchase: bool = Field(True, description="ポイントでの購入を許可するか")
+    allow_jpy_purchase: bool = Field(False, description="日本円決済を許可するか")
+    tax_rate: Optional[float] = Field(10.0, ge=0, le=100, description="税込計算用の税率（%）")
+    tax_inclusive: bool = Field(True, description="税込表示かどうか")
     stock_quantity: Optional[int] = Field(None, ge=0, description="在庫数（nullで無制限）")
     is_available: bool = Field(default=True, description="販売可能か")
     redirect_url: Optional[str] = Field(None, description="購入完了後のリダイレクトURL（外部URL）")
@@ -21,6 +26,11 @@ class ProductUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     price_in_points: Optional[int] = Field(None, ge=0)
+    price_jpy: Optional[int] = Field(None, ge=0)
+    allow_point_purchase: Optional[bool] = None
+    allow_jpy_purchase: Optional[bool] = None
+    tax_rate: Optional[float] = Field(None, ge=0, le=100)
+    tax_inclusive: Optional[bool] = None
     stock_quantity: Optional[int] = Field(None, ge=0)
     is_available: Optional[bool] = None
     redirect_url: Optional[str] = None
@@ -38,6 +48,11 @@ class ProductResponse(BaseModel):
     title: str
     description: Optional[str] = None
     price_in_points: int
+    price_jpy: Optional[int] = None
+    allow_point_purchase: bool
+    allow_jpy_purchase: bool
+    tax_rate: Optional[float] = None
+    tax_inclusive: bool
     stock_quantity: Optional[int] = None
     is_available: bool
     total_sales: int = 0
@@ -59,6 +74,7 @@ class ProductListResponse(BaseModel):
 # 商品購入リクエスト
 class ProductPurchaseRequest(BaseModel):
     quantity: int = Field(default=1, ge=1, description="購入数量")
+    payment_method: Literal["points", "yen"] = Field("points", description="決済手段")
 
 # 商品購入レスポンス
 class ProductPurchaseResponse(BaseModel):
@@ -67,10 +83,15 @@ class ProductPurchaseResponse(BaseModel):
     product_title: str
     quantity: int
     total_points: int
+    total_amount_jpy: Optional[int] = None
     remaining_points: int
+    payment_method: Literal["points", "yen"]
+    payment_status: Literal["completed", "pending"] = "completed"
     purchased_at: datetime
     redirect_url: Optional[str] = None
     thanks_lp_slug: Optional[str] = None
+    checkout_url: Optional[str] = None
+    external_id: Optional[str] = None
 
 # 販売者情報付き商品レスポンス
 class ProductWithSellerResponse(BaseModel):
@@ -88,6 +109,11 @@ class ProductWithSellerResponse(BaseModel):
     title: str
     description: Optional[str] = None
     price_in_points: int
+    price_jpy: Optional[int] = None
+    allow_point_purchase: bool
+    allow_jpy_purchase: bool
+    tax_rate: Optional[float] = None
+    tax_inclusive: bool
     stock_quantity: Optional[int] = None
     is_available: bool
     total_sales: int = 0

@@ -14,11 +14,25 @@ from app.models.product import (
 )
 from typing import Optional, Dict, Any, List
 import logging
+import uuid
+from datetime import datetime
 
+from app.services.one_lat import one_lat_client
 from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/products", tags=["products"])
 security = HTTPBearer(auto_error=False)
+
+JPY_TO_USD_RATE = 145.0
+
+
+def _coerce_float(value: Optional[Any]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):  # pragma: no cover - defensive conversion
+        return None
 
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
@@ -106,13 +120,22 @@ async def create_product(
         product_type = data.product_type or "points"
         salon_record = None
 
+        allow_point_purchase = data.allow_point_purchase
+        allow_jpy_purchase = data.allow_jpy_purchase
+
+        if not allow_point_purchase and not allow_jpy_purchase:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="少なくとも1つの決済方法を有効にしてください"
+            )
+
         if product_type == "points":
-            if data.price_in_points is None:
+            if allow_point_purchase and (data.price_in_points is None or data.price_in_points <= 0):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="ポイント商品には price_in_points が必須です"
                 )
-            price_in_points = data.price_in_points
+            price_in_points = data.price_in_points or 0
         else:
             # オンラインサロン商品
             if not data.salon_id:
@@ -140,6 +163,14 @@ async def create_product(
                     detail="このサロンに商品を紐付ける権限がありません"
                 )
             price_in_points = 0
+            # サロン商品はポイント販売不可に固定
+            allow_point_purchase = False
+
+        if allow_jpy_purchase and (data.price_jpy is None or data.price_jpy <= 0):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="日本円決済を有効にするには price_jpy を設定してください"
+            )
 
         product_data = {
             "seller_id": user["id"],
@@ -147,7 +178,12 @@ async def create_product(
             "title": data.title,
             "description": data.description,
             "price_in_points": price_in_points,
-            "stock_quantity": data.stock_quantity if product_type == "points" else None,
+            "price_jpy": data.price_jpy,
+            "allow_point_purchase": allow_point_purchase,
+            "allow_jpy_purchase": allow_jpy_purchase,
+            "tax_rate": data.tax_rate if data.tax_rate is not None else 10.0,
+            "tax_inclusive": data.tax_inclusive,
+            "stock_quantity": data.stock_quantity if product_type == "points" and allow_point_purchase else None,
             "is_available": data.is_available,
             "redirect_url": data.redirect_url,
             "thanks_lp_id": data.thanks_lp_id,
@@ -448,7 +484,12 @@ async def get_public_products(
                 meta_image_url=meta_image,
                 title=product["title"],
                 description=product.get("description"),
-                price_in_points=product["price_in_points"],
+                price_in_points=int(product.get("price_in_points") or 0),
+                price_jpy=product.get("price_jpy"),
+                allow_point_purchase=bool(product.get("allow_point_purchase", True)),
+                allow_jpy_purchase=bool(product.get("allow_jpy_purchase", False)),
+                tax_rate=_coerce_float(product.get("tax_rate")),
+                tax_inclusive=bool(product.get("tax_inclusive", True)),
                 stock_quantity=product.get("stock_quantity"),
                 is_available=product["is_available"],
                 total_sales=product.get("total_sales", 0),
@@ -577,6 +618,19 @@ async def update_product(
         if new_product_type not in {"points", "salon"}:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不正な商品タイプです")
 
+        allow_point_purchase = update_data.get("allow_point_purchase")
+        if allow_point_purchase is None:
+            allow_point_purchase = bool(current_product.get("allow_point_purchase", True))
+        allow_jpy_purchase = update_data.get("allow_jpy_purchase")
+        if allow_jpy_purchase is None:
+            allow_jpy_purchase = bool(current_product.get("allow_jpy_purchase", False))
+
+        if not allow_point_purchase and not allow_jpy_purchase:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="少なくとも1つの決済方法を有効にしてください"
+            )
+
         if new_product_type == "points":
             price = update_data.get("price_in_points", current_product.get("price_in_points"))
             if price is None:
@@ -585,7 +639,11 @@ async def update_product(
                     detail="ポイント商品には price_in_points が必要です"
                 )
             update_data["price_in_points"] = price
-            if "stock_quantity" not in update_data and current_product.get("stock_quantity") is None:
+            if not allow_point_purchase:
+                update_data["price_in_points"] = 0
+            if "stock_quantity" not in update_data:
+                update_data["stock_quantity"] = current_product.get("stock_quantity") if allow_point_purchase else None
+            if not allow_point_purchase:
                 update_data["stock_quantity"] = None
             update_data["salon_id"] = None
         else:
@@ -611,7 +669,25 @@ async def update_product(
             update_data["salon_id"] = salon_record.get("id")
             update_data["price_in_points"] = 0
             update_data["stock_quantity"] = None
+            allow_point_purchase = False
 
+        if allow_jpy_purchase:
+            price_jpy = update_data.get("price_jpy")
+            if price_jpy is None:
+                price_jpy = current_product.get("price_jpy")
+            if price_jpy is None or price_jpy <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="日本円決済を有効にするには price_jpy を設定してください"
+                )
+            update_data["price_jpy"] = price_jpy
+        else:
+            # 明示的に無効化する場合は価格をnullにできるようにする
+            if "price_jpy" not in update_data:
+                update_data["price_jpy"] = None
+
+        update_data["allow_point_purchase"] = allow_point_purchase
+        update_data["allow_jpy_purchase"] = allow_jpy_purchase
         response = supabase.table("products").update(update_data).eq("id", product_id).execute()
 
         updated_product = response.data[0]
@@ -743,75 +819,172 @@ async def purchase_product(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="オンラインサロン商品はサブスクリプションから購入してください"
             )
-        
-        # 在庫チェック
-        if product.get("stock_quantity") is not None:
-            if product["stock_quantity"] < data.quantity:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"在庫不足です（在庫: {product['stock_quantity']}）"
-                )
-        
-        # 必要ポイント計算
-        total_points = product["price_in_points"] * data.quantity
-        current_balance = user.get("point_balance", 0)
-        
-        # ポイント残高チェック
-        if current_balance < total_points:
+
+        stock_quantity = product.get("stock_quantity")
+        if stock_quantity is not None and stock_quantity < data.quantity:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"ポイントが不足しています（必要: {total_points}、残高: {current_balance}）"
+                detail=f"在庫不足です（在庫: {product['stock_quantity']}）"
             )
-        
-        # ポイント消費
-        new_balance = current_balance - total_points
-        supabase.table("users").update({"point_balance": new_balance}).eq("id", user["id"]).execute()
-        
-        # 在庫を減らす（在庫管理がある場合）
-        if product.get("stock_quantity") is not None:
-            new_stock = product["stock_quantity"] - data.quantity
-            supabase.table("products").update({"stock_quantity": new_stock}).eq("id", product_id).execute()
-        
-        # 販売数を増やす
-        new_sales = product.get("total_sales", 0) + data.quantity
-        supabase.table("products").update({"total_sales": new_sales}).eq("id", product_id).execute()
-        
-        # トランザクション記録
-        transaction_data = {
-            "user_id": user["id"],
-            "transaction_type": "product_purchase",
-            "amount": -total_points,  # マイナス値で記録
-            "related_product_id": product_id,
-            "description": f"{product['title']} x{data.quantity}を購入しました"
+
+        payment_method = data.payment_method
+        thanks_lp_slug: Optional[str] = None
+
+        if payment_method == "points":
+            if not product.get("allow_point_purchase", True):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="この商品はポイント決済に対応していません"
+                )
+            price_per_unit = int(product.get("price_in_points") or 0)
+            total_points = price_per_unit * data.quantity
+            current_balance = int(user.get("point_balance", 0))
+            if current_balance < total_points:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"ポイントが不足しています（必要: {total_points}、残高: {current_balance}）"
+                )
+
+            new_balance = current_balance - total_points
+            supabase.table("users").update({"point_balance": new_balance}).eq("id", user["id"]).execute()
+
+            if stock_quantity is not None:
+                new_stock = stock_quantity - data.quantity
+                supabase.table("products").update({"stock_quantity": new_stock}).eq("id", product_id).execute()
+
+            new_sales = (product.get("total_sales") or 0) + data.quantity
+            supabase.table("products").update({"total_sales": new_sales}).eq("id", product_id).execute()
+
+            transaction_data = {
+                "user_id": user["id"],
+                "transaction_type": "product_purchase",
+                "amount": -total_points,
+                "related_product_id": product_id,
+                "description": f"{product['title']} x{data.quantity}を購入しました"
+            }
+
+            transaction_response = supabase.table("point_transactions").insert(transaction_data).execute()
+
+            if not transaction_response.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="トランザクション記録に失敗しました"
+                )
+
+            transaction = transaction_response.data[0]
+
+            if product.get("thanks_lp_id"):
+                thanks_lp_response = supabase.table("landing_pages").select("slug").eq("id", product["thanks_lp_id"]).single().execute()
+                if thanks_lp_response.data:
+                    thanks_lp_slug = thanks_lp_response.data.get("slug")
+
+            return ProductPurchaseResponse(
+                purchase_id=transaction["id"],
+                product_id=product_id,
+                product_title=product["title"],
+                quantity=data.quantity,
+                total_points=total_points,
+                remaining_points=new_balance,
+                payment_method="points",
+                payment_status="completed",
+                purchased_at=transaction["created_at"],
+                redirect_url=product.get("redirect_url"),
+                thanks_lp_slug=thanks_lp_slug
+            )
+
+        if payment_method != "yen":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="サポートされていない決済方法です"
+            )
+
+        if not product.get("allow_jpy_purchase"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="この商品は日本円決済に対応していません"
+            )
+
+        price_jpy = product.get("price_jpy")
+        if price_jpy is None or price_jpy <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="price_jpy が設定されていません"
+            )
+
+        amount_jpy = int(price_jpy) * data.quantity
+        amount_usd = round(amount_jpy / JPY_TO_USD_RATE, 2)
+        external_id = f"product_yen_{product_id}_{uuid.uuid4().hex[:8]}"
+
+        backend_url = settings.backend_public_url.rstrip("/")
+        frontend_url = settings.frontend_url.rstrip("/")
+        webhook_url = f"{backend_url}/api/webhooks/one-lat"
+        success_url = f"{frontend_url}/orders/complete?external_id={external_id}"
+        error_url = f"{frontend_url}/orders/error?external_id={external_id}"
+
+        checkout_data = await one_lat_client.create_checkout_preference(
+            amount=amount_usd,
+            currency="USD",
+            title=f"Product Purchase - {product['title']}",
+            external_id=external_id,
+            webhook_url=webhook_url,
+            success_url=success_url,
+            error_url=error_url,
+            payer_email=user.get("email"),
+            payer_name=user.get("username")
+        )
+
+        metadata = {
+            "quantity": data.quantity,
+            "unit_price_jpy": price_jpy,
+            "thanks_lp_id": product.get("thanks_lp_id"),
+            "redirect_url": product.get("redirect_url"),
+            "lp_id": product.get("lp_id"),
         }
-        
-        transaction_response = supabase.table("point_transactions").insert(transaction_data).execute()
-        
-        if not transaction_response.data:
+
+        order_payload = {
+            "user_id": user["id"],
+            "seller_id": product.get("seller_id"),
+            "item_type": "product",
+            "item_id": product_id,
+            "payment_method": "yen",
+            "currency": "JPY",
+            "amount_jpy": amount_jpy,
+            "tax_amount_jpy": 0,
+            "status": "PENDING",
+            "external_id": external_id,
+            "checkout_preference_id": checkout_data.get("id"),
+            "metadata": metadata,
+        }
+
+        order_response = supabase.table("payment_orders").insert(order_payload).execute()
+        if not order_response.data:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="トランザクション記録に失敗しました"
+                detail="注文情報の作成に失敗しました"
             )
-        
-        transaction = transaction_response.data[0]
-        
-        # thanks_lp_idからslugを取得
-        thanks_lp_slug = None
+
+        order_row = order_response.data[0]
+
         if product.get("thanks_lp_id"):
             thanks_lp_response = supabase.table("landing_pages").select("slug").eq("id", product["thanks_lp_id"]).single().execute()
             if thanks_lp_response.data:
                 thanks_lp_slug = thanks_lp_response.data.get("slug")
-        
+
         return ProductPurchaseResponse(
-            purchase_id=transaction["id"],
+            purchase_id=order_row["id"],
             product_id=product_id,
             product_title=product["title"],
             quantity=data.quantity,
-            total_points=total_points,
-            remaining_points=new_balance,
-            purchased_at=transaction["created_at"],
+            total_points=0,
+            total_amount_jpy=amount_jpy,
+            remaining_points=int(user.get("point_balance", 0)),
+            payment_method="yen",
+            payment_status="pending",
+            purchased_at=datetime.utcnow(),
             redirect_url=product.get("redirect_url"),
-            thanks_lp_slug=thanks_lp_slug
+            thanks_lp_slug=thanks_lp_slug,
+            checkout_url=checkout_data.get("checkout_url"),
+            external_id=external_id
         )
         
     except HTTPException:

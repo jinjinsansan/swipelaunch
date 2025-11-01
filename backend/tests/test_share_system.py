@@ -4,7 +4,7 @@ NOTEシェアシステムのテスト
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # テスト対象のサービス
 from app.services.fraud_detection import FraudDetector
@@ -64,7 +64,7 @@ class TestFraudDetector:
     async def test_check_account_age_new_account(self, fraud_detector):
         """新しいアカウント（疑わしい）"""
         # 3日前に作成されたアカウント
-        recent_date = datetime.now(timezone.utc).replace(day=datetime.now().day - 3).isoformat()
+        recent_date = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
         
         result = await fraud_detector.check_account_age(recent_date)
         

@@ -10,7 +10,7 @@ from app.models.required_actions import (
     RequiredActionsStatusResponse
 )
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from app.constants.subscription_plans import SUBSCRIPTION_PLANS, get_subscription_plan, get_subscription_plan_by_id
@@ -129,9 +129,28 @@ SALON_FILTER_PRICE_BRACKETS = {
 }
 
 
-def _resolve_public_plan(supabase: Client, subscription_plan_id: Optional[str]) -> SalonPublicPlan:
+def _resolve_public_plan(
+    supabase: Client,
+    subscription_plan_id: Optional[str],
+    salon_row: Optional[Dict[str, Any]] = None,
+) -> SalonPublicPlan:
     plan_id = str(subscription_plan_id or "")
-    
+
+    monthly_price_jpy: Optional[int] = None
+    allow_point_subscription = True
+    allow_jpy_subscription = False
+    tax_rate: Optional[float] = None
+    tax_inclusive = True
+
+    if salon_row:
+        monthly_price_jpy = salon_row.get("monthly_price_jpy")
+        allow_point_subscription = bool(salon_row.get("allow_point_subscription", True))
+        allow_jpy_subscription = bool(salon_row.get("allow_jpy_subscription", False))
+        tax_rate_value = salon_row.get("tax_rate")
+        tax_rate = float(tax_rate_value) if isinstance(tax_rate_value, (int, float)) else None
+        if salon_row.get("tax_inclusive") is not None:
+            tax_inclusive = bool(salon_row.get("tax_inclusive"))
+
     # Try to find plan by ID first (ONE.lat subscription_plan_id)
     cached_plan = get_subscription_plan_by_id(plan_id)
     if cached_plan:
@@ -141,8 +160,13 @@ def _resolve_public_plan(supabase: Client, subscription_plan_id: Optional[str]) 
             points=cached_plan.points,
             usd_amount=cached_plan.usd_amount,
             subscription_plan_id=cached_plan.subscription_plan_id,
+            monthly_price_jpy=monthly_price_jpy,
+            allow_point_subscription=allow_point_subscription,
+            allow_jpy_subscription=allow_jpy_subscription,
+            tax_rate=tax_rate,
+            tax_inclusive=tax_inclusive,
         )
-    
+
     # Fallback: try to find by plan_key (for legacy data)
     cached_plan = get_subscription_plan(plan_id)
     if cached_plan:
@@ -152,6 +176,11 @@ def _resolve_public_plan(supabase: Client, subscription_plan_id: Optional[str]) 
             points=cached_plan.points,
             usd_amount=cached_plan.usd_amount,
             subscription_plan_id=cached_plan.subscription_plan_id,
+            monthly_price_jpy=monthly_price_jpy,
+            allow_point_subscription=allow_point_subscription,
+            allow_jpy_subscription=allow_jpy_subscription,
+            tax_rate=tax_rate,
+            tax_inclusive=tax_inclusive,
         )
 
     fallback_key = "custom"
@@ -189,6 +218,11 @@ def _resolve_public_plan(supabase: Client, subscription_plan_id: Optional[str]) 
         points=fallback_points,
         usd_amount=fallback_usd,
         subscription_plan_id=plan_id,
+        monthly_price_jpy=monthly_price_jpy,
+        allow_point_subscription=allow_point_subscription,
+        allow_jpy_subscription=allow_jpy_subscription,
+        tax_rate=tax_rate,
+        tax_inclusive=tax_inclusive,
     )
 
 
@@ -200,7 +234,11 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
     salon_response = (
         supabase
         .table("salons")
-        .select("id, owner_id, title, description, thumbnail_url, subscription_plan_id, is_active, created_at, updated_at")
+        .select(
+            "id, owner_id, title, description, thumbnail_url, subscription_plan_id, "
+            "monthly_price_jpy, allow_point_subscription, allow_jpy_subscription, tax_rate, tax_inclusive, "
+            "is_active, created_at, updated_at"
+        )
         .eq("id", salon_id)
         .single()
         .execute()
@@ -210,7 +248,7 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
     if not salon_record or not bool(salon_record.get("is_active", False)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="サロンが見つかりません")
 
-    plan_payload = _resolve_public_plan(supabase, salon_record.get("subscription_plan_id"))
+    plan_payload = _resolve_public_plan(supabase, salon_record.get("subscription_plan_id"), salon_record)
 
     owner_response = (
         supabase
@@ -277,6 +315,8 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         member_count=member_count,
         is_member=is_member,
         membership_status=membership_status,
+        allow_point_subscription=bool(salon_record.get("allow_point_subscription", True)),
+        allow_jpy_subscription=bool(salon_record.get("allow_jpy_subscription", False)),
         created_at=salon_record.get("created_at"),
         updated_at=salon_record.get("updated_at"),
     )
@@ -296,7 +336,10 @@ async def list_public_salons(
     query = (
         supabase
         .table("salons")
-        .select("id, owner_id, title, description, thumbnail_url, subscription_plan_id, created_at")
+        .select(
+            "id, owner_id, title, description, thumbnail_url, subscription_plan_id, "
+            "monthly_price_jpy, allow_jpy_subscription, allow_point_subscription, tax_rate, tax_inclusive, created_at"
+        )
         .eq("is_active", True)
     )
 
@@ -376,7 +419,7 @@ async def list_public_salons(
         if not owner or not owner.get("username"):
             continue
 
-        plan_payload = _resolve_public_plan(supabase, row.get("subscription_plan_id"))
+        plan_payload = _resolve_public_plan(supabase, row.get("subscription_plan_id"), row)
 
         items.append(
             SalonPublicListItem(
@@ -391,6 +434,8 @@ async def list_public_salons(
                 plan_label=plan_payload.label,
                 plan_points=plan_payload.points,
                 plan_usd_amount=plan_payload.usd_amount,
+                monthly_price_jpy=row.get("monthly_price_jpy"),
+                allow_jpy_subscription=bool(row.get("allow_jpy_subscription", False)),
                 created_at=row.get("created_at"),
             )
         )

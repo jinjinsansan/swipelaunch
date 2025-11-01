@@ -1,6 +1,7 @@
 """
 Webhook endpoints for payment notifications
 """
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -12,10 +13,187 @@ from app.constants.subscription_plans import (
     get_subscription_plan_by_id,
 )
 from app.services.one_lat import one_lat_client
+from supabase import Client
 import logging
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 logger = logging.getLogger(__name__)
+
+
+STATUS_MAP = {
+    "OPENED": "PENDING",
+    "CREATED": "PENDING",
+    "PENDING": "PENDING",
+    "CLOSED": "COMPLETED",
+    "EXPIRED": "EXPIRED",
+    "REJECTED": "REJECTED",
+    "REFUNDED": "REFUNDED",
+    "CANCELLED": "CANCELLED",
+}
+
+
+def _map_payment_status(raw_status: Optional[str]) -> str:
+    status_value = (raw_status or "").upper()
+    return STATUS_MAP.get(status_value, "PENDING")
+
+
+def _ensure_metadata_dict(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:  # pragma: no cover - defensive
+            return {}
+    return {}
+
+
+def _fulfill_product_order(supabase: Client, order_row: Dict[str, Any]) -> None:
+    product_id = order_row.get("item_id")
+    if not product_id:
+        return
+
+    quantity = int((order_row.get("metadata") or {}).get("quantity") or 1)
+    try:
+        product_resp = (
+            supabase
+            .table("products")
+            .select("id, stock_quantity, total_sales")
+            .eq("id", product_id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to load product for payment order", extra={"error": str(exc), "product_id": product_id})
+        return
+
+    product = product_resp.data if product_resp else None
+    if not product:
+        logger.warning("Product not found for payment order", extra={"product_id": product_id})
+        return
+
+    updates: Dict[str, Any] = {}
+    stock_quantity = product.get("stock_quantity")
+    if stock_quantity is not None:
+        try:
+            new_stock = max(int(stock_quantity) - quantity, 0)
+            updates["stock_quantity"] = new_stock
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            logger.warning("Invalid stock quantity when fulfilling order", extra={"product_id": product_id})
+
+    try:
+        current_sales = int(product.get("total_sales") or 0)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        current_sales = 0
+    updates["total_sales"] = current_sales + quantity
+
+    try:
+        supabase.table("products").update(updates).eq("id", product_id).execute()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to update product after payment", extra={"error": str(exc), "product_id": product_id})
+
+
+def _fulfill_note_order(supabase: Client, order_row: Dict[str, Any]) -> None:
+    note_id = order_row.get("item_id")
+    user_id = order_row.get("user_id")
+    if not note_id or not user_id:
+        return
+
+    payload = {
+        "note_id": note_id,
+        "buyer_id": user_id,
+        "points_spent": 0,
+        "purchased_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        supabase.table("note_purchases").insert(payload).execute()
+    except Exception as exc:
+        if "duplicate key" in str(exc).lower():
+            logger.info("Note purchase already recorded", extra={"note_id": note_id, "user_id": user_id})
+        else:  # pragma: no cover - defensive
+            logger.error("Failed to record note purchase", extra={"error": str(exc), "note_id": note_id, "user_id": user_id})
+
+
+def _fulfill_payment_order(supabase: Client, order_row: Dict[str, Any]) -> None:
+    item_type = order_row.get("item_type")
+    if item_type == "product":
+        _fulfill_product_order(supabase, order_row)
+    elif item_type == "note":
+        _fulfill_note_order(supabase, order_row)
+    elif item_type == "salon":
+        logger.info("Salon payment fulfillment is not implemented yet", extra={"order_id": order_row.get("id")})
+
+
+async def _process_payment_order(
+    supabase: Client,
+    payment_order_payload: Dict[str, Any],
+    event_type: Optional[str]
+) -> bool:
+    entity_id = payment_order_payload.get("id") or payment_order_payload.get("payment_order_id")
+    external_id = payment_order_payload.get("external_id")
+
+    order_resp = None
+    if entity_id:
+        order_resp = (
+            supabase
+            .table("payment_orders")
+            .select("*")
+            .eq("payment_order_id", entity_id)
+            .maybe_single()
+            .execute()
+        )
+
+    if (not order_resp or not order_resp.data) and external_id:
+        order_resp = (
+            supabase
+            .table("payment_orders")
+            .select("*")
+            .eq("external_id", external_id)
+            .maybe_single()
+            .execute()
+        )
+
+    if not order_resp or not order_resp.data:
+        return False
+
+    order_row = order_resp.data
+    previous_status = str(order_row.get("status") or "").upper()
+    new_status = _map_payment_status(payment_order_payload.get("status"))
+
+    metadata = _ensure_metadata_dict(order_row.get("metadata"))
+    metadata.update({
+        "one_lat_status": payment_order_payload.get("status"),
+        "last_event_type": event_type,
+        "payment_order_id": entity_id,
+    })
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update_payload: Dict[str, Any] = {
+        "payment_order_id": entity_id,
+        "status": new_status,
+        "metadata": metadata,
+    }
+
+    if new_status == "COMPLETED" and previous_status != "COMPLETED":
+        metadata["fulfilled_at"] = now_iso
+        update_payload["completed_at"] = now_iso
+    elif new_status in {"CANCELLED", "EXPIRED", "REJECTED", "REFUNDED"}:
+        update_payload["canceled_at"] = now_iso
+
+    try:
+        supabase.table("payment_orders").update(update_payload).eq("id", order_row["id"]).execute()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to update payment order", extra={"error": str(exc), "order_id": order_row.get("id")})
+        return True
+
+    if new_status == "COMPLETED" and previous_status != "COMPLETED":
+        merged_row = dict(order_row)
+        merged_row.update(update_payload)
+        merged_row["metadata"] = metadata
+        _fulfill_payment_order(supabase, merged_row)
+
+    return True
 
 
 @router.post("/one-lat")
@@ -54,6 +232,7 @@ async def one_lat_webhook(request: Request):
 
             # データベースから対応するトランザクションを検索
             supabase = get_supabase_client()
+            order_handled = await _process_payment_order(supabase, payment_order, event_type)
 
             # Payment Order IDで検索
             response = (
@@ -61,6 +240,9 @@ async def one_lat_webhook(request: Request):
             )
 
             if not response.data:
+                if order_handled:
+                    logger.info("✅ Payment order handled via payment_orders", extra={"payment_order_id": entity_id})
+                    return {"status": "success"}
                 # External IDで検索（Payment Order作成前の場合）
                 external_id = payment_order.get("external_id")
                 if external_id:
@@ -69,6 +251,9 @@ async def one_lat_webhook(request: Request):
                     )
 
             if not response.data:
+                if order_handled:
+                    logger.info("✅ Payment order already processed", extra={"payment_order_id": entity_id})
+                    return {"status": "success"}
                 logger.error(f"❌ Transaction not found for payment_order_id: {entity_id}")
                 return {"status": "error", "message": "Transaction not found"}
 

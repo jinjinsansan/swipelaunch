@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 from pydantic import BaseModel
 
@@ -19,12 +19,14 @@ class PurchaseHistoryProduct(BaseModel):
     product_id: Optional[str]
     product_title: Optional[str]
     amount_points: int
+    amount_jpy: Optional[int] = None
     purchased_at: datetime
     description: Optional[str] = None
     seller_username: Optional[str] = None
     seller_display_name: Optional[str] = None
     seller_profile_image_url: Optional[str] = None
     lp_slug: Optional[str] = None
+    payment_method: Literal["points", "yen"] = "points"
 
 
 class PurchaseHistoryNote(BaseModel):
@@ -36,7 +38,9 @@ class PurchaseHistoryNote(BaseModel):
     author_username: Optional[str]
     author_display_name: Optional[str]
     points_spent: int
+    amount_jpy: Optional[int] = None
     purchased_at: datetime
+    payment_method: Literal["points", "yen"] = "points"
 
 
 class PurchaseHistorySalon(BaseModel):

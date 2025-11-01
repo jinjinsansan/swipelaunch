@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -83,6 +84,15 @@ def normalize_slug(value: str) -> str:
     return slug[:120]
 
 
+def _coerce_float(value: Optional[Any]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):  # pragma: no cover - defensive conversion
+        return None
+
+
 TWEET_ID_REGEX = re.compile(r"(?:status|statuses)/(?P<tweet_id>\d+)")
 
 
@@ -129,6 +139,11 @@ def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
         excerpt=record.get("excerpt"),
         is_paid=bool(record.get("is_paid")),
         price_points=int(record.get("price_points") or 0),
+        price_jpy=int(record.get("price_jpy")) if record.get("price_jpy") is not None else None,
+        allow_point_purchase=bool(record.get("allow_point_purchase", True)),
+        allow_jpy_purchase=bool(record.get("allow_jpy_purchase", False)),
+        tax_rate=_coerce_float(record.get("tax_rate")),
+        tax_inclusive=bool(record.get("tax_inclusive", True)),
         status=record.get("status", "draft"),
         published_at=record.get("published_at"),
         updated_at=record.get("updated_at"),
@@ -265,6 +280,7 @@ def _purchase_note_via_rpc(supabase: Client, note_id: str, user_id: str) -> Note
         points_spent=points_spent,
         remaining_points=remaining_points,
         purchased_at=result.get("purchased_at"),
+        payment_method="points",
     )
 
 
@@ -279,6 +295,31 @@ async def create_note(
     base_slug = normalize_slug(data.title)
     slug = generate_unique_slug(supabase, base_slug)
 
+    allow_point_purchase = data.allow_point_purchase if data.is_paid else False
+    allow_jpy_purchase = data.allow_jpy_purchase if data.is_paid else False
+
+    if data.is_paid and not (allow_point_purchase or allow_jpy_purchase):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="有料NOTEには決済手段を1つ以上有効にしてください"
+        )
+
+    if allow_point_purchase and (data.price_points is None or data.price_points <= 0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="ポイント決済を有効にする場合は price_points を設定してください"
+        )
+
+    if allow_jpy_purchase and (data.price_jpy is None or data.price_jpy <= 0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="日本円決済を有効にする場合は price_jpy を設定してください"
+        )
+
+    price_points = data.price_points if allow_point_purchase else 0
+    price_jpy = data.price_jpy if allow_jpy_purchase else None
+    is_paid_flag = bool(data.is_paid and (allow_point_purchase or allow_jpy_purchase))
+
     note_data = {
         "author_id": user_id,
         "title": data.title,
@@ -286,8 +327,13 @@ async def create_note(
         "cover_image_url": data.cover_image_url,
         "excerpt": data.excerpt,
         "content_blocks": [block.model_dump() for block in data.content_blocks],
-        "is_paid": data.is_paid,
-        "price_points": data.price_points or 0,
+        "is_paid": is_paid_flag,
+        "price_points": price_points,
+        "price_jpy": price_jpy,
+        "allow_point_purchase": allow_point_purchase,
+        "allow_jpy_purchase": allow_jpy_purchase,
+        "tax_rate": data.tax_rate if data.tax_rate is not None else 10.0,
+        "tax_inclusive": data.tax_inclusive,
         "status": "draft",
         "categories": data.categories,
     }
@@ -511,7 +557,10 @@ async def list_public_notes(
     query = (
         supabase
         .table("notes")
-        .select("id,title,slug,cover_image_url,excerpt,is_paid,price_points,published_at,categories,users(username)", count="exact")
+        .select(
+            "id,title,slug,cover_image_url,excerpt,is_paid,price_points,price_jpy,allow_point_purchase,allow_jpy_purchase,tax_rate,tax_inclusive,published_at,categories,allow_share_unlock,official_share_tweet_id,official_share_tweet_url,official_share_x_username,users(username)",
+            count="exact"
+        )
         .eq("status", "published")
         .order("published_at", desc=True)
         .range(offset, offset + limit - 1)
@@ -542,6 +591,11 @@ async def list_public_notes(
                 excerpt=record.get("excerpt"),
                 is_paid=bool(record.get("is_paid")),
                 price_points=int(record.get("price_points") or 0),
+                price_jpy=int(record.get("price_jpy")) if record.get("price_jpy") is not None else None,
+                allow_point_purchase=bool(record.get("allow_point_purchase", True)),
+                allow_jpy_purchase=bool(record.get("allow_jpy_purchase", False)),
+                tax_rate=_coerce_float(record.get("tax_rate")),
+                tax_inclusive=bool(record.get("tax_inclusive", True)),
                 author_username=user.get("username"),
                 published_at=record.get("published_at"),
                 categories=list(record.get("categories") or []),
@@ -609,6 +663,11 @@ async def get_public_note(
         excerpt=note.get("excerpt"),
         is_paid=bool(note.get("is_paid")),
         price_points=int(note.get("price_points") or 0),
+        price_jpy=int(note.get("price_jpy")) if note.get("price_jpy") is not None else None,
+        allow_point_purchase=bool(note.get("allow_point_purchase", True)),
+        allow_jpy_purchase=bool(note.get("allow_jpy_purchase", False)),
+        tax_rate=_coerce_float(note.get("tax_rate")),
+        tax_inclusive=bool(note.get("tax_inclusive", True)),
         has_access=has_access,
         content_blocks=visible_blocks,
         published_at=note.get("published_at"),
@@ -689,19 +748,54 @@ async def update_note(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="content_blocks は空にできません")
         update_data["content_blocks"] = [block.model_dump() for block in data.content_blocks]
 
+    target_is_paid = bool(note.get("is_paid"))
     if data.is_paid is not None:
-        update_data["is_paid"] = data.is_paid
-        if data.is_paid:
-            price = data.price_points if data.price_points is not None else note.get("price_points", 0)
-            if not price or price <= 0:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="有料記事の価格を設定してください")
-            update_data["price_points"] = price
-        else:
-            update_data["price_points"] = 0
-    elif data.price_points is not None:
-        if note.get("is_paid") and data.price_points == 0:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="有料記事の価格は1ポイント以上です")
-        update_data["price_points"] = data.price_points
+        target_is_paid = data.is_paid
+
+    allow_point_purchase = bool(note.get("allow_point_purchase", True))
+    if data.allow_point_purchase is not None:
+        allow_point_purchase = data.allow_point_purchase
+
+    allow_jpy_purchase = bool(note.get("allow_jpy_purchase", False))
+    if data.allow_jpy_purchase is not None:
+        allow_jpy_purchase = data.allow_jpy_purchase
+
+    if not target_is_paid:
+        allow_point_purchase = False
+        allow_jpy_purchase = False
+
+    if target_is_paid and not (allow_point_purchase or allow_jpy_purchase):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="有料記事には決済手段を1つ以上有効にしてください"
+        )
+
+    if allow_point_purchase:
+        price_points = data.price_points if data.price_points is not None else note.get("price_points")
+        if price_points is None or price_points <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="ポイント決済を有効にする場合は price_points を設定してください"
+            )
+        update_data["price_points"] = price_points
+    else:
+        update_data["price_points"] = 0
+
+    if allow_jpy_purchase:
+        price_jpy = data.price_jpy if data.price_jpy is not None else note.get("price_jpy")
+        if price_jpy is None or price_jpy <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="日本円決済を有効にする場合は price_jpy を設定してください"
+            )
+        update_data["price_jpy"] = price_jpy
+    else:
+        update_data["price_jpy"] = None
+
+    final_is_paid = bool(target_is_paid and (allow_point_purchase or allow_jpy_purchase))
+    update_data["is_paid"] = final_is_paid
+    update_data["allow_point_purchase"] = allow_point_purchase
+    update_data["allow_jpy_purchase"] = allow_jpy_purchase
 
     if data.categories is not None:
         update_data["categories"] = data.categories
@@ -1023,18 +1117,33 @@ def _user_has_purchased(supabase: Client, note_id: str, user_id: str) -> bool:
 @router.post("/{note_id}/purchase", response_model=NotePurchaseResponse, status_code=status.HTTP_201_CREATED)
 async def purchase_note(
     note_id: str,
+    payment_method: Literal["points", "yen"] = Query("points"),
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     user_id = get_current_user_id(credentials)
     supabase = get_supabase()
 
-    if not hasattr(supabase, "table"):
+    if not hasattr(supabase, "table") and payment_method == "points":
         return _purchase_note_via_rpc(supabase, note_id, user_id)
+
+    user_response = (
+        supabase
+        .table("users")
+        .select("email, username, point_balance")
+        .eq("id", user_id)
+        .single()
+        .execute()
+    )
+
+    if not user_response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ユーザーが見つかりません")
+
+    user_record = user_response.data
 
     note_response = (
         supabase
         .table("notes")
-        .select("id, author_id, is_paid")
+        .select("id, author_id, is_paid, price_points, price_jpy, allow_point_purchase, allow_jpy_purchase, slug, title")
         .eq("id", note_id)
         .single()
         .execute()
@@ -1051,8 +1160,10 @@ async def purchase_note(
         return NotePurchaseResponse(
             note_id=note_id,
             points_spent=0,
-            remaining_points=0,
+            remaining_points=int(user_record.get("point_balance", 0)),
             purchased_at=purchased_at,
+            payment_method="points",
+            payment_status="completed",
         )
 
     if salon_ids and _user_has_active_salon_access(supabase, user_id, salon_ids):
@@ -1067,17 +1178,105 @@ async def purchase_note(
                 }
             ).execute()
         except Exception:
-            # Duplicate entries are acceptable
             pass
 
         return NotePurchaseResponse(
             note_id=note_id,
             points_spent=0,
-            remaining_points=0,
+            remaining_points=int(user_record.get("point_balance", 0)),
             purchased_at=purchased_at,
+            payment_method="points",
+            payment_status="completed",
         )
 
-    return _purchase_note_via_rpc(supabase, note_id, user_id)
+    if payment_method == "points":
+        if not note_record.get("allow_point_purchase", True):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="このNOTEはポイント決済に対応していません"
+            )
+        if not hasattr(supabase, "table"):
+            return _purchase_note_via_rpc(supabase, note_id, user_id)
+        return _purchase_note_via_rpc(supabase, note_id, user_id)
+
+    if payment_method != "yen":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="サポートされていない決済方法です")
+
+    if not note_record.get("allow_jpy_purchase"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="このNOTEは日本円決済に対応していません"
+        )
+
+    price_jpy = note_record.get("price_jpy")
+    if price_jpy is None or price_jpy <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="price_jpy が設定されていません")
+
+    amount_jpy = int(price_jpy)
+    amount_usd = round(amount_jpy / JPY_TO_USD_RATE, 2)
+    external_id = f"note_yen_{note_id}_{uuid.uuid4().hex[:8]}"
+
+    backend_url = settings.backend_public_url.rstrip("/")
+    frontend_url = settings.frontend_url.rstrip("/")
+    webhook_url = f"{backend_url}/api/webhooks/one-lat"
+    slug = note_record.get("slug")
+    success_path = f"/notes/{slug}/purchase/success" if slug else "/notes/purchase/success"
+    error_path = f"/notes/{slug}/purchase/error" if slug else "/notes/purchase/error"
+    success_url = f"{frontend_url}{success_path}?external_id={external_id}"
+    error_url = f"{frontend_url}{error_path}?external_id={external_id}"
+
+    checkout_data = await one_lat_client.create_checkout_preference(
+        amount=amount_usd,
+        currency="USD",
+        title=f"Note Purchase - {note_record.get('title', 'NOTE')}",
+        external_id=external_id,
+        webhook_url=webhook_url,
+        success_url=success_url,
+        error_url=error_url,
+        payer_email=user_record.get("email"),
+        payer_name=user_record.get("username"),
+    )
+
+    metadata = {
+        "note_slug": slug,
+        "author_id": note_record.get("author_id"),
+    }
+
+    order_payload = {
+        "user_id": user_id,
+        "seller_id": note_record.get("author_id"),
+        "item_type": "note",
+        "item_id": note_id,
+        "payment_method": "yen",
+        "currency": "JPY",
+        "amount_jpy": amount_jpy,
+        "tax_amount_jpy": 0,
+        "status": "PENDING",
+        "external_id": external_id,
+        "checkout_preference_id": checkout_data.get("id"),
+        "metadata": metadata,
+    }
+
+    order_response = supabase.table("payment_orders").insert(order_payload).execute()
+    if not order_response.data:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="注文情報の作成に失敗しました"
+        )
+
+    order_row = order_response.data[0]
+
+    return NotePurchaseResponse(
+        note_id=note_id,
+        points_spent=0,
+        amount_jpy=amount_jpy,
+        remaining_points=int(user_record.get("point_balance", 0)),
+        payment_method="yen",
+        payment_status="pending",
+        purchased_at=datetime.utcnow(),
+        checkout_url=checkout_data.get("checkout_url"),
+        external_id=external_id,
+    )
 
 
 # ========================================

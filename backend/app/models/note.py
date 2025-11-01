@@ -21,6 +21,11 @@ class NoteCreateRequest(BaseModel):
     content_blocks: List[NoteBlock] = Field(default_factory=list)
     is_paid: bool = Field(False, description="有料記事フラグ")
     price_points: Optional[int] = Field(None, ge=0, description="有料記事の価格（ポイント）")
+    price_jpy: Optional[int] = Field(None, ge=0, description="有料記事の価格（日本円）")
+    allow_point_purchase: bool = Field(True, description="ポイントでの購入を許可するか")
+    allow_jpy_purchase: bool = Field(False, description="日本円決済を許可するか")
+    tax_rate: Optional[float] = Field(10.0, ge=0, le=100, description="税込計算用の税率（%）")
+    tax_inclusive: bool = Field(True, description="税込表示かどうか")
     categories: List[str] = Field(default_factory=list, description="カテゴリー一覧")
     salon_ids: List[str] = Field(default_factory=list, description="無料閲覧を許可するサロンID一覧")
 
@@ -32,10 +37,25 @@ class NoteCreateRequest(BaseModel):
 
     @validator("price_points", always=True)
     def validate_price(cls, value: Optional[int], values: dict) -> Optional[int]:
-        if values.get("is_paid"):
+        is_paid = values.get("is_paid")
+        allow_point = values.get("allow_point_purchase", True)
+        if is_paid and allow_point:
             if value is None or value <= 0:
                 raise ValueError("有料記事の価格は1ポイント以上で指定してください")
+        if not allow_point:
+            return 0
         return value if value is not None else 0
+
+    @validator("price_jpy", always=True)
+    def validate_price_jpy(cls, value: Optional[int], values: dict) -> Optional[int]:
+        is_paid = values.get("is_paid")
+        allow_jpy = values.get("allow_jpy_purchase", False)
+        if is_paid and allow_jpy:
+            if value is None or value <= 0:
+                raise ValueError("有料記事の日本円価格を設定してください")
+        if not allow_jpy:
+            return None
+        return value
 
     @validator("categories", pre=True, always=True)
     def normalize_categories(cls, value: Optional[List[str]]) -> List[str]:
@@ -83,13 +103,24 @@ class NoteUpdateRequest(BaseModel):
     content_blocks: Optional[List[NoteBlock]] = None
     is_paid: Optional[bool] = None
     price_points: Optional[int] = Field(None, ge=0)
+    price_jpy: Optional[int] = Field(None, ge=0)
+    allow_point_purchase: Optional[bool] = None
+    allow_jpy_purchase: Optional[bool] = None
+    tax_rate: Optional[float] = Field(None, ge=0, le=100)
+    tax_inclusive: Optional[bool] = None
     categories: Optional[List[str]] = Field(None, description="カテゴリー一覧")
     salon_ids: Optional[List[str]] = Field(None, description="無料閲覧を許可するサロンID一覧")
 
     @validator("price_points")
     def validate_price(cls, value: Optional[int]) -> Optional[int]:
-        if value is not None and value <= 0:
-            raise ValueError("価格は1以上のポイントで指定してください")
+        if value is not None and value < 0:
+            raise ValueError("価格は0以上のポイントで指定してください")
+        return value
+
+    @validator("price_jpy")
+    def validate_price_jpy(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and value < 0:
+            raise ValueError("日本円価格は0以上で指定してください")
         return value
 
     @validator("categories")
@@ -140,6 +171,11 @@ class NoteSummaryResponse(BaseModel):
     excerpt: Optional[str] = None
     is_paid: bool
     price_points: int
+    price_jpy: Optional[int] = None
+    allow_point_purchase: bool
+    allow_jpy_purchase: bool
+    tax_rate: Optional[float] = None
+    tax_inclusive: bool
     status: Literal["draft", "published"]
     published_at: Optional[datetime] = None
     updated_at: datetime
@@ -175,6 +211,11 @@ class PublicNoteSummary(BaseModel):
     excerpt: Optional[str] = None
     is_paid: bool
     price_points: int
+    price_jpy: Optional[int] = None
+    allow_point_purchase: bool
+    allow_jpy_purchase: bool
+    tax_rate: Optional[float] = None
+    tax_inclusive: bool
     author_username: Optional[str] = None
     published_at: Optional[datetime] = None
     categories: List[str] = Field(default_factory=list)
@@ -201,6 +242,11 @@ class PublicNoteDetailResponse(BaseModel):
     excerpt: Optional[str] = None
     is_paid: bool
     price_points: int
+    price_jpy: Optional[int] = None
+    allow_point_purchase: bool
+    allow_jpy_purchase: bool
+    tax_rate: Optional[float] = None
+    tax_inclusive: bool
     has_access: bool
     content_blocks: List[Any] = Field(default_factory=list)
     published_at: Optional[datetime] = None
@@ -215,8 +261,13 @@ class PublicNoteDetailResponse(BaseModel):
 class NotePurchaseResponse(BaseModel):
     note_id: str
     points_spent: int
+    amount_jpy: Optional[int] = None
     remaining_points: int
+    payment_method: Literal["points", "yen"] = "points"
     purchased_at: Optional[datetime] = None
+    payment_status: Literal["completed", "pending"] = "completed"
+    checkout_url: Optional[str] = None
+    external_id: Optional[str] = None
 
 
 class NoteMetricsTopNote(BaseModel):

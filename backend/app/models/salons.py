@@ -15,6 +15,11 @@ class SalonCreateRequest(BaseModel):
     category: Optional[str] = Field(None, max_length=60)
     subscription_plan_id: str = Field(..., min_length=1, max_length=64)
     subscription_external_id: Optional[str] = Field(None, max_length=128)
+    monthly_price_jpy: Optional[int] = Field(None, ge=0, description="日本円での月額価格")
+    allow_point_subscription: bool = Field(True, description="ポイントサブスクを許可するか")
+    allow_jpy_subscription: bool = Field(False, description="日本円サブスクを許可するか")
+    tax_rate: Optional[float] = Field(10.0, ge=0, le=100)
+    tax_inclusive: bool = Field(True)
 
 
 class SalonUpdateRequest(BaseModel):
@@ -24,6 +29,11 @@ class SalonUpdateRequest(BaseModel):
     category: Optional[str] = Field(None, max_length=60)
     is_active: Optional[bool] = None
     lp_id: Optional[str] = Field(None, description="Link to LP that will redirect to this salon")
+    monthly_price_jpy: Optional[int] = Field(None, ge=0)
+    allow_point_subscription: Optional[bool] = None
+    allow_jpy_subscription: Optional[bool] = None
+    tax_rate: Optional[float] = Field(None, ge=0, le=100)
+    tax_inclusive: Optional[bool] = None
 
 
 class SalonResponse(BaseModel):
@@ -35,6 +45,11 @@ class SalonResponse(BaseModel):
     category: Optional[str]
     subscription_plan_id: str
     subscription_external_id: Optional[str]
+    monthly_price_jpy: Optional[int] = None
+    allow_point_subscription: bool
+    allow_jpy_subscription: bool
+    tax_rate: Optional[float] = None
+    tax_inclusive: bool
     is_active: bool
     member_count: int = 0
     lp_id: Optional[str] = None
@@ -58,6 +73,8 @@ class SalonPublicListItem(BaseModel):
     plan_label: str
     plan_points: int
     plan_usd_amount: float
+    monthly_price_jpy: Optional[int]
+    allow_jpy_subscription: bool
     created_at: datetime
 
 
@@ -81,6 +98,11 @@ class SalonPublicPlan(BaseModel):
     points: int
     usd_amount: float
     subscription_plan_id: str
+    monthly_price_jpy: Optional[int] = None
+    allow_point_subscription: bool = True
+    allow_jpy_subscription: bool = False
+    tax_rate: Optional[float] = None
+    tax_inclusive: bool = True
 
 
 class SalonPublicResponse(BaseModel):
@@ -94,6 +116,8 @@ class SalonPublicResponse(BaseModel):
     member_count: int
     is_member: bool
     membership_status: Optional[str] = None
+    allow_point_subscription: bool
+    allow_jpy_subscription: bool
     created_at: datetime
     updated_at: datetime
 

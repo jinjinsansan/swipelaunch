@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -86,7 +88,23 @@ async def get_purchase_history(
     product_rows = product_response.data or []
     product_total = getattr(product_response, "count", None) or len(product_rows)
 
-    product_ids = _ensure_non_empty({row.get("related_product_id") for row in product_rows})
+    product_order_response = (
+        supabase
+        .table("payment_orders")
+        .select("id, item_id, seller_id, amount_jpy, metadata, completed_at, updated_at, created_at, status, payment_method")
+        .eq("user_id", user_id)
+        .eq("item_type", "product")
+        .eq("status", "COMPLETED")
+        .order("completed_at", desc=True)
+        .range(0, product_limit - 1)
+        .execute()
+    )
+    product_orders = product_order_response.data or []
+    product_total += len(product_orders)
+
+    product_ids_set = {row.get("related_product_id") for row in product_rows if row.get("related_product_id")}
+    product_ids_set.update({order.get("item_id") for order in product_orders if order.get("item_id")})
+    product_ids = _ensure_non_empty(product_ids_set)
     product_map: Dict[str, dict] = {}
     seller_ids: List[str] = []
     lp_ids: List[str] = []
@@ -109,6 +127,16 @@ async def get_purchase_history(
                 lp_id = product.get("lp_id")
                 if lp_id:
                     lp_ids.append(lp_id)
+
+    for order in product_orders:
+        seller_id = order.get("seller_id")
+        if seller_id:
+            seller_ids.append(seller_id)
+        metadata = order.get("metadata")
+        if isinstance(metadata, dict):
+            lp_id = metadata.get("lp_id")
+            if lp_id:
+                lp_ids.append(lp_id)
 
     seller_map: Dict[str, dict] = {}
     if seller_ids:
@@ -149,14 +177,69 @@ async def get_purchase_history(
                 product_id=related_product_id,
                 product_title=product_info.get("title") if product_info else None,
                 amount_points=abs(int(amount)),
+                amount_jpy=None,
                 purchased_at=row.get("created_at"),
                 description=row.get("description"),
                 seller_username=seller_info.get("username") if seller_info else None,
                 seller_display_name=seller_info.get("display_name") if seller_info else None,
                 seller_profile_image_url=seller_info.get("profile_image_url") if seller_info else None,
                 lp_slug=lp_slug,
+                payment_method="points",
             )
         )
+
+    for order in product_orders:
+        product_id = order.get("item_id")
+        product_info = product_map.get(product_id or "") if product_id else None
+        seller_lookup_id = None
+        if product_info and product_info.get("seller_id"):
+            seller_lookup_id = product_info.get("seller_id")
+        elif order.get("seller_id"):
+            seller_lookup_id = order.get("seller_id")
+        seller_info = seller_map.get(seller_lookup_id) if seller_lookup_id else None
+
+        metadata = order.get("metadata")
+        if not isinstance(metadata, dict):
+            try:
+                metadata = json.loads(metadata) if metadata else {}
+            except json.JSONDecodeError:
+                metadata = {}
+
+        lp_slug = None
+        if product_info and product_info.get("lp_id"):
+            lp_slug = lp_slug_map.get(product_info.get("lp_id"))
+        elif isinstance(metadata, dict):
+            lp_id = metadata.get("lp_id")
+            if lp_id:
+                lp_slug = lp_slug_map.get(lp_id)
+
+        amount_jpy = order.get("amount_jpy")
+        purchased_at = order.get("completed_at") or order.get("updated_at") or order.get("created_at")
+        description = metadata.get("description") if isinstance(metadata, dict) else None
+
+        product_history.append(
+            PurchaseHistoryProduct(
+                transaction_id=order.get("id"),
+                product_id=product_id,
+                product_title=product_info.get("title") if product_info else None,
+                amount_points=0,
+                amount_jpy=int(amount_jpy) if amount_jpy is not None else None,
+                purchased_at=purchased_at,
+                description=description or "日本円決済で購入しました",
+                seller_username=seller_info.get("username") if seller_info else None,
+                seller_display_name=seller_info.get("display_name") if seller_info else None,
+                seller_profile_image_url=seller_info.get("profile_image_url") if seller_info else None,
+                lp_slug=lp_slug,
+                payment_method=order.get("payment_method", "yen"),
+            )
+        )
+
+    if product_history:
+        product_history.sort(
+            key=lambda record: record.purchased_at.timestamp() if isinstance(record.purchased_at, datetime) else float("-inf"),
+            reverse=True,
+        )
+        product_history = product_history[:product_limit]
 
     # Note purchases
     note_query = (
@@ -171,7 +254,23 @@ async def get_purchase_history(
     note_rows = note_response.data or []
     note_total = getattr(note_response, "count", None) or len(note_rows)
 
-    note_ids = _ensure_non_empty({row.get("note_id") for row in note_rows})
+    note_order_response = (
+        supabase
+        .table("payment_orders")
+        .select("id, item_id, amount_jpy, metadata, completed_at, updated_at, created_at, status, payment_method")
+        .eq("user_id", user_id)
+        .eq("item_type", "note")
+        .eq("status", "COMPLETED")
+        .order("completed_at", desc=True)
+        .range(0, note_limit - 1)
+        .execute()
+    )
+    note_orders = note_order_response.data or []
+    note_total += len(note_orders)
+
+    note_ids_set = {row.get("note_id") for row in note_rows if row.get("note_id")}
+    note_ids_set.update({order.get("item_id") for order in note_orders if order.get("item_id")})
+    note_ids = _ensure_non_empty(note_ids_set)
     note_map: Dict[str, dict] = {}
     author_ids: List[str] = []
 
@@ -190,6 +289,11 @@ async def get_purchase_history(
                 author_id = record.get("author_id")
                 if author_id:
                     author_ids.append(author_id)
+
+    for order in note_orders:
+        author_id = order.get("seller_id")
+        if author_id:
+            author_ids.append(author_id)
 
     author_map: Dict[str, dict] = {}
     if author_ids:
@@ -220,8 +324,49 @@ async def get_purchase_history(
                 author_display_name=author_info.get("display_name") if author_info else None,
                 points_spent=int(row.get("points_spent") or 0),
                 purchased_at=row.get("purchased_at"),
+                amount_jpy=None,
+                payment_method="points",
             )
         )
+
+    for order in note_orders:
+        note_id = order.get("item_id")
+        note_info = note_map.get(note_id or "") if note_id else None
+        author_id = order.get("seller_id") or (note_info.get("author_id") if note_info else None)
+        author_info = author_map.get(author_id) if author_id else None
+
+        metadata = order.get("metadata")
+        if not isinstance(metadata, dict):
+            try:
+                metadata = json.loads(metadata) if metadata else {}
+            except json.JSONDecodeError:
+                metadata = {}
+
+        amount_jpy = order.get("amount_jpy")
+        purchased_at = order.get("completed_at") or order.get("updated_at") or order.get("created_at")
+
+        note_history.append(
+            PurchaseHistoryNote(
+                purchase_id=order.get("id"),
+                note_id=note_id or "",
+                note_title=note_info.get("title") if note_info else None,
+                note_slug=note_info.get("slug") if note_info else None,
+                cover_image_url=note_info.get("cover_image_url") if note_info else None,
+                author_username=author_info.get("username") if author_info else None,
+                author_display_name=author_info.get("display_name") if author_info else None,
+                points_spent=0,
+                amount_jpy=int(amount_jpy) if amount_jpy is not None else None,
+                purchased_at=purchased_at,
+                payment_method=order.get("payment_method", "yen"),
+            )
+        )
+
+    if note_history:
+        note_history.sort(
+            key=lambda record: record.purchased_at.timestamp() if isinstance(record.purchased_at, datetime) else float("-inf"),
+            reverse=True,
+        )
+        note_history = note_history[:note_limit]
 
     # Active salon memberships
     membership_query = (
