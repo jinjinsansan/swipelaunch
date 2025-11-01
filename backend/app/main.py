@@ -1,9 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.config import settings
-from app.middleware import SlowRequestMiddleware
+from app.middleware import MetricsMiddleware, SlowRequestMiddleware
 
 security = HTTPBearer()
 
@@ -23,6 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(MetricsMiddleware)
 app.add_middleware(SlowRequestMiddleware, threshold_ms=600)
 
 @app.get("/")
@@ -39,6 +41,11 @@ def health_check():
         "status": "healthy",
         "environment": "development"
     }
+
+
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 # ルート追加
 from app.routes import (

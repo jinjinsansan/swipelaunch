@@ -17,3 +17,4 @@ google-auth>=2.35.0
 requests>=2.31.0
 web3>=6.0.0
 eth-account>=0.10.0
+prometheus-client>=0.20.0
