@@ -12,7 +12,6 @@ class SalonCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=120)
     description: Optional[str] = Field(None, max_length=2000)
     thumbnail_url: Optional[str] = Field(None, max_length=1024)
-    category: Optional[str] = Field(None, max_length=60)
     subscription_plan_id: str = Field(..., min_length=1, max_length=64)
     subscription_external_id: Optional[str] = Field(None, max_length=128)
     monthly_price_jpy: Optional[int] = Field(None, ge=0, description="日本円での月額価格")
@@ -26,7 +25,6 @@ class SalonUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=120)
     description: Optional[str] = Field(None, max_length=2000)
     thumbnail_url: Optional[str] = Field(None, max_length=1024)
-    category: Optional[str] = Field(None, max_length=60)
     is_active: Optional[bool] = None
     lp_id: Optional[str] = Field(None, description="Link to LP that will redirect to this salon")
     monthly_price_jpy: Optional[int] = Field(None, ge=0)
@@ -42,7 +40,6 @@ class SalonResponse(BaseModel):
     title: str
     description: Optional[str]
     thumbnail_url: Optional[str]
-    category: Optional[str]
     subscription_plan_id: str
     subscription_external_id: Optional[str]
     monthly_price_jpy: Optional[int] = None

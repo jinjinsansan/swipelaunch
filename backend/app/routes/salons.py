@@ -54,7 +54,6 @@ def _map_salon(record: Dict[str, Any], member_count: int = 0) -> SalonResponse:
         title=record.get("title", ""),
         description=record.get("description"),
         thumbnail_url=record.get("thumbnail_url"),
-        category=record.get("category"),
         subscription_plan_id=record.get("subscription_plan_id", ""),
         subscription_external_id=record.get("subscription_external_id"),
         monthly_price_jpy=record.get("monthly_price_jpy"),
@@ -84,7 +83,6 @@ async def create_salon(
         "title": payload.title,
         "description": payload.description,
         "thumbnail_url": payload.thumbnail_url,
-        "category": payload.category,
         "subscription_plan_id": payload.subscription_plan_id,
         "subscription_external_id": payload.subscription_external_id,
         "monthly_price_jpy": payload.monthly_price_jpy,
@@ -208,8 +206,6 @@ async def update_salon(
         update_data["description"] = payload.description
     if payload.thumbnail_url is not None:
         update_data["thumbnail_url"] = payload.thumbnail_url
-    if payload.category is not None:
-        update_data["category"] = payload.category
     if payload.is_active is not None:
         update_data["is_active"] = payload.is_active
     if payload.monthly_price_jpy is not None:

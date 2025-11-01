@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, status, Query, Header
 from supabase import create_client, Client
 from app.config import settings
@@ -344,7 +346,8 @@ async def list_public_salons(
     )
 
     if category:
-        query = query.eq("category", category)
+        logger = logging.getLogger(__name__)
+        logger.info("Salon category filter requested but category column is deprecated")
 
     if seller_username:
         owner_resp = (
