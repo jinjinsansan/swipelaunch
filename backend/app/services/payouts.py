@@ -5,7 +5,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from supabase import Client, create_client
 
@@ -83,6 +83,18 @@ def _ensure_metadata(value: Any) -> Dict[str, Any]:
         except Exception:  # pragma: no cover - defensive
             logger.debug("Failed to parse metadata JSON", extra={"value": value})
     return {}
+
+
+def _sanitize_for_json(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_json(item) for item in value]
+    return value
 
 
 def _map_settings(record: Optional[Dict[str, Any]]) -> Optional[PayoutSettings]:
@@ -574,7 +586,7 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
                     "net_amount_usdt": float(net_usd * DEFAULT_USD_TO_USDT),
                     "metadata": {
                         "currency": order.get("currency", "USD"),
-                        "raw_metadata": metadata,
+                        "raw_metadata": _sanitize_for_json(metadata),
                     },
                 }
             )
@@ -623,7 +635,7 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
             "last_status_changed_by": actor_id,
         }
 
-        ledger_resp = client.table("payout_ledger").insert(ledger_payload).execute()
+        ledger_resp = client.table("payout_ledger").insert(_sanitize_for_json(ledger_payload)).execute()
         ledger_record = (ledger_resp.data or [None])[0]
         payout_id = ledger_record.get("id") if ledger_record else None
         if not payout_id:
@@ -632,7 +644,7 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
 
         for item in line_items_payload:
             item["payout_id"] = payout_id
-        client.table("payout_line_items").insert(line_items_payload).execute()
+        client.table("payout_line_items").insert([_sanitize_for_json(item) for item in line_items_payload]).execute()
 
         create_admin_event(
             payout_id,
