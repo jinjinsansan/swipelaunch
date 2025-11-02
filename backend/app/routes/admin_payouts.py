@@ -13,6 +13,7 @@ from app.models.payouts import (
     AdminPayoutListResponse,
     AdminPayoutStatusUpdateRequest,
     AdminPayoutTxRecordRequest,
+    AdminRiskOrderListResponse,
     PayoutLedgerEntry,
 )
 from app.routes.admin import require_admin
@@ -44,6 +45,11 @@ async def list_payouts(
         to_date=to_date,
     )
     return payout_service.list_admin_payouts(filters, limit=limit, offset=offset)
+
+
+@router.get("/risk", response_model=AdminRiskOrderListResponse)
+async def list_risk_orders(limit: int = Query(50, ge=1, le=200), admin_user=Depends(_admin_guard)) -> AdminRiskOrderListResponse:
+    return payout_service.list_risk_orders(limit=limit)
 
 
 @router.post("/generate")

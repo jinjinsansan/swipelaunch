@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
@@ -43,6 +44,17 @@ def _parse_datetime(value: Any) -> datetime:
         except ValueError:
             logger.debug("Failed to parse datetime", extra={"value": value})
     return datetime.utcnow()
+
+
+def _ensure_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def _get_current_user(credentials: HTTPAuthorizationCredentials) -> Dict[str, Any]:
@@ -175,7 +187,10 @@ async def get_sales_history(
     order_query = (
         supabase
         .table("payment_orders")
-        .select("id, user_id, item_id, amount_jpy, metadata, completed_at, updated_at, created_at, payment_method")
+        .select(
+            "id, user_id, item_id, amount_jpy, metadata, completed_at, updated_at, created_at, payment_method, "
+            "clearing_state, ready_for_payout_at, chargeback_hold_until, dispute_flag, dispute_status, risk_level, risk_score, reserve_amount_usd"
+        )
         .eq("seller_id", seller_id)
         .eq("item_type", "product")
         .eq("status", "COMPLETED")
@@ -213,7 +228,10 @@ async def get_sales_history(
         note_order_query = (
             supabase
             .table("payment_orders")
-            .select("id, user_id, item_id, amount_jpy, completed_at, updated_at, created_at, payment_method")
+            .select(
+                "id, user_id, item_id, amount_jpy, metadata, completed_at, updated_at, created_at, payment_method, "
+                "clearing_state, ready_for_payout_at, chargeback_hold_until, dispute_flag, dispute_status, risk_level, risk_score, reserve_amount_usd"
+            )
             .eq("seller_id", seller_id)
             .eq("item_type", "note")
             .eq("status", "COMPLETED")
@@ -296,6 +314,8 @@ async def get_sales_history(
         lp_slug = None
         if product:
             lp_slug = lp_slug_map.get(product.get("lp_id")) if product.get("lp_id") else None
+        metadata = _ensure_dict(row.get("metadata"))
+        risk_snapshot = metadata.get("risk_snapshot") if isinstance(metadata.get("risk_snapshot"), dict) else {}
         product_sales.append(
             SalesProductRecord(
                 sale_id=row.get("id"),
@@ -310,6 +330,19 @@ async def get_sales_history(
                 purchased_at=purchased_at,
                 lp_slug=lp_slug,
                 description=None,
+                clearing_state=str(row.get("clearing_state")) if row.get("clearing_state") else None,
+                risk_level=(str(row.get("risk_level")) if row.get("risk_level") else risk_snapshot.get("level")) or None,
+                risk_score=(
+                    int(row.get("risk_score"))
+                    if row.get("risk_score") is not None
+                    else (int(risk_snapshot.get("score")) if risk_snapshot.get("score") is not None else None)
+                ),
+                risk_factors=risk_snapshot.get("factors"),
+                ready_for_payout_at=_parse_datetime(row.get("ready_for_payout_at")) if row.get("ready_for_payout_at") else None,
+                chargeback_hold_until=_parse_datetime(row.get("chargeback_hold_until")) if row.get("chargeback_hold_until") else None,
+                dispute_flag=bool(row.get("dispute_flag")),
+                dispute_status=str(row.get("dispute_status")) if row.get("dispute_status") else None,
+                reserve_amount_usd=float(row.get("reserve_amount_usd")) if row.get("reserve_amount_usd") is not None else None,
             )
         )
 
@@ -348,6 +381,8 @@ async def get_sales_history(
         buyer_info = buyer_map.get(buyer_id) if buyer_id else None
         purchased_at = _parse_datetime(row.get("completed_at")) if row.get("completed_at") else _parse_datetime(row.get("updated_at") or row.get("created_at"))
         amount_jpy = row.get("amount_jpy")
+        metadata = _ensure_dict(row.get("metadata"))
+        risk_snapshot = metadata.get("risk_snapshot") if isinstance(metadata.get("risk_snapshot"), dict) else {}
         note_sales.append(
             SalesNoteRecord(
                 sale_id=row.get("id"),
@@ -361,6 +396,19 @@ async def get_sales_history(
                 points_spent=0,
                 amount_jpy=int(amount_jpy) if amount_jpy is not None else None,
                 purchased_at=purchased_at,
+                clearing_state=str(row.get("clearing_state")) if row.get("clearing_state") else None,
+                risk_level=(str(row.get("risk_level")) if row.get("risk_level") else risk_snapshot.get("level")) or None,
+                risk_score=(
+                    int(row.get("risk_score"))
+                    if row.get("risk_score") is not None
+                    else (int(risk_snapshot.get("score")) if risk_snapshot.get("score") is not None else None)
+                ),
+                risk_factors=risk_snapshot.get("factors"),
+                ready_for_payout_at=_parse_datetime(row.get("ready_for_payout_at")) if row.get("ready_for_payout_at") else None,
+                chargeback_hold_until=_parse_datetime(row.get("chargeback_hold_until")) if row.get("chargeback_hold_until") else None,
+                dispute_flag=bool(row.get("dispute_flag")),
+                dispute_status=str(row.get("dispute_status")) if row.get("dispute_status") else None,
+                reserve_amount_usd=float(row.get("reserve_amount_usd")) if row.get("reserve_amount_usd") is not None else None,
             )
         )
 

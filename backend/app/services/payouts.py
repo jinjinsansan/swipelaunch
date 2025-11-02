@@ -16,6 +16,8 @@ from app.models.payouts import (
     AdminPayoutListFilters,
     AdminPayoutListItem,
     AdminPayoutListResponse,
+    AdminRiskOrder,
+    AdminRiskOrderListResponse,
     AdminPayoutStatusUpdateRequest,
     AdminPayoutTxRecordRequest,
     PayoutDashboardResponse,
@@ -134,6 +136,7 @@ def _map_line_item(record: Dict[str, Any]) -> PayoutLineItem:
         net_amount_usdt=_to_decimal(record.get("net_amount_usdt")),
         metadata=metadata,
         created_at=_to_datetime(record.get("created_at")),
+        reserve_amount_usd=_to_decimal(record.get("reserve_amount_usd")),
     )
 
 
@@ -393,6 +396,75 @@ def list_admin_payouts(filters: AdminPayoutListFilters, *, limit: int = 50, offs
     return AdminPayoutListResponse(total=total, data=items)
 
 
+def list_risk_orders(*, limit: int = 50, supabase: Optional[Client] = None) -> AdminRiskOrderListResponse:
+    client = supabase or get_supabase()
+    orders_resp = (
+        client
+        .table("payment_orders")
+        .select("*")
+        .eq("status", "COMPLETED")
+        .order("completed_at", desc=True)
+        .execute()
+    )
+    rows = orders_resp.data or []
+    filtered: List[Dict[str, Any]] = []
+    for row in rows:
+        clearing_state = str(row.get("clearing_state") or "").lower()
+        risk_level = str(row.get("risk_level") or "").lower()
+        dispute_flag = bool(row.get("dispute_flag"))
+        if clearing_state in {"clearing", "dispute"} or dispute_flag or risk_level == "high":
+            filtered.append(row)
+        if len(filtered) >= limit:
+            break
+
+    seller_ids = {row.get("seller_id") for row in filtered if row.get("seller_id")}
+    seller_lookup = _load_sellers(client, seller_ids)
+    buyer_ids = {row.get("user_id") for row in filtered if row.get("user_id")}
+    buyer_lookup: Dict[str, Dict[str, Any]] = {}
+    if buyer_ids:
+        buyers_resp = (
+            client
+            .table("users")
+            .select("id, username, email")
+            .in_("id", list(buyer_ids))
+            .execute()
+        )
+        for record in buyers_resp.data or []:
+            user_id = record.get("id")
+            if user_id:
+                buyer_lookup[str(user_id)] = record
+
+    items: List[AdminRiskOrder] = []
+    for row in filtered:
+        seller_id = str(row.get("seller_id")) if row.get("seller_id") else ""
+        metadata = _ensure_metadata(row.get("metadata"))
+        risk_score = row.get("risk_score")
+        item = AdminRiskOrder(
+            order_id=str(row.get("id")),
+            seller_id=seller_id,
+            seller_username=seller_lookup.get(seller_id, {}).get("username"),
+            seller_email=seller_lookup.get(seller_id, {}).get("email"),
+            buyer_id=row.get("user_id"),
+            buyer_username=buyer_lookup.get(str(row.get("user_id")), {}).get("username"),
+            amount_jpy=int(row.get("amount_jpy") or 0),
+            currency=str(row.get("currency") or "JPY"),
+            risk_level=row.get("risk_level"),
+            risk_score=int(risk_score) if risk_score is not None else None,
+            clearing_state=row.get("clearing_state"),
+            dispute_flag=bool(row.get("dispute_flag")),
+            dispute_status=row.get("dispute_status"),
+            ready_for_payout_at=_to_datetime(row.get("ready_for_payout_at")) if row.get("ready_for_payout_at") else None,
+            chargeback_hold_until=_to_datetime(row.get("chargeback_hold_until")) if row.get("chargeback_hold_until") else None,
+            reserve_amount_usd=float(row.get("reserve_amount_usd")) if row.get("reserve_amount_usd") is not None else None,
+            created_at=_to_datetime(row.get("created_at")) if row.get("created_at") else datetime.now(timezone.utc),
+            completed_at=_to_datetime(row.get("completed_at")) if row.get("completed_at") else None,
+            metadata=metadata,
+        )
+        items.append(item)
+
+    return AdminRiskOrderListResponse(total=len(filtered), data=items)
+
+
 def create_admin_event(payout_id: str, request: AdminPayoutEventRequest, *, actor_id: Optional[str], supabase: Optional[Client] = None) -> PayoutEvent:
     client = supabase or get_supabase()
     payload = {
@@ -443,6 +515,22 @@ def record_admin_transaction(payout_id: str, request: AdminPayoutTxRecordRequest
         "admin_tx_confirmed_at": confirmed_at.isoformat(),
     }
     client.table("payout_ledger").update(update_payload).eq("id", payout_id).execute()
+    orders_resp = (
+        client
+        .table("payout_line_items")
+        .select("source_id, source_type")
+        .eq("payout_id", payout_id)
+        .eq("source_type", "payment_order")
+        .execute()
+    )
+    order_ids = [row.get("source_id") for row in (orders_resp.data or []) if row.get("source_id")]
+    if order_ids:
+        client.table("payment_orders").update(
+            {
+                "reserve_released_at": confirmed_at.isoformat(),
+                "clearing_state": "released",
+            }
+        ).in_("id", order_ids).execute()
 
     event = AdminPayoutEventRequest(
         event_type="transaction",
@@ -511,7 +599,10 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
     orders_resp = (
         client
         .table("payment_orders")
-        .select("id, seller_id, user_id, amount_jpy, currency, metadata, completed_at, status")
+        .select(
+            "id, seller_id, user_id, amount_jpy, currency, metadata, completed_at, status, "
+            "clearing_state, ready_for_payout_at, chargeback_hold_until, dispute_flag, risk_level, risk_score, reserve_amount_usd"
+        )
         .eq("status", "COMPLETED")
         .order("completed_at", desc=False)
         .execute()
@@ -528,8 +619,16 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
             continue
         if completed_at < window_start:
             continue
-        payout_ready_at = completed_at + timedelta(days=10)
-        if payout_ready_at > reference_date:
+        if row.get("dispute_flag"):
+            continue
+        clearing_state = (row.get("clearing_state") or "").lower()
+        ready_at = _to_datetime(row.get("ready_for_payout_at")) if row.get("ready_for_payout_at") else None
+        if not ready_at:
+            hold_reference = _to_datetime(row.get("chargeback_hold_until")) if row.get("chargeback_hold_until") else None
+            ready_at = hold_reference or (completed_at + timedelta(days=10))
+        if clearing_state == "dispute":
+            continue
+        if ready_at > reference_date:
             continue
         grouped[str(seller_id)].append(row)
 
@@ -548,7 +647,9 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
         period_end: Optional[datetime] = None
         gross_usd_total = Decimal("0")
         line_items_payload: List[Dict[str, Any]] = []
+        reserve_total_usd = Decimal("0")
 
+        order_ids: List[str] = []
         for order in orders:
             completed_at = _to_datetime(order.get("completed_at")) or reference_date
             if not period_start or completed_at < period_start:
@@ -569,6 +670,10 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
             fee_usd = (amount_usd or Decimal("0")) * fee_ratio
             net_usd = (amount_usd or Decimal("0")) - fee_usd
 
+            reserve_usd = _to_decimal(order.get("reserve_amount_usd")) if order.get("reserve_amount_usd") is not None else Decimal("0")
+            reserve_total_usd += reserve_usd
+            if order.get("id"):
+                order_ids.append(str(order.get("id")))
             line_items_payload.append(
                 {
                     "source_type": "payment_order",
@@ -587,7 +692,10 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
                     "metadata": {
                         "currency": order.get("currency", "USD"),
                         "raw_metadata": _sanitize_for_json(metadata),
+                        "risk_level": order.get("risk_level"),
+                        "risk_score": order.get("risk_score"),
                     },
+                    "reserve_amount_usd": float(reserve_usd) if reserve_usd else 0,
                 }
             )
 
@@ -596,6 +704,8 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
 
         fee_total = gross_usd_total * fee_ratio
         net_usd_total = gross_usd_total - fee_total
+        if reserve_total_usd > Decimal("0"):
+            net_usd_total = max(net_usd_total - reserve_total_usd, Decimal("0"))
         if net_usd_total < Decimal(str(request.min_net_threshold_usd)):
             logger.info(
                 "Skipping payout below threshold",
@@ -630,6 +740,7 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
                 "generated_at": reference_date.isoformat(),
                 "order_count": len(orders),
                 "fee_percent": request.fee_percent,
+                "reserve_withheld_usd": float(reserve_total_usd) if reserve_total_usd else 0,
             },
             "last_status_change_at": reference_date.isoformat(),
             "last_status_changed_by": actor_id,
@@ -645,6 +756,13 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
         for item in line_items_payload:
             item["payout_id"] = payout_id
         client.table("payout_line_items").insert([_sanitize_for_json(item) for item in line_items_payload]).execute()
+        if order_ids:
+            client.table("payment_orders").update(
+                {
+                    "clearing_state": "ready",
+                    "risk_reviewed_at": reference_date.isoformat(),
+                }
+            ).in_("id", order_ids).execute()
 
         create_admin_event(
             payout_id,

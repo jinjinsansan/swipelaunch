@@ -13,6 +13,7 @@ from app.constants.subscription_plans import (
     get_subscription_plan_by_id,
 )
 from app.services.one_lat import one_lat_client
+from app.services.payment_risk import evaluate_payment_order_risk
 from supabase import Client
 import logging
 
@@ -177,9 +178,38 @@ async def _process_payment_order(
 
     if new_status == "COMPLETED" and previous_status != "COMPLETED":
         metadata["fulfilled_at"] = now_iso
+        risk_inputs = dict(order_row)
+        risk_inputs.update(update_payload)
+        risk_data = evaluate_payment_order_risk(supabase, risk_inputs)
+        metadata["risk_snapshot"] = {
+            "score": risk_data.get("risk_score"),
+            "level": risk_data.get("risk_level"),
+            "factors": risk_data.get("risk_factors"),
+        }
+        for key, value in risk_data.items():
+            if isinstance(value, datetime):
+                update_payload[key] = value.isoformat()
+            else:
+                update_payload[key] = value
         update_payload["completed_at"] = now_iso
-    elif new_status in {"CANCELLED", "EXPIRED", "REJECTED", "REFUNDED"}:
+    elif new_status in {"CANCELLED", "EXPIRED"}:
         update_payload["canceled_at"] = now_iso
+        update_payload["clearing_state"] = "cancelled"
+    elif new_status in {"REJECTED", "REFUNDED"}:
+        metadata["dispute_snapshot"] = {
+            "event_type": event_type,
+            "one_lat_status": payment_order_payload.get("status"),
+        }
+        update_payload.update(
+            {
+                "dispute_flag": True,
+                "dispute_status": new_status.lower(),
+                "dispute_reason": payment_order_payload.get("reason") or metadata.get("dispute_reason"),
+                "dispute_opened_at": now_iso,
+                "clearing_state": "dispute",
+                "canceled_at": now_iso,
+            }
+        )
 
     try:
         supabase.table("payment_orders").update(update_payload).eq("id", order_row["id"]).execute()

@@ -42,6 +42,10 @@ class StubQuery:
         self._filters.append(("in", key, set(values)))
         return self
 
+    def lt(self, key: str, value):
+        self._filters.append(("lt", key, value))
+        return self
+
     def order(self, field: str, desc: bool = False):
         self._order = (field, desc)
         return self
@@ -126,6 +130,12 @@ class StubQuery:
                 results = [row for row in results if row.get(key) == value]
             elif kind == "in":
                 results = [row for row in results if row.get(key) in value]
+            elif kind == "lt":
+                results = [
+                    row
+                    for row in results
+                    if row.get(key) is not None and str(row.get(key)) < str(value)
+                ]
         return results
 
     def execute_select(self):
@@ -170,10 +180,12 @@ def test_generate_payouts_creates_entries(monkeypatch):
                     "seller_id": "seller-1",
                     "user_id": "buyer-2",
                     "amount_usd": 50,
+                    "amount_jpy": 7250,
                     "currency": "USD",
                     "metadata": {"description": "NOTE"},
                     "completed_at": "2025-01-07T12:30:00Z",
                     "status": "COMPLETED",
+                    "reserve_amount_usd": 2.5,
                 },
             ],
             "payout_line_items": [],
@@ -199,10 +211,11 @@ def test_generate_payouts_creates_entries(monkeypatch):
     assert len(ledger_rows) == 1
     ledger = ledger_rows[0]
     assert ledger["status"] == "ready_to_payout"
-    # 14500 JPY ≒ 100 USD, plus 50 USD => 150 USD gross, 5% fee => 142.5 net
+    # 14500 JPY ≒ 100 USD, plus 50 USD => 150 USD gross, 5% fee => 142.5 net, reserve 2.5 USD => 140 net
     assert abs(float(ledger["gross_amount_usd"]) - 150.0) < 0.01
-    assert abs(float(ledger["net_amount_usd"]) - 142.5) < 0.01
+    assert abs(float(ledger["net_amount_usd"]) - 140.0) < 0.01
     assert ledger["seller_wallet_snapshot"] == "T1234567890"
+    assert ledger["metadata"]["reserve_withheld_usd"] == 2.5
 
     line_items = supabase.tables["payout_line_items"]
     assert len(line_items) == 2
@@ -310,3 +323,56 @@ def test_payout_routes(monkeypatch):
     assert client.post("/api/admin/payouts/p1/status", json={"status": "paid"}).status_code == 200
     assert client.post("/api/admin/payouts/p1/transaction", json={"tx_hash": "abc"}).status_code == 200
     assert client.post("/api/admin/payouts/p1/events", json={"event_type": "note"}).status_code == 200
+
+
+def test_list_risk_orders():
+    supabase = StubSupabase(
+        tables={
+            "payment_orders": [
+                {
+                    "id": "order-risk-1",
+                    "seller_id": "seller-1",
+                    "user_id": "buyer-1",
+                    "amount_jpy": 20000,
+                    "currency": "JPY",
+                    "status": "COMPLETED",
+                    "clearing_state": "clearing",
+                    "risk_level": "medium",
+                    "risk_score": 4,
+                    "completed_at": "2025-01-10T00:00:00Z",
+                    "ready_for_payout_at": "2025-02-01T00:00:00Z",
+                    "chargeback_hold_until": "2025-02-01T00:00:00Z",
+                    "reserve_amount_usd": 5,
+                    "created_at": "2025-01-10T00:00:00Z",
+                    "metadata": {"risk_snapshot": {"factors": {"high_amount": True}}},
+                },
+                {
+                    "id": "order-safe-1",
+                    "seller_id": "seller-2",
+                    "user_id": "buyer-2",
+                    "amount_jpy": 8000,
+                    "currency": "JPY",
+                    "status": "COMPLETED",
+                    "clearing_state": "ready",
+                    "risk_level": "low",
+                    "risk_score": 1,
+                    "completed_at": "2025-01-05T00:00:00Z",
+                    "ready_for_payout_at": "2025-01-15T00:00:00Z",
+                    "created_at": "2025-01-05T00:00:00Z",
+                    "metadata": {},
+                },
+            ],
+            "users": [
+                {"id": "seller-1", "username": "seller-one", "email": "seller1@example.com"},
+                {"id": "buyer-1", "username": "buyer-one", "email": "buyer1@example.com"},
+            ],
+        }
+    )
+
+    result = payout_service.list_risk_orders(limit=10, supabase=supabase)
+    assert result.total == 1
+    assert len(result.data) == 1
+    order = result.data[0]
+    assert order.order_id == "order-risk-1"
+    assert order.risk_level == "medium"
+    assert order.clearing_state == "clearing"

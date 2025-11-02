@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional, Literal
+from typing import Dict, List, Optional, Literal
 
 from pydantic import BaseModel
 
@@ -29,6 +29,15 @@ class SalesProductRecord(BaseModel):
     purchased_at: datetime
     lp_slug: Optional[str]
     description: Optional[str]
+    clearing_state: Optional[str] = None
+    risk_level: Optional[str] = None
+    risk_score: Optional[int] = None
+    risk_factors: Optional[Dict[str, object]] = None
+    ready_for_payout_at: Optional[datetime] = None
+    chargeback_hold_until: Optional[datetime] = None
+    dispute_flag: bool = False
+    dispute_status: Optional[str] = None
+    reserve_amount_usd: Optional[float] = None
 
 
 class SalesNoteRecord(BaseModel):
@@ -43,6 +52,15 @@ class SalesNoteRecord(BaseModel):
     points_spent: int
     amount_jpy: Optional[int] = None
     purchased_at: datetime
+    clearing_state: Optional[str] = None
+    risk_level: Optional[str] = None
+    risk_score: Optional[int] = None
+    risk_factors: Optional[Dict[str, object]] = None
+    ready_for_payout_at: Optional[datetime] = None
+    chargeback_hold_until: Optional[datetime] = None
+    dispute_flag: bool = False
+    dispute_status: Optional[str] = None
+    reserve_amount_usd: Optional[float] = None
 
 
 class SalesSalonRecord(BaseModel):

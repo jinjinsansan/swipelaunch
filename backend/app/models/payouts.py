@@ -44,6 +44,7 @@ class PayoutLineItem(BaseModel):
     net_amount_usdt: Optional[float] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
+    reserve_amount_usd: Optional[float] = None
 
 
 class PayoutEvent(BaseModel):
@@ -139,6 +140,33 @@ class AdminPayoutListItem(BaseModel):
 class AdminPayoutListResponse(BaseModel):
     total: int
     data: List[AdminPayoutListItem]
+
+
+class AdminRiskOrder(BaseModel):
+    order_id: str
+    seller_id: str
+    seller_username: Optional[str]
+    seller_email: Optional[str]
+    buyer_id: Optional[str]
+    buyer_username: Optional[str]
+    amount_jpy: int
+    currency: str
+    risk_level: Optional[str]
+    risk_score: Optional[int]
+    clearing_state: Optional[str]
+    dispute_flag: bool = False
+    dispute_status: Optional[str]
+    ready_for_payout_at: Optional[datetime]
+    chargeback_hold_until: Optional[datetime]
+    reserve_amount_usd: Optional[float]
+    created_at: datetime
+    completed_at: Optional[datetime]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AdminRiskOrderListResponse(BaseModel):
+    total: int
+    data: List[AdminRiskOrder]
 
 
 class AdminPayoutGenerateRequest(BaseModel):
