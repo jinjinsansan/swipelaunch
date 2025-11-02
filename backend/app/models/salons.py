@@ -48,6 +48,8 @@ class SalonResponse(BaseModel):
     tax_rate: Optional[float] = None
     tax_inclusive: bool
     is_active: bool
+    status: str = "approved"
+    moderation_notes: Optional[str] = None
     member_count: int = 0
     lp_id: Optional[str] = None
     created_at: datetime

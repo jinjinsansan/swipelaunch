@@ -2,7 +2,7 @@
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple, Literal
+from typing import Any, Dict, List, Optional, Set, Tuple, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from supabase import Client, create_client
 
 from app.config import settings
+from app.services.risk_scoring import calculate_note_risk, calculate_salon_risk
 from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -111,14 +112,20 @@ def create_moderation_event(
     performed_by: Optional[str],
     target_user_id: Optional[str] = None,
     target_lp_id: Optional[str] = None,
+    target_note_id: Optional[str] = None,
+    target_salon_id: Optional[str] = None,
     reason: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     event = {
         "action": action,
         "performed_by": performed_by,
         "target_user_id": target_user_id,
         "target_lp_id": target_lp_id,
+        "target_note_id": target_note_id,
+        "target_salon_id": target_salon_id,
         "reason": reason,
+        "metadata": metadata or {},
         "created_at": now_utc_iso(),
     }
     try:
@@ -263,6 +270,7 @@ class UserActionResponse(BaseModel):
     user_id: Optional[str]
     message: str
     note_id: Optional[str] = None
+    salon_id: Optional[str] = None
 
 
 class BlockUserRequest(BaseModel):
@@ -375,6 +383,159 @@ class AdminAnnouncementListResponse(BaseModel):
     total: int
 
 
+class NoteModerationItemSchema(BaseModel):
+    id: str
+    title: str
+    status: str
+    author_id: str
+    author_username: Optional[str] = None
+    author_email: Optional[str] = None
+    author_user_type: Optional[str] = None
+    price_points: Optional[int] = None
+    price_jpy: Optional[int] = None
+    is_paid: bool
+    allow_point_purchase: bool
+    allow_jpy_purchase: bool
+    total_purchases: int
+    total_shares: int
+    suspicious_shares: int
+    total_refunds: int
+    risk_score: float
+    risk_indicators: List[str]
+    created_at: str
+    updated_at: str
+    published_at: Optional[str] = None
+    categories: List[str] = Field(default_factory=list)
+
+
+class NoteModerationListResponse(BaseModel):
+    data: List[NoteModerationItemSchema]
+    total: int
+    limit: int
+    offset: int
+
+
+class NoteModerationDetailSchema(NoteModerationItemSchema):
+    excerpt: Optional[str] = None
+    content_blocks: Any
+    official_share_tweet_url: Optional[str] = None
+    official_share_x_username: Optional[str] = None
+
+
+class SalonModerationItemSchema(BaseModel):
+    id: str
+    title: str
+    status: str
+    is_active: bool
+    owner_id: str
+    owner_username: Optional[str] = None
+    owner_email: Optional[str] = None
+    monthly_price_jpy: Optional[int] = None
+    allow_point_subscription: bool
+    allow_jpy_subscription: bool
+    active_members: int
+    pending_members: int
+    canceled_members: int
+    total_members: int
+    risk_score: float
+    risk_indicators: List[str]
+    created_at: str
+    updated_at: str
+
+
+class SalonModerationListResponse(BaseModel):
+    data: List[SalonModerationItemSchema]
+    total: int
+    limit: int
+    offset: int
+
+
+class SalonMemberModerationSchema(BaseModel):
+    id: str
+    user_id: str
+    username: Optional[str] = None
+    email: Optional[str] = None
+    status: str
+    joined_at: Optional[str] = None
+    last_charged_at: Optional[str] = None
+    next_charge_at: Optional[str] = None
+    canceled_at: Optional[str] = None
+
+
+class SalonModerationDetailSchema(SalonModerationItemSchema):
+    description: Optional[str] = None
+    moderation_notes: Optional[str] = None
+    owner_user_type: Optional[str] = None
+    members: List[SalonMemberModerationSchema] = Field(default_factory=list)
+    announcements_count: int = 0
+    events_count: int = 0
+    posts_count: int = 0
+
+
+class SalonStatusUpdateRequest(BaseModel):
+    status: Literal["pending", "approved", "rejected", "suspended"]
+    reason: Optional[str] = None
+    moderation_notes: Optional[str] = None
+
+
+class SalonMemberActionRequest(BaseModel):
+    action: Literal["approve", "cancel"]
+    reason: Optional[str] = None
+
+
+class MaintenanceModeSchema(BaseModel):
+    id: str
+    scope: str
+    status: str
+    title: str
+    message: Optional[str] = None
+    planned_start: Optional[str] = None
+    planned_end: Optional[str] = None
+    activated_at: Optional[str] = None
+    deactivated_at: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class MaintenanceModeListResponse(BaseModel):
+    data: List[MaintenanceModeSchema]
+
+
+class MaintenanceModeCreateRequest(BaseModel):
+    scope: Literal["global", "lp", "note", "salon", "points", "products", "ai", "payments"]
+    title: str = Field(..., max_length=120)
+    message: Optional[str] = Field(None, max_length=2000)
+    planned_start: Optional[str] = None
+    planned_end: Optional[str] = None
+
+
+class MaintenanceModeStatusUpdateRequest(BaseModel):
+    status: Literal["scheduled", "active", "completed", "cancelled"]
+    message: Optional[str] = None
+
+
+class SystemStatusCheckSchema(BaseModel):
+    id: str
+    component: str
+    status: str
+    response_time_ms: Optional[int] = None
+    message: Optional[str] = None
+    checked_at: str
+    created_by: Optional[str] = None
+
+
+class SystemStatusCheckListResponse(BaseModel):
+    data: List[SystemStatusCheckSchema]
+
+
+class SystemStatusCheckCreateRequest(BaseModel):
+    component: str = Field(..., max_length=80)
+    status: Literal["healthy", "degraded", "down"]
+    response_time_ms: Optional[int] = Field(None, ge=0)
+    message: Optional[str] = Field(None, max_length=2000)
+
+
 def build_admin_announcement(row: Dict[str, Any]) -> AdminAnnouncementSchema:
     return AdminAnnouncementSchema(
         id=str(row.get("id")),
@@ -389,6 +550,35 @@ def build_admin_announcement(row: Dict[str, Any]) -> AdminAnnouncementSchema:
         created_by=row.get("created_by"),
         created_by_email=row.get("created_by_email"),
         created_by_username=row.get("created_by_username"),
+    )
+
+
+def build_maintenance_mode(row: Dict[str, Any]) -> MaintenanceModeSchema:
+    return MaintenanceModeSchema(
+        id=str(row.get("id")),
+        scope=row.get("scope", "global"),
+        status=row.get("status", "scheduled"),
+        title=row.get("title", ""),
+        message=row.get("message"),
+        planned_start=row.get("planned_start"),
+        planned_end=row.get("planned_end"),
+        activated_at=row.get("activated_at"),
+        deactivated_at=row.get("deactivated_at"),
+        created_by=row.get("created_by"),
+        created_at=row.get("created_at", now_utc_iso()),
+        updated_at=row.get("updated_at", now_utc_iso()),
+    )
+
+
+def build_system_status_check(row: Dict[str, Any]) -> SystemStatusCheckSchema:
+    return SystemStatusCheckSchema(
+        id=str(row.get("id")),
+        component=row.get("component", "unknown"),
+        status=row.get("status", "healthy"),
+        response_time_ms=row.get("response_time_ms"),
+        message=row.get("message"),
+        checked_at=row.get("checked_at", now_utc_iso()),
+        created_by=row.get("created_by"),
     )
 
 
@@ -975,6 +1165,930 @@ async def admin_delete_note(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"NOTEの削除に失敗しました: {exc}",
+        )
+
+
+@router.get("/notes/moderation", response_model=NoteModerationListResponse)
+async def list_notes_for_moderation(
+    status: Optional[str] = Query(None, description="対象ステータス (draft/published)"),
+    search: Optional[str] = Query(None, description="タイトル検索"),
+    min_risk: Optional[float] = Query(None, ge=0, description="最小リスクスコア"),
+    max_risk: Optional[float] = Query(None, ge=0, description="最大リスクスコア"),
+    only_suspicious: bool = Query(False, description="疑わしいシェアを含むNOTEのみ返す"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        select_fields = (
+            "id,author_id,title,status,is_paid,price_points,price_jpy,allow_point_purchase,"
+            "allow_jpy_purchase,created_at,updated_at,published_at,categories"
+        )
+        query = supabase.table("notes").select(select_fields, count="exact")
+        if status:
+            query = query.eq("status", status)
+        if search:
+            query = query.ilike("title", f"%{search}%")
+        notes_response = query.order("updated_at", desc=True).range(offset, offset + limit - 1).execute()
+        note_rows, total = handle_supabase_response(notes_response, "admin note moderation list")
+
+        note_ids = [note.get("id") for note in note_rows if note.get("id")]
+        author_ids: Set[str] = {note.get("author_id") for note in note_rows if note.get("author_id")}
+
+        purchase_counts: Dict[str, int] = defaultdict(int)
+        refund_counts: Dict[str, int] = defaultdict(int)
+        share_counts: Dict[str, int] = defaultdict(int)
+        suspicious_share_counts: Dict[str, int] = defaultdict(int)
+
+        if note_ids:
+            purchases_response = (
+                supabase
+                .table("note_purchases")
+                .select("note_id")
+                .in_("note_id", note_ids)
+                .execute()
+            )
+            purchase_rows, _ = handle_supabase_response(purchases_response, "admin note purchase lookup", raise_on_error=False)
+            for purchase in purchase_rows:
+                note_id = purchase.get("note_id")
+                if note_id:
+                    purchase_counts[note_id] += 1
+
+            transactions_response = (
+                supabase
+                .table("point_transactions")
+                .select("related_note_id, transaction_type")
+                .in_("related_note_id", note_ids)
+                .execute()
+            )
+            transaction_rows, _ = handle_supabase_response(transactions_response, "admin note transaction lookup", raise_on_error=False)
+            for tx in transaction_rows:
+                note_id = tx.get("related_note_id")
+                tx_type = tx.get("transaction_type")
+                if note_id and tx_type in {"refund", "chargeback", "note_refund"}:
+                    refund_counts[note_id] += 1
+
+            shares_response = (
+                supabase
+                .table("note_shares")
+                .select("note_id,is_suspicious")
+                .in_("note_id", note_ids)
+                .execute()
+            )
+            share_rows, _ = handle_supabase_response(shares_response, "admin note share lookup", raise_on_error=False)
+            for share in share_rows:
+                note_id = share.get("note_id")
+                if note_id:
+                    share_counts[note_id] += 1
+                    if share.get("is_suspicious"):
+                        suspicious_share_counts[note_id] += 1
+
+        user_map: Dict[str, Dict[str, Any]] = {}
+        if author_ids:
+            users_response = (
+                supabase
+                .table("users")
+                .select("id,username,email,user_type")
+                .in_("id", list(author_ids))
+                .execute()
+            )
+            user_rows, _ = handle_supabase_response(users_response, "admin note author lookup", raise_on_error=False)
+            for row in user_rows:
+                if row.get("id"):
+                    user_map[row["id"]] = row
+
+        items: List[NoteModerationItemSchema] = []
+        for note in note_rows:
+            note_id = note.get("id")
+            author_id = note.get("author_id")
+            if not note_id or not author_id:
+                continue
+            total_purchases = purchase_counts.get(note_id, 0)
+            total_refunds = refund_counts.get(note_id, 0)
+            total_shares = share_counts.get(note_id, 0)
+            suspicious_shares = suspicious_share_counts.get(note_id, 0)
+            risk_result = calculate_note_risk(
+                note,
+                total_purchases=total_purchases,
+                suspicious_shares=suspicious_shares,
+                total_refunds=total_refunds,
+            )
+
+            if min_risk is not None and risk_result.score < min_risk:
+                continue
+            if max_risk is not None and risk_result.score > max_risk:
+                continue
+            if only_suspicious and suspicious_shares == 0:
+                continue
+
+            author = user_map.get(author_id, {})
+            items.append(NoteModerationItemSchema(
+                id=note_id,
+                title=note.get("title", ""),
+                status=note.get("status", "draft"),
+                author_id=author_id,
+                author_username=author.get("username"),
+                author_email=author.get("email"),
+                author_user_type=author.get("user_type"),
+                price_points=int(note.get("price_points") or 0) if note.get("price_points") is not None else None,
+                price_jpy=int(note.get("price_jpy") or 0) if note.get("price_jpy") is not None else None,
+                is_paid=bool(note.get("is_paid", False)),
+                allow_point_purchase=bool(note.get("allow_point_purchase", True)),
+                allow_jpy_purchase=bool(note.get("allow_jpy_purchase", False)),
+                total_purchases=total_purchases,
+                total_shares=total_shares,
+                suspicious_shares=suspicious_shares,
+                total_refunds=total_refunds,
+                risk_score=risk_result.score,
+                risk_indicators=risk_result.indicators,
+                created_at=note.get("created_at", now_utc_iso()),
+                updated_at=note.get("updated_at", now_utc_iso()),
+                published_at=note.get("published_at"),
+                categories=list(note.get("categories") or []),
+            ))
+
+        return NoteModerationListResponse(
+            data=items,
+            total=len(items) if total is None else min(len(items), total),
+            limit=limit,
+            offset=offset,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to list notes for moderation")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"NOTEモデレーション一覧の取得に失敗しました: {exc}",
+        )
+
+
+@router.get("/notes/{note_id}/moderation", response_model=NoteModerationDetailSchema)
+async def get_note_moderation_detail(
+    note_id: str,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        note_response = (
+            supabase
+            .table("notes")
+            .select(
+                "id,author_id,title,status,is_paid,price_points,price_jpy,allow_point_purchase,allow_jpy_purchase,"
+                "created_at,updated_at,published_at,categories,excerpt,content_blocks,official_share_tweet_url,official_share_x_username"
+            )
+            .eq("id", note_id)
+            .single()
+            .execute()
+        )
+        note = getattr(note_response, "data", None)
+        if not note:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="NOTEが見つかりません")
+
+        author_id = note.get("author_id")
+        author: Dict[str, Any] = {}
+        if author_id:
+            author_response = (
+                supabase
+                .table("users")
+                .select("id,username,email,user_type")
+                .eq("id", author_id)
+                .single()
+                .execute()
+            )
+            author = getattr(author_response, "data", {}) or {}
+
+        total_purchases = 0
+        purchases_response = (
+            supabase
+            .table("note_purchases")
+            .select("note_id")
+            .eq("note_id", note_id)
+            .execute()
+        )
+        purchase_rows, _ = handle_supabase_response(purchases_response, "note moderation purchases", raise_on_error=False)
+        total_purchases = len([row for row in purchase_rows if row.get("note_id")])
+
+        share_rows = []
+        shares_response = (
+            supabase
+            .table("note_shares")
+            .select("note_id,is_suspicious")
+            .eq("note_id", note_id)
+            .execute()
+        )
+        share_rows, _ = handle_supabase_response(shares_response, "note moderation shares", raise_on_error=False)
+        total_shares = len([row for row in share_rows if row.get("note_id")])
+        suspicious_shares = len([row for row in share_rows if row.get("is_suspicious")])
+
+        refund_rows = []
+        refunds_response = (
+            supabase
+            .table("point_transactions")
+            .select("related_note_id, transaction_type")
+            .eq("related_note_id", note_id)
+            .execute()
+        )
+        refund_rows, _ = handle_supabase_response(refunds_response, "note moderation refunds", raise_on_error=False)
+        total_refunds = len([
+            row
+            for row in refund_rows
+            if row.get("transaction_type") in {"refund", "chargeback", "note_refund"}
+        ])
+
+        risk_result = calculate_note_risk(
+            note,
+            total_purchases=total_purchases,
+            suspicious_shares=suspicious_shares,
+            total_refunds=total_refunds,
+        )
+
+        return NoteModerationDetailSchema(
+            id=note_id,
+            title=note.get("title", ""),
+            status=note.get("status", "draft"),
+            author_id=author_id or "",
+            author_username=author.get("username"),
+            author_email=author.get("email"),
+            author_user_type=author.get("user_type"),
+            price_points=int(note.get("price_points") or 0) if note.get("price_points") is not None else None,
+            price_jpy=int(note.get("price_jpy") or 0) if note.get("price_jpy") is not None else None,
+            is_paid=bool(note.get("is_paid", False)),
+            allow_point_purchase=bool(note.get("allow_point_purchase", True)),
+            allow_jpy_purchase=bool(note.get("allow_jpy_purchase", False)),
+            total_purchases=total_purchases,
+            total_shares=total_shares,
+            suspicious_shares=suspicious_shares,
+            total_refunds=total_refunds,
+            risk_score=risk_result.score,
+            risk_indicators=risk_result.indicators,
+            created_at=note.get("created_at", now_utc_iso()),
+            updated_at=note.get("updated_at", now_utc_iso()),
+            published_at=note.get("published_at"),
+            categories=list(note.get("categories") or []),
+            excerpt=note.get("excerpt"),
+            content_blocks=note.get("content_blocks") or [],
+            official_share_tweet_url=note.get("official_share_tweet_url"),
+            official_share_x_username=note.get("official_share_x_username"),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to get note moderation detail")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"NOTEモデレーション詳細の取得に失敗しました: {exc}",
+        )
+
+
+@router.get("/salons/moderation", response_model=SalonModerationListResponse)
+async def list_salons_for_moderation(
+    status: Optional[str] = Query(None, description="対象ステータス (pending/approved/rejected/suspended)"),
+    search: Optional[str] = Query(None, description="サロンタイトル検索"),
+    min_risk: Optional[float] = Query(None, ge=0, description="最小リスクスコア"),
+    max_risk: Optional[float] = Query(None, ge=0, description="最大リスクスコア"),
+    only_flagged: bool = Query(False, description="審査待ちまたは停止中のみ"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        select_fields = (
+            "id,owner_id,title,description,status,is_active,monthly_price_jpy,allow_point_subscription,"
+            "allow_jpy_subscription,moderation_notes,created_at,updated_at"
+        )
+        query = supabase.table("salons").select(select_fields, count="exact")
+        if status:
+            query = query.eq("status", status)
+        if search:
+            query = query.ilike("title", f"%{search}%")
+        response = query.order("updated_at", desc=True).range(offset, offset + limit - 1).execute()
+        salon_rows, total = handle_supabase_response(response, "admin salon moderation list")
+
+        salon_ids = [row.get("id") for row in salon_rows if row.get("id")]
+        owner_ids: Set[str] = {row.get("owner_id") for row in salon_rows if row.get("owner_id")}
+
+        membership_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        if salon_ids:
+            memberships_response = (
+                supabase
+                .table("salon_memberships")
+                .select("salon_id,status")
+                .in_("salon_id", salon_ids)
+                .execute()
+            )
+            membership_rows, _ = handle_supabase_response(
+                memberships_response,
+                "admin salon membership lookup",
+                raise_on_error=False,
+            )
+            for membership in membership_rows:
+                salon_id = membership.get("salon_id")
+                if not salon_id:
+                    continue
+                status_value = (membership.get("status") or "").upper()
+                membership_counts[salon_id][status_value] += 1
+
+        user_map: Dict[str, Dict[str, Any]] = {}
+        if owner_ids:
+            owners_response = (
+                supabase
+                .table("users")
+                .select("id,username,email,user_type")
+                .in_("id", list(owner_ids))
+                .execute()
+            )
+            owner_rows, _ = handle_supabase_response(
+                owners_response,
+                "admin salon owner lookup",
+                raise_on_error=False,
+            )
+            for row in owner_rows:
+                if row.get("id"):
+                    user_map[row["id"]] = row
+
+        items: List[SalonModerationItemSchema] = []
+        for salon in salon_rows:
+            salon_id = salon.get("id")
+            if not salon_id:
+                continue
+
+            counts = membership_counts.get(salon_id, {})
+            active_members = counts.get("ACTIVE", 0)
+            pending_members = counts.get("PENDING", 0) + counts.get("WAITING", 0)
+            canceled_members = counts.get("CANCELED", 0) + counts.get("CANCELLED", 0)
+            total_members = sum(counts.values()) if counts else active_members + pending_members + canceled_members
+
+            risk_result = calculate_salon_risk(
+                salon,
+                active_members=active_members,
+                pending_members=pending_members,
+                canceled_members=canceled_members,
+                monthly_price_jpy=salon.get("monthly_price_jpy"),
+                refunds=0,
+            )
+
+            if min_risk is not None and risk_result.score < min_risk:
+                continue
+            if max_risk is not None and risk_result.score > max_risk:
+                continue
+            if only_flagged and (salon.get("status") not in {"pending", "suspended"}):
+                continue
+
+            owner = user_map.get(salon.get("owner_id"), {})
+
+            items.append(SalonModerationItemSchema(
+                id=salon_id,
+                title=salon.get("title", ""),
+                status=salon.get("status", "approved"),
+                is_active=bool(salon.get("is_active", True)),
+                owner_id=salon.get("owner_id", ""),
+                owner_username=owner.get("username"),
+                owner_email=owner.get("email"),
+                monthly_price_jpy=int(salon.get("monthly_price_jpy") or 0) if salon.get("monthly_price_jpy") is not None else None,
+                allow_point_subscription=bool(salon.get("allow_point_subscription", True)),
+                allow_jpy_subscription=bool(salon.get("allow_jpy_subscription", False)),
+                active_members=active_members,
+                pending_members=pending_members,
+                canceled_members=canceled_members,
+                total_members=total_members,
+                risk_score=risk_result.score,
+                risk_indicators=risk_result.indicators,
+                created_at=salon.get("created_at", now_utc_iso()),
+                updated_at=salon.get("updated_at", now_utc_iso()),
+            ))
+
+        return SalonModerationListResponse(
+            data=items,
+            total=len(items) if total is None else min(len(items), total),
+            limit=limit,
+            offset=offset,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to list salons for moderation")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"サロンモデレーション一覧の取得に失敗しました: {exc}",
+        )
+
+
+@router.get("/salons/{salon_id}/moderation", response_model=SalonModerationDetailSchema)
+async def get_salon_moderation_detail(
+    salon_id: str,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        salon_response = (
+            supabase
+            .table("salons")
+            .select("*")
+            .eq("id", salon_id)
+            .single()
+            .execute()
+        )
+        salon = getattr(salon_response, "data", None)
+        if not salon:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="サロンが見つかりません")
+
+        owner_id = salon.get("owner_id")
+        owner: Dict[str, Any] = {}
+        if owner_id:
+            owner_response = (
+                supabase
+                .table("users")
+                .select("id,username,email,user_type")
+                .eq("id", owner_id)
+                .single()
+                .execute()
+            )
+            owner = getattr(owner_response, "data", {}) or {}
+
+        memberships_response = (
+            supabase
+            .table("salon_memberships")
+            .select(
+                "id,user_id,status,joined_at,last_charged_at,next_charge_at,canceled_at,metadata"
+            )
+            .eq("salon_id", salon_id)
+            .order("joined_at", desc=True)
+            .limit(200)
+            .execute()
+        )
+        membership_rows, _ = handle_supabase_response(
+            memberships_response,
+            "admin salon membership detail",
+            raise_on_error=False,
+        )
+
+        member_user_ids: Set[str] = {row.get("user_id") for row in membership_rows if row.get("user_id")}
+        member_user_map: Dict[str, Dict[str, Any]] = {}
+        if member_user_ids:
+            member_users_response = (
+                supabase
+                .table("users")
+                .select("id,username,email")
+                .in_("id", list(member_user_ids))
+                .execute()
+            )
+            member_user_rows, _ = handle_supabase_response(
+                member_users_response,
+                "admin salon member user lookup",
+                raise_on_error=False,
+            )
+            for row in member_user_rows:
+                if row.get("id"):
+                    member_user_map[row["id"]] = row
+
+        counts: Dict[str, int] = defaultdict(int)
+        members: List[SalonMemberModerationSchema] = []
+        for membership in membership_rows:
+            status_value = (membership.get("status") or "").upper()
+            counts[status_value] += 1
+            user_info = member_user_map.get(membership.get("user_id"), {})
+            members.append(SalonMemberModerationSchema(
+                id=membership.get("id", ""),
+                user_id=membership.get("user_id", ""),
+                username=user_info.get("username"),
+                email=user_info.get("email"),
+                status=status_value,
+                joined_at=membership.get("joined_at"),
+                last_charged_at=membership.get("last_charged_at"),
+                next_charge_at=membership.get("next_charge_at"),
+                canceled_at=membership.get("canceled_at"),
+            ))
+
+        announcements_response = (
+            supabase
+            .table("salon_announcements")
+            .select("id", count="exact")
+            .eq("salon_id", salon_id)
+            .execute()
+        )
+        _, announcements_count = handle_supabase_response(
+            announcements_response,
+            "admin salon announcements count",
+            raise_on_error=False,
+        )
+
+        events_response = (
+            supabase
+            .table("salon_events")
+            .select("id", count="exact")
+            .eq("salon_id", salon_id)
+            .execute()
+        )
+        _, events_count = handle_supabase_response(
+            events_response,
+            "admin salon events count",
+            raise_on_error=False,
+        )
+
+        posts_response = (
+            supabase
+            .table("salon_posts")
+            .select("id", count="exact")
+            .eq("salon_id", salon_id)
+            .execute()
+        )
+        _, posts_count = handle_supabase_response(
+            posts_response,
+            "admin salon posts count",
+            raise_on_error=False,
+        )
+
+        active_members = counts.get("ACTIVE", 0)
+        pending_members = counts.get("PENDING", 0) + counts.get("WAITING", 0)
+        canceled_members = counts.get("CANCELED", 0) + counts.get("CANCELLED", 0)
+        total_members = sum(counts.values()) if counts else active_members + pending_members + canceled_members
+
+        risk_result = calculate_salon_risk(
+            salon,
+            active_members=active_members,
+            pending_members=pending_members,
+            canceled_members=canceled_members,
+            monthly_price_jpy=salon.get("monthly_price_jpy"),
+            refunds=0,
+        )
+
+        return SalonModerationDetailSchema(
+            id=salon_id,
+            title=salon.get("title", ""),
+            status=salon.get("status", "approved"),
+            is_active=bool(salon.get("is_active", True)),
+            owner_id=owner_id or "",
+            owner_username=owner.get("username"),
+            owner_email=owner.get("email"),
+            owner_user_type=owner.get("user_type"),
+            monthly_price_jpy=int(salon.get("monthly_price_jpy") or 0) if salon.get("monthly_price_jpy") is not None else None,
+            allow_point_subscription=bool(salon.get("allow_point_subscription", True)),
+            allow_jpy_subscription=bool(salon.get("allow_jpy_subscription", False)),
+            active_members=active_members,
+            pending_members=pending_members,
+            canceled_members=canceled_members,
+            total_members=total_members,
+            risk_score=risk_result.score,
+            risk_indicators=risk_result.indicators,
+            created_at=salon.get("created_at", now_utc_iso()),
+            updated_at=salon.get("updated_at", now_utc_iso()),
+            description=salon.get("description"),
+            moderation_notes=salon.get("moderation_notes"),
+            members=members,
+            announcements_count=announcements_count or 0,
+            events_count=events_count or 0,
+            posts_count=posts_count or 0,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to get salon moderation detail")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"サロンモデレーション詳細の取得に失敗しました: {exc}",
+        )
+
+
+@router.post("/salons/{salon_id}/status", response_model=UserActionResponse)
+async def update_salon_status(
+    salon_id: str,
+    request: SalonStatusUpdateRequest,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        salon_response = (
+            supabase
+            .table("salons")
+            .select("id,owner_id,status,is_active,moderation_notes")
+            .eq("id", salon_id)
+            .single()
+            .execute()
+        )
+        salon = getattr(salon_response, "data", None)
+        if not salon:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="サロンが見つかりません")
+
+        update_data = {
+            "status": request.status,
+            "moderation_notes": request.moderation_notes,
+            "updated_at": now_utc_iso(),
+        }
+        if request.status in {"approved"}:
+            update_data["is_active"] = True
+        elif request.status in {"suspended", "rejected"}:
+            update_data["is_active"] = False
+
+        supabase.table("salons").update(update_data).eq("id", salon_id).execute()
+
+        create_moderation_event(
+            supabase,
+            action=f"salon_status_{request.status}",
+            performed_by=admin.get("id"),
+            target_user_id=salon.get("owner_id"),
+            target_salon_id=salon_id,
+            reason=request.reason,
+            metadata={"moderation_notes": request.moderation_notes},
+        )
+
+        return UserActionResponse(
+            salon_id=salon_id,
+            user_id=salon.get("owner_id"),
+            message="サロンステータスを更新しました",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to update salon status")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"サロンステータスの更新に失敗しました: {exc}",
+        )
+
+
+@router.post("/salons/{salon_id}/members/{membership_id}/action", response_model=UserActionResponse)
+async def update_salon_member_status(
+    salon_id: str,
+    membership_id: str,
+    request: SalonMemberActionRequest,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        membership_response = (
+            supabase
+            .table("salon_memberships")
+            .select("id,salon_id,user_id,status,metadata")
+            .eq("id", membership_id)
+            .single()
+            .execute()
+        )
+        membership = getattr(membership_response, "data", None)
+        if not membership or membership.get("salon_id") != salon_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会員情報が見つかりません")
+
+        new_status = "ACTIVE" if request.action == "approve" else "CANCELED"
+        update_data: Dict[str, Any] = {
+            "status": new_status,
+            "updated_at": now_utc_iso(),
+        }
+        if request.action == "cancel":
+            update_data["canceled_at"] = now_utc_iso()
+
+        metadata = membership.get("metadata") or {}
+        metadata_key = "admin_notes"
+        notes_list: List[str] = metadata.get(metadata_key, []) if isinstance(metadata.get(metadata_key), list) else []
+        if request.reason:
+            notes_list.append(f"{now_utc_iso()}: {request.reason}")
+        metadata[metadata_key] = notes_list
+        update_data["metadata"] = metadata
+
+        supabase.table("salon_memberships").update(update_data).eq("id", membership_id).execute()
+
+        create_moderation_event(
+            supabase,
+            action=f"salon_member_{request.action}",
+            performed_by=admin.get("id"),
+            target_user_id=membership.get("user_id"),
+            target_salon_id=salon_id,
+            reason=request.reason,
+            metadata={"membership_id": membership_id, "new_status": new_status},
+        )
+
+        return UserActionResponse(
+            salon_id=salon_id,
+            user_id=membership.get("user_id"),
+            message="サロン会員ステータスを更新しました",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to update salon member status")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"サロン会員ステータスの更新に失敗しました: {exc}",
+        )
+
+
+@router.get("/maintenance/modes", response_model=MaintenanceModeListResponse)
+async def list_maintenance_modes(
+    scope: Optional[str] = Query(None, description="対象スコープ"),
+    status: Optional[str] = Query(None, description="ステータス"),
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        query = supabase.table("maintenance_modes").select("*").order("created_at", desc=True)
+        if scope:
+            query = query.eq("scope", scope)
+        if status:
+            query = query.eq("status", status)
+        response = query.execute()
+        rows, _ = handle_supabase_response(response, "admin maintenance mode list")
+        return MaintenanceModeListResponse(data=[build_maintenance_mode(row) for row in rows])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to list maintenance modes")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"メンテナンスモード一覧の取得に失敗しました: {exc}",
+        )
+
+
+@router.post("/maintenance/modes", response_model=MaintenanceModeSchema, status_code=status.HTTP_201_CREATED)
+async def create_maintenance_mode(
+    request: MaintenanceModeCreateRequest,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        payload = {
+            "scope": request.scope,
+            "status": "scheduled",
+            "title": request.title,
+            "message": request.message,
+            "planned_start": request.planned_start,
+            "planned_end": request.planned_end,
+            "created_by": admin.get("id"),
+        }
+        response = supabase.table("maintenance_modes").insert(payload).execute()
+        mode_rows, _ = handle_supabase_response(response, "admin maintenance mode create")
+        if not mode_rows:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="メンテナンスの登録に失敗しました")
+        mode = mode_rows[0]
+
+        create_moderation_event(
+            supabase,
+            action="maintenance_mode_create",
+            performed_by=admin.get("id"),
+            reason=request.message,
+            metadata={"scope": request.scope, "title": request.title},
+        )
+
+        return build_maintenance_mode(mode)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to create maintenance mode")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"メンテナンスモードの作成に失敗しました: {exc}",
+        )
+
+
+@router.post("/maintenance/modes/{mode_id}/status", response_model=MaintenanceModeSchema)
+async def update_maintenance_mode_status(
+    mode_id: str,
+    request: MaintenanceModeStatusUpdateRequest,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        mode_response = (
+            supabase
+            .table("maintenance_modes")
+            .select("*")
+            .eq("id", mode_id)
+            .single()
+            .execute()
+        )
+        mode = getattr(mode_response, "data", None)
+        if not mode:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="メンテナンス設定が見つかりません")
+
+        update_data: Dict[str, Any] = {
+            "status": request.status,
+            "message": request.message or mode.get("message"),
+            "updated_at": now_utc_iso(),
+        }
+        now_value = now_utc_iso()
+        if request.status == "active" and not mode.get("activated_at"):
+            update_data["activated_at"] = now_value
+        if request.status in {"completed", "cancelled"}:
+            update_data["deactivated_at"] = now_value
+
+        response = supabase.table("maintenance_modes").update(update_data).eq("id", mode_id).execute()
+        updated_rows, _ = handle_supabase_response(response, "admin maintenance mode update")
+        if not updated_rows:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="メンテナンス更新に失敗しました")
+        updated = updated_rows[0]
+
+        create_moderation_event(
+            supabase,
+            action=f"maintenance_mode_{request.status}",
+            performed_by=admin.get("id"),
+            reason=request.message,
+            metadata={"mode_id": mode_id, "scope": updated.get("scope")},
+        )
+
+        return build_maintenance_mode(updated)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to update maintenance mode status")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"メンテナンスステータスの更新に失敗しました: {exc}",
+        )
+
+
+@router.get("/maintenance/overview")
+async def get_maintenance_overview(admin: dict = Depends(require_admin)):
+    try:
+        supabase = get_supabase()
+        response = (
+            supabase
+            .table("maintenance_modes")
+            .select("*")
+            .order("planned_start", desc=True)
+            .limit(200)
+            .execute()
+        )
+        rows, _ = handle_supabase_response(response, "admin maintenance overview")
+        active = [build_maintenance_mode(row) for row in rows if row.get("status") == "active"]
+        scheduled = [build_maintenance_mode(row) for row in rows if row.get("status") == "scheduled"]
+        completed = [build_maintenance_mode(row) for row in rows if row.get("status") in {"completed", "cancelled"}]
+        return {
+            "active": active,
+            "scheduled": scheduled,
+            "history": completed[:20],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to get maintenance overview")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"メンテナンス概要の取得に失敗しました: {exc}",
+        )
+
+
+@router.get("/maintenance/status-checks", response_model=SystemStatusCheckListResponse)
+async def list_system_status_checks(
+    component: Optional[str] = Query(None, description="対象コンポーネント"),
+    limit: int = Query(50, ge=1, le=200),
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        query = supabase.table("system_status_checks").select("*").order("checked_at", desc=True).limit(limit)
+        if component:
+            query = query.eq("component", component)
+        response = query.execute()
+        rows, _ = handle_supabase_response(response, "admin status check list")
+        return SystemStatusCheckListResponse(data=[build_system_status_check(row) for row in rows])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to list system status checks")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"ステータスチェック一覧の取得に失敗しました: {exc}",
+        )
+
+
+@router.post("/maintenance/status-checks", response_model=SystemStatusCheckSchema, status_code=status.HTTP_201_CREATED)
+async def create_system_status_check(
+    request: SystemStatusCheckCreateRequest,
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        payload = {
+            "component": request.component,
+            "status": request.status,
+            "response_time_ms": request.response_time_ms,
+            "message": request.message,
+            "created_by": admin.get("id"),
+        }
+        response = supabase.table("system_status_checks").insert(payload).execute()
+        rows, _ = handle_supabase_response(response, "admin status check create")
+        if not rows:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="ステータスチェック登録に失敗しました")
+        entry = rows[0]
+
+        create_moderation_event(
+            supabase,
+            action="system_status_check",
+            performed_by=admin.get("id"),
+            metadata={
+                "component": request.component,
+                "status": request.status,
+            },
+        )
+
+        return build_system_status_check(entry)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to create system status check")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"ステータスチェックの登録に失敗しました: {exc}",
         )
 
 
