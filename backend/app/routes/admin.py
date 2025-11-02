@@ -14,7 +14,7 @@ from app.services.risk_scoring import calculate_note_risk, calculate_salon_risk
 from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
 ADMIN_EMAILS = {

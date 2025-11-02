@@ -54,10 +54,12 @@ from app.routes import (
     analytics,
     announcements,
     auth,
+    admin_payouts,
     line,
     lp,
     media,
     notes,
+    payouts,
     points,
     products,
     purchase_history,
@@ -87,10 +89,12 @@ app.include_router(purchase_history.router, prefix="/api")
 app.include_router(sales_history.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(admin_payouts.router, prefix="/api")
 app.include_router(line.router, prefix="/api")
 app.include_router(announcements.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
+app.include_router(payouts.router, prefix="/api")
 app.include_router(salons.router, prefix="/api")
 app.include_router(salon_announcements.router, prefix="/api")
 app.include_router(salon_assets.router, prefix="/api")
