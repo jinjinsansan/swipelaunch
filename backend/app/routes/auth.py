@@ -23,9 +23,30 @@ from app.utils.auth import create_access_token, decode_access_token
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer()
 
+LAST_LOGIN_FIELD_AVAILABLE = True
+
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
     return create_client(settings.supabase_url, settings.supabase_key)
+
+
+def update_last_login_timestamp(supabase: Client, user_id: str, context: str) -> Optional[str]:
+    """Update last_login_at column if available, suppressing repeated schema warnings."""
+    global LAST_LOGIN_FIELD_AVAILABLE
+    if not LAST_LOGIN_FIELD_AVAILABLE:
+        return None
+
+    last_login_value = datetime.utcnow().isoformat()
+    try:
+        supabase.table("users").update({"last_login_at": last_login_value}).eq("id", user_id).execute()
+        return last_login_value
+    except Exception as update_error:  # pragma: no cover - external service errors
+        message = getattr(update_error, "message", None) or str(update_error)
+        print(f"[WARN] Failed to update last_login_at ({context}): {message}")
+        if "last_login_at" in message and "schema cache" in message:
+            LAST_LOGIN_FIELD_AVAILABLE = False
+            print("[INFO] Disabling last_login_at updates until column is available.")
+        return None
 
 
 def generate_unique_username(supabase: Client, base_name: str) -> str:
@@ -177,12 +198,9 @@ async def login(data: UserLoginRequest):
         
         user_info = user_response.data
 
-        try:
-            last_login_value = datetime.utcnow().isoformat()
-            supabase.table("users").update({"last_login_at": last_login_value}).eq("id", user_info["id"]).execute()
+        last_login_value = update_last_login_timestamp(supabase, user_info["id"], "password")
+        if last_login_value:
             user_info["last_login_at"] = last_login_value
-        except Exception as update_error:
-            print(f"[WARN] Failed to update last_login_at: {update_error}")
         
         user = build_user_response(user_info)
         return AuthResponse(
@@ -269,12 +287,9 @@ async def login_with_google(payload: GoogleAuthRequest):
             )
         user_info = created.data[0]
 
-    try:
-        last_login_value = datetime.utcnow().isoformat()
-        supabase.table("users").update({"last_login_at": last_login_value}).eq("id", user_info["id"]).execute()
+    last_login_value = update_last_login_timestamp(supabase, user_info["id"], "Google")
+    if last_login_value:
         user_info["last_login_at"] = last_login_value
-    except Exception as update_error:
-        print(f"[WARN] Failed to update last_login_at (Google): {update_error}")
 
     user = build_user_response(user_info)
     access_token = create_access_token(user.id)
