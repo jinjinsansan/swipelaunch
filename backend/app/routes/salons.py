@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_supabase_client
@@ -285,6 +285,44 @@ async def update_salon(
     )
     member_count = getattr(member_count_resp, "count", 0) or 0
 
+
+
+@router.delete("/{salon_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_salon(
+    salon_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> Response:
+    user = _get_current_user(credentials)
+    _ensure_seller(user)
+
+    # Ensure salon belongs to user
+    _ = _get_salon_owned_by_user(salon_id, user["id"])
+
+    supabase = get_supabase_client()
+    member_count_resp = (
+        supabase.table("salon_memberships")
+        .select("id", count="exact")
+        .eq("salon_id", salon_id)
+        .execute()
+    )
+    member_count = getattr(member_count_resp, "count", 0) or 0
+    if member_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="会員が存在するためサロンを削除できません",
+        )
+
+    delete_response = (
+        supabase.table("salons")
+        .delete()
+        .eq("id", salon_id)
+        .eq("owner_id", user["id"])
+        .execute()
+    )
+    if delete_response.data is None:
+        logger.warning("Supabase deletion returned no payload", extra={"salon_id": salon_id})
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
     return _map_salon(updated, member_count=member_count)
 
 
