@@ -511,7 +511,7 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
     orders_resp = (
         client
         .table("payment_orders")
-        .select("id, seller_id, user_id, amount_jpy, currency, amount_usd, metadata, completed_at, status")
+        .select("id, seller_id, user_id, amount_jpy, currency, metadata, completed_at, status")
         .eq("status", "COMPLETED")
         .order("completed_at", desc=False)
         .execute()
