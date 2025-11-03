@@ -36,6 +36,16 @@ class Settings(BaseSettings):
         env="OPERATOR_MESSAGE_SUPER_ADMIN_EMAILS",
     )
 
+    # Mailgun
+    mailgun_api_key: Optional[str] = Field(default=None, env="MAILGUN_API_KEY")
+    mailgun_domain: Optional[str] = Field(default=None, env="MAILGUN_DOMAIN")
+    mailgun_base_url: str = Field(default="https://api.mailgun.net/v3", env="MAILGUN_BASE_URL")
+    mailgun_default_from_name: Optional[str] = Field(default=None, env="MAILGUN_DEFAULT_FROM_NAME")
+    mailgun_default_from_email: Optional[str] = Field(default=None, env="MAILGUN_DEFAULT_FROM_EMAIL")
+    mailgun_default_reply_to: Optional[str] = Field(default=None, env="MAILGUN_DEFAULT_REPLY_TO")
+    mailgun_request_timeout: float = Field(default=10.0, env="MAILGUN_REQUEST_TIMEOUT")
+    mailgun_max_batch_size: int = Field(default=200, env="MAILGUN_MAX_BATCH_SIZE")
+
     # Google OAuth
     google_client_id: str = ""
     google_client_secret: str = ""

@@ -185,6 +185,7 @@ def test_create_and_dispatch_message():
     payload = OperatorMessageCreateRequest(title="テスト", body_text="本文", send_now=True)
     message = message_service.create_message(payload, actor_id="admin-1")
     assert message.status == "sent"
+    assert message.send_email is False
 
     stub = message_service.get_supabase()
     recipients = stub.tables.get("operator_message_recipients", [])
@@ -196,6 +197,43 @@ def test_create_and_dispatch_message():
     assert inbox["data"], inbox
     assert inbox["total"] == 1
     assert inbox["data"][0]["title"] == "テスト"
+
+
+def test_dispatch_message_with_email_sends_mail(monkeypatch):
+    sent_payload = {}
+
+    def fake_send_bulk_email(**kwargs):
+        sent_payload.update(kwargs)
+        return [recipient.email for recipient in kwargs["recipients"]]
+
+    monkeypatch.setattr(message_service.mailgun, "send_bulk_email", fake_send_bulk_email)
+
+    # Configure Mailgun defaults
+    monkeypatch.setattr(message_service.settings, "mailgun_api_key", "test-key", raising=False)
+    monkeypatch.setattr(message_service.settings, "mailgun_domain", "mg.example.com", raising=False)
+    monkeypatch.setattr(message_service.settings, "mailgun_default_from_email", "no-reply@example.com", raising=False)
+    monkeypatch.setattr(message_service.settings, "mailgun_default_from_name", "D-swipe", raising=False)
+    monkeypatch.setattr(message_service.settings, "mailgun_default_reply_to", "support@example.com", raising=False)
+
+    payload = OperatorMessageCreateRequest(
+        title="メール配信",
+        body_text="本文",
+        send_now=True,
+        send_email=True,
+        email_subject="メール件名",
+    )
+    message_service.create_message(payload, actor_id="admin-1")
+
+    assert "recipients" in sent_payload
+    assert sent_payload["subject"] == "メール件名"
+    assert sent_payload["sender_email"] == "no-reply@example.com"
+    assert sent_payload["reply_to"] == "support@example.com"
+    assert len(sent_payload["recipients"]) == 2
+
+    stub = message_service.get_supabase()
+    for row in stub.tables.get("operator_message_recipients", []):
+        if row.get("message_id"):
+            assert row.get("email_sent_at"), "email_sent_at should be recorded"
 
 
 def test_mark_message_read(monkeypatch):

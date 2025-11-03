@@ -8,6 +8,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 from supabase import Client, create_client
 
 from app.config import settings
+from app.services import mailgun
+from app.services.mailgun import MailgunRecipient
 from app.models.operator_messages import (
     OperatorMessageCreateRequest,
     OperatorMessageReadRequest,
@@ -39,6 +41,15 @@ def _ensure_list(value: Optional[Iterable[OperatorMessageSegment]]) -> List[Oper
     return list(value)
 
 
+def _normalize_str(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return str(value).strip() or None
+
+
 def _parse_email_values(raw: Any) -> List[str]:
     if isinstance(raw, list):
         candidates = [str(item) for item in raw]
@@ -58,6 +69,21 @@ def _collect_emails_from_segments(segments: Sequence[OperatorMessageSegment]) ->
         for email in _parse_email_values(payload.get("emails")):
             emails.add(email.lower())
     return emails
+
+
+def _strip_html_tags(html: str) -> str:
+    text = re.sub(r"<\s*br\s*/?\s*>", "\n", html, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*p\s*>", "\n\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _ensure_text_body(body_text: Optional[str], body_html: Optional[str]) -> Optional[str]:
+    if body_text and body_text.strip():
+        return body_text
+    if body_html and body_html.strip():
+        return _strip_html_tags(body_html)
+    return None
 
 
 def _validate_segments(client: Client, segments: Sequence[OperatorMessageSegment]) -> None:
@@ -126,6 +152,11 @@ def _map_message(row: Dict[str, Any], *, segments: Optional[List[Dict[str, Any]]
             )
             for segment in segments or []
         ],
+        send_email=bool(row.get("send_email", False)),
+        email_subject=_normalize_str(row.get("email_subject")) or row.get("title", ""),
+        email_from_name=_normalize_str(row.get("email_from_name")) or settings.mailgun_default_from_name,
+        email_from_address=_normalize_str(row.get("email_from_address")) or settings.mailgun_default_from_email,
+        email_reply_to=_normalize_str(row.get("email_reply_to")) or settings.mailgun_default_reply_to,
     )
 
 
@@ -153,6 +184,85 @@ def _fetch_segments(client: Client, message_id: str) -> List[Dict[str, Any]]:
         .execute()
     )
     return segment_resp.data or []
+
+
+def _fetch_recipient_contacts(client: Client, user_ids: Sequence[str]) -> List[Dict[str, Any]]:
+    if not user_ids:
+        return []
+
+    resp = (
+        client
+        .table("users")
+        .select("id, email")
+        .in_("id", list(user_ids))
+        .execute()
+    )
+
+    contacts: List[Dict[str, Any]] = []
+    for row in resp.data or []:
+        email = _normalize_str(row.get("email"))
+        if not email:
+            continue
+        email = email.lower()
+        contacts.append({
+            "user_id": row.get("id"),
+            "email": email,
+            "name": None,
+        })
+    return contacts
+
+
+def _send_email_notifications(client: Client, message: Dict[str, Any], recipient_ids: Sequence[str]) -> None:
+    if not message.get("send_email"):
+        return
+
+    subject = _normalize_str(message.get("email_subject")) or _normalize_str(message.get("title"))
+    sender_email = _normalize_str(message.get("email_from_address")) or _normalize_str(settings.mailgun_default_from_email)
+    sender_name = _normalize_str(message.get("email_from_name")) or _normalize_str(settings.mailgun_default_from_name)
+    reply_to = _normalize_str(message.get("email_reply_to")) or _normalize_str(settings.mailgun_default_reply_to)
+
+    if not subject or not sender_email:
+        logger.warning("Skipping email broadcast for message %s due to missing subject or sender", message.get("id"))
+        return
+
+    contacts = _fetch_recipient_contacts(client, recipient_ids)
+    if not contacts:
+        logger.info("No recipient emails resolved for message %s", message.get("id"))
+        return
+
+    raw_html = message.get("body_html")
+    html_body = raw_html if isinstance(raw_html, str) and raw_html.strip() else None
+    text_body = _ensure_text_body(message.get("body_text"), html_body)
+
+    recipients = [MailgunRecipient(email=contact["email"], name=contact.get("name")) for contact in contacts]
+    sent_emails = mailgun.send_bulk_email(
+        subject=subject,
+        text=text_body,
+        html=html_body,
+        recipients=recipients,
+        sender_email=sender_email,
+        sender_name=sender_name,
+        reply_to=reply_to,
+    )
+
+    if not sent_emails:
+        logger.info("Mailgun did not accept any recipients for message %s", message.get("id"))
+        return
+
+    sent_lookup = {email.lower() for email in sent_emails}
+    sent_user_ids = [contact["user_id"] for contact in contacts if _normalize_str(contact.get("email", "")) and contact["email"].lower() in sent_lookup]
+    if not sent_user_ids:
+        return
+
+    now_iso = _utcnow().isoformat()
+    (
+        client
+        .table("operator_message_recipients")
+        .update({"email_sent_at": now_iso})
+        .eq("message_id", message.get("id"))
+        .in_("user_id", sent_user_ids)
+        .execute()
+    )
 
 
 def _resolve_recipient_ids(client: Client, segments: Sequence[OperatorMessageSegment]) -> List[str]:
@@ -212,6 +322,11 @@ def create_message(payload: OperatorMessageCreateRequest, *, actor_id: Optional[
 
     _validate_segments(client, segments)
 
+    email_subject = _normalize_str(payload.email_subject) or payload.title
+    email_from_name = _normalize_str(payload.email_from_name) or settings.mailgun_default_from_name
+    email_from_address = _normalize_str(payload.email_from_address) or settings.mailgun_default_from_email
+    email_reply_to = _normalize_str(payload.email_reply_to) or settings.mailgun_default_reply_to
+
     insert_data = {
         "title": payload.title,
         "body_text": payload.body_text,
@@ -225,6 +340,11 @@ def create_message(payload: OperatorMessageCreateRequest, *, actor_id: Optional[
         "updated_at": _utcnow().isoformat(),
         "admin_hidden": False,
         "admin_archived_at": None,
+        "send_email": bool(payload.send_email),
+        "email_subject": email_subject,
+        "email_from_name": email_from_name,
+        "email_from_address": email_from_address,
+        "email_reply_to": email_reply_to,
     }
 
     response = client.table("operator_messages").insert(insert_data).execute()
@@ -280,6 +400,16 @@ def update_message(message_id: str, payload: OperatorMessageUpdateRequest, *, ac
         update_fields["priority"] = payload.priority
     if payload.send_at is not None:
         update_fields["send_at"] = payload.send_at.isoformat()
+    if payload.send_email is not None:
+        update_fields["send_email"] = payload.send_email
+    if payload.email_subject is not None:
+        update_fields["email_subject"] = _normalize_str(payload.email_subject) or current.get("title")
+    if payload.email_from_name is not None:
+        update_fields["email_from_name"] = _normalize_str(payload.email_from_name) or settings.mailgun_default_from_name
+    if payload.email_from_address is not None:
+        update_fields["email_from_address"] = _normalize_str(payload.email_from_address) or settings.mailgun_default_from_email
+    if payload.email_reply_to is not None:
+        update_fields["email_reply_to"] = _normalize_str(payload.email_reply_to) or settings.mailgun_default_reply_to
     update_fields["updated_at"] = _utcnow().isoformat()
 
     if update_fields:
@@ -353,6 +483,11 @@ def dispatch_message(message_id: str, *, client: Optional[Client] = None) -> Non
     ]
     if new_rows:
         client.table("operator_message_recipients").insert(new_rows).execute()
+
+    try:
+        _send_email_notifications(client, message, recipient_ids)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception("Failed to send email notifications for message %s: %s", message_id, exc)
 
     send_at = message.get("send_at")
     if not send_at:

@@ -22,6 +22,11 @@ class OperatorMessageCreateRequest(BaseModel):
     send_at: Optional[datetime] = None
     send_now: bool = False
     target_segments: List[OperatorMessageSegment] = Field(default_factory=list)
+    send_email: bool = False
+    email_subject: Optional[str] = None
+    email_from_name: Optional[str] = None
+    email_from_address: Optional[str] = None
+    email_reply_to: Optional[str] = None
 
 
 class OperatorMessageUpdateRequest(BaseModel):
@@ -32,6 +37,11 @@ class OperatorMessageUpdateRequest(BaseModel):
     priority: Optional[str] = None
     send_at: Optional[datetime] = None
     target_segments: Optional[List[OperatorMessageSegment]] = None
+    send_email: Optional[bool] = None
+    email_subject: Optional[str] = None
+    email_from_name: Optional[str] = None
+    email_from_address: Optional[str] = None
+    email_reply_to: Optional[str] = None
 
 
 class OperatorMessageResponse(BaseModel):
@@ -49,6 +59,11 @@ class OperatorMessageResponse(BaseModel):
     admin_hidden: bool = False
     admin_archived_at: Optional[datetime] = None
     segment_summary: List[OperatorMessageSegment] = Field(default_factory=list)
+    send_email: bool = False
+    email_subject: Optional[str] = None
+    email_from_name: Optional[str] = None
+    email_from_address: Optional[str] = None
+    email_reply_to: Optional[str] = None
 
 
 class OperatorMessageListResponse(BaseModel):
