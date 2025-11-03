@@ -31,6 +31,7 @@ from app.models.note import (
 )
 from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
+from app.services.purchase_notifications import send_purchase_notification
 from app.services.note_content import augment_link_blocks
 
 
@@ -1212,7 +1213,21 @@ async def purchase_note(
             )
         if not hasattr(supabase, "table"):
             return _purchase_note_via_rpc(supabase, note_id, user_id)
-        return _purchase_note_via_rpc(supabase, note_id, user_id)
+
+        purchase_result = _purchase_note_via_rpc(supabase, note_id, user_id)
+
+        if purchase_result.points_spent > 0:
+            send_purchase_notification(
+                supabase,
+                buyer_id=user_id,
+                content_title=note_record.get("title", "NOTE"),
+                content_type="NOTE",
+                seller_id=note_record.get("author_id"),
+                amount_jpy=None,
+                points=purchase_result.points_spent,
+            )
+
+        return purchase_result
 
     if payment_method != "yen":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="サポートされていない決済方法です")

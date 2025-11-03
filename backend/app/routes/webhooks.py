@@ -14,6 +14,7 @@ from app.constants.subscription_plans import (
 )
 from app.services.one_lat import one_lat_client
 from app.services.payment_risk import evaluate_payment_order_risk
+from app.services.purchase_notifications import send_purchase_notification
 from supabase import Client
 import logging
 
@@ -49,29 +50,29 @@ def _ensure_metadata_dict(raw: Any) -> Dict[str, Any]:
     return {}
 
 
-def _fulfill_product_order(supabase: Client, order_row: Dict[str, Any]) -> None:
+def _fulfill_product_order(supabase: Client, order_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     product_id = order_row.get("item_id")
     if not product_id:
-        return
+        return None
 
     quantity = int((order_row.get("metadata") or {}).get("quantity") or 1)
     try:
         product_resp = (
             supabase
             .table("products")
-            .select("id, stock_quantity, total_sales")
+            .select("id, stock_quantity, total_sales, title, seller_id, price_jpy")
             .eq("id", product_id)
             .maybe_single()
             .execute()
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to load product for payment order", extra={"error": str(exc), "product_id": product_id})
-        return
+        return None
 
     product = product_resp.data if product_resp else None
     if not product:
         logger.warning("Product not found for payment order", extra={"product_id": product_id})
-        return
+        return None
 
     updates: Dict[str, Any] = {}
     stock_quantity = product.get("stock_quantity")
@@ -92,13 +93,40 @@ def _fulfill_product_order(supabase: Client, order_row: Dict[str, Any]) -> None:
         supabase.table("products").update(updates).eq("id", product_id).execute()
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to update product after payment", extra={"error": str(exc), "product_id": product_id})
+        return {
+            "content_title": product.get("title") or "商品",
+            "seller_id": product.get("seller_id"),
+            "amount_jpy": order_row.get("amount_jpy") or (int(product.get("price_jpy") or 0) * quantity if product.get("price_jpy") else None),
+            "points": None,
+            "quantity": quantity,
+            "content_type": "LP商品",
+        }
+
+    return {
+        "content_title": product.get("title") or "商品",
+        "seller_id": product.get("seller_id"),
+        "amount_jpy": order_row.get("amount_jpy") or (int(product.get("price_jpy") or 0) * quantity if product.get("price_jpy") else None),
+        "points": None,
+        "quantity": quantity,
+        "content_type": "LP商品",
+    }
 
 
-def _fulfill_note_order(supabase: Client, order_row: Dict[str, Any]) -> None:
+def _fulfill_note_order(supabase: Client, order_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     note_id = order_row.get("item_id")
     user_id = order_row.get("user_id")
     if not note_id or not user_id:
-        return
+        return None
+
+    note_resp = (
+        supabase
+        .table("notes")
+        .select("id, title, author_id, price_jpy")
+        .eq("id", note_id)
+        .maybe_single()
+        .execute()
+    )
+    note_data = note_resp.data if note_resp else None
 
     payload = {
         "note_id": note_id,
@@ -115,15 +143,27 @@ def _fulfill_note_order(supabase: Client, order_row: Dict[str, Any]) -> None:
         else:  # pragma: no cover - defensive
             logger.error("Failed to record note purchase", extra={"error": str(exc), "note_id": note_id, "user_id": user_id})
 
+    return {
+        "content_title": (note_data or {}).get("title") or "NOTE",
+        "seller_id": (note_data or {}).get("author_id"),
+        "amount_jpy": order_row.get("amount_jpy") or (note_data or {}).get("price_jpy"),
+        "points": None,
+        "quantity": None,
+        "content_type": "NOTE",
+    }
 
-def _fulfill_payment_order(supabase: Client, order_row: Dict[str, Any]) -> None:
+
+def _fulfill_payment_order(supabase: Client, order_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     item_type = order_row.get("item_type")
     if item_type == "product":
-        _fulfill_product_order(supabase, order_row)
+        return _fulfill_product_order(supabase, order_row)
     elif item_type == "note":
-        _fulfill_note_order(supabase, order_row)
+        return _fulfill_note_order(supabase, order_row)
     elif item_type == "salon":
         logger.info("Salon payment fulfillment is not implemented yet", extra={"order_id": order_row.get("id")})
+        return None
+
+    return None
 
 
 async def _process_payment_order(
@@ -221,7 +261,31 @@ async def _process_payment_order(
         merged_row = dict(order_row)
         merged_row.update(update_payload)
         merged_row["metadata"] = metadata
-        _fulfill_payment_order(supabase, merged_row)
+        notification_context = _fulfill_payment_order(supabase, merged_row)
+
+        if notification_context and merged_row.get("user_id"):
+            try:
+                send_purchase_notification(
+                    supabase,
+                    buyer_id=merged_row["user_id"],
+                    content_title=notification_context.get("content_title", "コンテンツ"),
+                    content_type=notification_context.get("content_type", "コンテンツ"),
+                    seller_id=notification_context.get("seller_id"),
+                    amount_jpy=notification_context.get("amount_jpy"),
+                    points=notification_context.get("points"),
+                    quantity=notification_context.get("quantity"),
+                )
+                metadata["purchase_notification_sent"] = True
+                supabase.table("payment_orders").update({"metadata": metadata}).eq("id", order_row["id"]).execute()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "Failed to deliver purchase notification",
+                    extra={
+                        "order_id": order_row.get("id"),
+                        "user_id": merged_row.get("user_id"),
+                        "error": str(exc),
+                    },
+                )
 
     return True
 
@@ -527,6 +591,18 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
         "id", session.get("id")
     ).execute()
 
+    salon_info: Optional[Dict[str, Any]] = None
+    if salon_id:
+        salon_resp = (
+            supabase
+            .table("salons")
+            .select("id, title, owner_id")
+            .eq("id", salon_id)
+            .maybe_single()
+            .execute()
+        )
+        salon_info = salon_resp.data if salon_resp else None
+
     # Upsert user subscription
     subscription_response = (
         supabase.table("user_subscriptions")
@@ -667,6 +743,10 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
             .execute()
         )
 
+        previous_status: Optional[str] = None
+        if membership_response.data:
+            previous_status = str(membership_response.data.get("status", "")).upper()
+
         membership_data = {
             "salon_id": salon_id,
             "user_id": user_id,
@@ -690,6 +770,38 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
             ).execute()
         else:
             supabase.table("salon_memberships").insert(membership_data).execute()
+
+        activated_now = (
+            event_type in success_events
+            and (previous_status is None or previous_status != "ACTIVE")
+        )
+
+        if activated_now and salon_info:
+            amount_jpy_value: Optional[int] = None
+            if billing_method_normalized in {"salon_yen", "yen"}:
+                raw_amount = (
+                    session_metadata.get("price_jpy")
+                    if isinstance(session_metadata, dict)
+                    else None
+                )
+                if raw_amount is not None:
+                    try:
+                        amount_jpy_value = int(raw_amount)
+                    except (TypeError, ValueError):
+                        amount_jpy_value = None
+            points_value = None
+            if billing_method_normalized not in {"salon_yen", "yen"} and plan:
+                points_value = plan.points
+
+            send_purchase_notification(
+                supabase,
+                buyer_id=user_id,
+                content_title=salon_info.get("title") or plan.label,
+                content_type="オンラインサロン",
+                seller_id=salon_info.get("owner_id") or session.get("seller_id"),
+                amount_jpy=amount_jpy_value,
+                points=points_value,
+            )
 
     supabase.table("user_subscriptions").update(subscription_update).eq(
         "id", subscription_id

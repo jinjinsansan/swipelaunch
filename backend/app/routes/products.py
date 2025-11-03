@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime
 
 from app.services.one_lat import one_lat_client
+from app.services.purchase_notifications import send_purchase_notification
 from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -886,6 +887,17 @@ async def purchase_product(
                 thanks_lp_response = supabase.table("landing_pages").select("slug").eq("id", product["thanks_lp_id"]).single().execute()
                 if thanks_lp_response.data:
                     thanks_lp_slug = thanks_lp_response.data.get("slug")
+
+            send_purchase_notification(
+                supabase,
+                buyer_id=user["id"],
+                content_title=product.get("title", "商品"),
+                content_type="LP商品",
+                seller_id=product.get("seller_id"),
+                amount_jpy=None,
+                points=total_points,
+                quantity=data.quantity,
+            )
 
             return ProductPurchaseResponse(
                 purchase_id=transaction["id"],
