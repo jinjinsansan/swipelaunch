@@ -31,6 +31,7 @@ from app.models.note import (
 )
 from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
+from app.services.note_content import augment_link_blocks
 
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -162,7 +163,7 @@ def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
 
 def map_note_detail(record: Dict[str, Any], salon_ids: Optional[List[str]] = None) -> NoteDetailResponse:
     summary = map_note_summary(record)
-    content_blocks = record.get("content_blocks") or []
+    content_blocks = augment_link_blocks(record.get("content_blocks") or [])
     return NoteDetailResponse(
         **summary.dict(),
         content_blocks=content_blocks,
@@ -660,6 +661,8 @@ async def get_public_note(
         access = block.get("access", "public")
         if access != "paid" or has_access:
             visible_blocks.append(block)
+
+    visible_blocks = augment_link_blocks(visible_blocks)
 
     return PublicNoteDetailResponse(
         id=note["id"],
