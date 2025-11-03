@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     access_token_expires_minutes: int = 60 * 24
     operator_message_super_admin_emails: List[str] = Field(
         default_factory=lambda: [
-            "dswipeofficialgoldbenchan@gmail.com",
-            "hakudasama@gmail.com",
+            "goldbenchan@gmail.com",
+            "kusanokiyoshi1@gmail.com",
         ],
         env="OPERATOR_MESSAGE_SUPER_ADMIN_EMAILS",
     )
