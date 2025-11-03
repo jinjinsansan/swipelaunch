@@ -46,6 +46,8 @@ class OperatorMessageResponse(BaseModel):
     created_by: Optional[str]
     created_at: datetime
     updated_at: datetime
+    admin_hidden: bool = False
+    admin_archived_at: Optional[datetime] = None
     segment_summary: List[OperatorMessageSegment] = Field(default_factory=list)
 
 
@@ -86,3 +88,11 @@ class OperatorMessageUnreadCountResponse(BaseModel):
 class OperatorMessageReadRequest(BaseModel):
     read: bool = True
     archive: Optional[bool] = None
+
+
+class OperatorMessageHideRequest(BaseModel):
+    hidden: bool = True
+
+
+class OperatorMessageArchiveRequest(BaseModel):
+    archived: bool = True

@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import Optional
+from typing import List, Optional
 from supabase import create_client, Client
 
 class Settings(BaseSettings):
@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     jwt_secret: str = "your-super-secret-jwt-key-change-this-in-production"
     api_key: str = "your-api-key-for-internal-calls"
     access_token_expires_minutes: int = 60 * 24
+    operator_message_super_admin_emails: List[str] = Field(
+        default_factory=lambda: [
+            "dswipeofficialgoldbenchan@gmail.com",
+            "hakudasama@gmail.com",
+        ],
+        env="OPERATOR_MESSAGE_SUPER_ADMIN_EMAILS",
+    )
 
     # Google OAuth
     google_client_id: str = ""

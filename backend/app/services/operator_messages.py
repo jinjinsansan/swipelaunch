@@ -117,6 +117,8 @@ def _map_message(row: Dict[str, Any], *, segments: Optional[List[Dict[str, Any]]
         created_by=row.get("created_by"),
         created_at=_parse_datetime(row.get("created_at")) or _utcnow(),
         updated_at=_parse_datetime(row.get("updated_at")) or _utcnow(),
+        admin_hidden=bool(row.get("admin_hidden", False)),
+        admin_archived_at=_parse_datetime(row.get("admin_archived_at")),
         segment_summary=[
             OperatorMessageSegment(
                 segment_type=segment.get("segment_type", "all_sellers"),
@@ -221,6 +223,8 @@ def create_message(payload: OperatorMessageCreateRequest, *, actor_id: Optional[
         "created_by": actor_id,
         "created_at": _utcnow().isoformat(),
         "updated_at": _utcnow().isoformat(),
+        "admin_hidden": False,
+        "admin_archived_at": None,
     }
 
     response = client.table("operator_messages").insert(insert_data).execute()
@@ -380,17 +384,33 @@ def process_due_messages(*, client: Optional[Client] = None) -> int:
     return processed
 
 
-def list_messages(limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+def list_messages(limit: int = 50, offset: int = 0, visibility: str = "active") -> Dict[str, Any]:
     client = get_supabase()
+    visibility_normalized = (visibility or "active").lower()
+
     resp = (
         client
         .table("operator_messages")
-        .select("*", count="exact")
+        .select("*")
         .order("created_at", desc=True)
-        .range(offset, offset + limit - 1)
         .execute()
     )
-    messages = resp.data or []
+    all_messages = resp.data or []
+
+    if visibility_normalized == "active":
+        filtered = [row for row in all_messages if not row.get("admin_hidden") and not row.get("admin_archived_at")]
+    elif visibility_normalized == "hidden":
+        filtered = [row for row in all_messages if row.get("admin_hidden")]
+    elif visibility_normalized == "archived":
+        filtered = [row for row in all_messages if not row.get("admin_hidden") and row.get("admin_archived_at")]
+    elif visibility_normalized == "all":
+        filtered = all_messages
+    else:
+        raise ValueError("invalid_visibility")
+
+    total = len(filtered)
+    messages = filtered[offset: offset + limit]
+
     message_ids = [row.get("id") for row in messages if row.get("id")]
     segments_map: Dict[str, List[Dict[str, Any]]] = {}
     if message_ids:
@@ -403,13 +423,16 @@ def list_messages(limit: int = 50, offset: int = 0) -> Dict[str, Any]:
         )
         for row in segment_resp.data or []:
             message_id = row.get("message_id")
-            if not message_id:
-                continue
-            segments_map.setdefault(message_id, []).append(row)
+            if message_id:
+                segments_map.setdefault(message_id, []).append(row)
 
     mapped = [_map_message(row, segments=segments_map.get(row.get("id"), [])) for row in messages]
-    total = getattr(resp, "count", None) or len(mapped)
-    return {"data": mapped, "total": total, "limit": limit, "offset": offset}
+    return {
+        "data": mapped,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 def get_message(message_id: str) -> OperatorMessageResponse:
@@ -419,6 +442,46 @@ def get_message(message_id: str) -> OperatorMessageResponse:
         raise ValueError("message_not_found")
     segments = _fetch_segments(client, message_id)
     return _map_message(resp.data, segments=segments)
+
+
+def set_hidden(message_id: str, *, hidden: bool) -> OperatorMessageResponse:
+    client = get_supabase()
+    existing = client.table("operator_messages").select("id").eq("id", message_id).single().execute()
+    if not existing.data:
+        raise ValueError("message_not_found")
+
+    client.table("operator_messages").update({
+        "admin_hidden": hidden,
+        "updated_at": _utcnow().isoformat(),
+    }).eq("id", message_id).execute()
+
+    return get_message(message_id)
+
+
+def set_archived(message_id: str, *, archived: bool) -> OperatorMessageResponse:
+    client = get_supabase()
+    existing = client.table("operator_messages").select("id").eq("id", message_id).single().execute()
+    if not existing.data:
+        raise ValueError("message_not_found")
+
+    archive_value = _utcnow().isoformat() if archived else None
+    client.table("operator_messages").update({
+        "admin_archived_at": archive_value,
+        "updated_at": _utcnow().isoformat(),
+    }).eq("id", message_id).execute()
+
+    return get_message(message_id)
+
+
+def delete_message(message_id: str) -> None:
+    client = get_supabase()
+    existing = client.table("operator_messages").select("id").eq("id", message_id).single().execute()
+    if not existing.data:
+        raise ValueError("message_not_found")
+
+    client.table("operator_message_segments").delete().eq("message_id", message_id).execute()
+    client.table("operator_message_recipients").delete().eq("message_id", message_id).execute()
+    client.table("operator_messages").delete().eq("id", message_id).execute()
 
 
 def list_user_inbox(*, user_id: str, limit: int = 50, offset: int = 0, filter_mode: Optional[str] = None) -> Dict[str, Any]:

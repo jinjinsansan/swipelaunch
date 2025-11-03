@@ -290,3 +290,56 @@ def test_create_message_with_empty_email_segment():
         message_service.create_message(payload, actor_id="admin-1")
 
     assert exc.value.args[0] == "segment_email_empty"
+
+
+def test_list_visibility_filters():
+    payload = OperatorMessageCreateRequest(title="list test", body_text="body", send_now=True)
+    message = message_service.create_message(payload, actor_id="admin-1")
+
+    message_service.set_hidden(message.id, hidden=True)
+    hidden = message_service.list_messages(visibility="hidden")
+    assert hidden["total"] == 1
+    assert hidden["data"][0].id == message.id
+
+    message_service.set_hidden(message.id, hidden=False)
+    message_service.set_archived(message.id, archived=True)
+    archived = message_service.list_messages(visibility="archived")
+    assert archived["total"] == 1
+    assert archived["data"][0].id == message.id
+
+    with pytest.raises(ValueError):
+        message_service.list_messages(visibility="invalid")
+
+
+def test_hide_toggle_message():
+    payload = OperatorMessageCreateRequest(title="hide", body_text="body", send_now=True)
+    message = message_service.create_message(payload, actor_id="admin-1")
+
+    hidden = message_service.set_hidden(message.id, hidden=True)
+    assert hidden.admin_hidden is True
+
+    visible = message_service.set_hidden(message.id, hidden=False)
+    assert visible.admin_hidden is False
+
+
+def test_archive_toggle_message():
+    payload = OperatorMessageCreateRequest(title="archive", body_text="body", send_now=True)
+    message = message_service.create_message(payload, actor_id="admin-1")
+
+    archived = message_service.set_archived(message.id, archived=True)
+    assert archived.admin_archived_at is not None
+
+    unarchived = message_service.set_archived(message.id, archived=False)
+    assert unarchived.admin_archived_at is None
+
+
+def test_delete_message():
+    payload = OperatorMessageCreateRequest(title="delete", body_text="body", send_now=True)
+    message = message_service.create_message(payload, actor_id="admin-1")
+
+    message_service.delete_message(message.id)
+
+    stub = message_service.get_supabase()
+    assert not any(row.get("id") == message.id for row in stub.tables.get("operator_messages", []))
+    assert not any(row.get("message_id") == message.id for row in stub.tables.get("operator_message_segments", []))
+    assert not any(row.get("message_id") == message.id for row in stub.tables.get("operator_message_recipients", []))

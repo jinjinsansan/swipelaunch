@@ -4,22 +4,30 @@ import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.models.operator_messages import (
+    OperatorMessageArchiveRequest,
     OperatorMessageCreateRequest,
+    OperatorMessageHideRequest,
     OperatorMessageListResponse,
     OperatorMessageResponse,
     OperatorMessageUpdateRequest,
 )
 from app.routes.admin import require_admin
 from app.services import operator_messages as message_service
+from app.config import settings
+
+
+def _require_super_admin(admin_user: Dict[str, Any]) -> None:
+    email = (admin_user.get("email") or "").lower()
+    allowed = [item.lower() for item in settings.operator_message_super_admin_emails]
+    if email not in allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="この操作を行う権限がありません")
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/messages", tags=["admin-messages"])
-security = HTTPBearer(auto_error=False)
 
 
 def _raise_segment_error(exc: "message_service.SegmentResolutionError") -> None:
@@ -41,9 +49,13 @@ def _raise_segment_error(exc: "message_service.SegmentResolutionError") -> None:
 def list_messages(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    visibility: str = Query("active", description="active/hidden/archived/all"),
     _admin=Depends(require_admin),
 ):
-    result = message_service.list_messages(limit=limit, offset=offset)
+    try:
+        result = message_service.list_messages(limit=limit, offset=offset, visibility=visibility)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不正な表示フィルターです")
     return OperatorMessageListResponse(**result)
 
 
@@ -113,3 +125,47 @@ def dispatch_message(
 def process_due_messages(_admin=Depends(require_admin)):
     processed = message_service.process_due_messages()
     return {"processed": processed}
+
+
+@router.post("/{message_id}/hide", response_model=OperatorMessageResponse)
+def hide_message(
+    message_id: str,
+    payload: OperatorMessageHideRequest,
+    _admin=Depends(require_admin),
+):
+    try:
+        return message_service.set_hidden(message_id, hidden=payload.hidden)
+    except ValueError as exc:
+        if str(exc) == "message_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="メッセージが見つかりません")
+        raise
+
+
+@router.post("/{message_id}/archive", response_model=OperatorMessageResponse)
+def archive_message(
+    message_id: str,
+    payload: OperatorMessageArchiveRequest,
+    admin_user=Depends(require_admin),
+):
+    _require_super_admin(admin_user)
+    try:
+        return message_service.set_archived(message_id, archived=payload.archived)
+    except ValueError as exc:
+        if str(exc) == "message_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="メッセージが見つかりません")
+        raise
+
+
+@router.delete("/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_message(
+    message_id: str,
+    admin_user=Depends(require_admin),
+):
+    _require_super_admin(admin_user)
+    try:
+        message_service.delete_message(message_id)
+    except ValueError as exc:
+        if str(exc) == "message_not_found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="メッセージが見つかりません")
+        raise
+    return None
