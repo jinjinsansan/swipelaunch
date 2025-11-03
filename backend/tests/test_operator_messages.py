@@ -19,21 +19,6 @@ from app.routes import admin_messages, operator_messages  # noqa: E402
 from app.services import operator_messages as message_service  # noqa: E402
 
 
-class FakeNot:
-    def __init__(self, query: "FakeQuery") -> None:
-        self.query = query
-
-    def is_(self, field: str, value: Any) -> "FakeQuery":
-        def predicate(row: Dict[str, Any]) -> bool:
-            target = row.get(field)
-            if value == "null":
-                return target is not None
-            return target != value
-
-        self.query._predicates.append(predicate)
-        return self.query
-
-
 class FakeQuery:
     def __init__(self, client: "FakeSupabase", name: str) -> None:
         self.client = client
@@ -46,7 +31,6 @@ class FakeQuery:
         self._range: Optional[tuple[int, int]] = None
         self._count_mode: Optional[str] = None
         self._single: bool = False
-        self.not_ = FakeNot(self)
 
     def _rows(self) -> List[Dict[str, Any]]:
         return self.client.tables.setdefault(self.name, [])
@@ -88,6 +72,15 @@ class FakeQuery:
             self._predicates.append(lambda row: row.get(field) is None)
         else:
             self._predicates.append(lambda row: row.get(field) == value)
+        return self
+
+    def not_(self, field: str, operator: str, value: Any) -> "FakeQuery":
+        if operator == "is" and (value is None or value == "null"):
+            self._predicates.append(lambda row: row.get(field) is not None)
+        elif operator == "eq":
+            self._predicates.append(lambda row: row.get(field) != value)
+        else:  # pragma: no cover - defensive for unsupported operators in tests
+            raise NotImplementedError(f"Unsupported not_ operator: {operator}")
         return self
 
     def order(self, field: str, desc: bool = False) -> "FakeQuery":

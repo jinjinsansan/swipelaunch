@@ -356,7 +356,7 @@ def list_user_inbox(*, user_id: str, limit: int = 50, offset: int = 0, filter_mo
     if filter_mode == "unread":
         query = query.is_("read_at", "null")
     elif filter_mode == "read":
-        query = query.not_.is_("read_at", "null")
+        query = query.not_("read_at", "is", None)
 
     resp = query.execute()
     recipients = resp.data or []
