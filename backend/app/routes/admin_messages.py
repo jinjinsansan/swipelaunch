@@ -22,6 +22,21 @@ router = APIRouter(prefix="/admin/messages", tags=["admin-messages"])
 security = HTTPBearer(auto_error=False)
 
 
+def _raise_segment_error(exc: "message_service.SegmentResolutionError") -> None:
+    code = exc.args[0] if exc.args else "segment_resolution_error"
+    if code == "segment_email_not_found":
+        detail: Dict[str, Any] = {
+            "message": "存在しないメールアドレスが含まれています。",
+            "missing_emails": exc.missing_emails,
+        }
+    elif code == "segment_email_empty":
+        detail = {"message": "メールアドレスが入力されていません。"}
+    else:
+        detail = {"message": "配信対象の判定に失敗しました。"}
+
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
 @router.get("", response_model=OperatorMessageListResponse)
 def list_messages(
     limit: int = Query(20, ge=1, le=100),
@@ -39,6 +54,8 @@ def create_message(
 ):
     try:
         return message_service.create_message(payload, actor_id=admin_user.get("id"))
+    except message_service.SegmentResolutionError as exc:
+        _raise_segment_error(exc)
     except Exception as exc:
         logger.exception("Failed to create operator message: %s", exc)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="メッセージの作成に失敗しました")
@@ -69,6 +86,8 @@ def update_message(
         if str(exc) == "message_already_sent":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="送信済みのメッセージは編集できません")
         raise
+    except message_service.SegmentResolutionError as exc:
+        _raise_segment_error(exc)
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("Failed to update message %s: %s", message_id, exc)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="メッセージの更新に失敗しました")
@@ -86,6 +105,8 @@ def dispatch_message(
         if str(exc) == "message_not_found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="メッセージが見つかりません")
         raise
+    except message_service.SegmentResolutionError as exc:
+        _raise_segment_error(exc)
 
 
 @router.post("/process-due", status_code=status.HTTP_202_ACCEPTED)

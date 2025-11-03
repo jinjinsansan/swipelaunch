@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 from supabase import Client, create_client
 
@@ -22,6 +23,12 @@ def get_supabase() -> Client:
     return create_client(settings.supabase_url, settings.supabase_key)
 
 
+class SegmentResolutionError(ValueError):
+    def __init__(self, message: str = "segment_resolution_error", *, missing_emails: Optional[List[str]] = None) -> None:
+        super().__init__(message)
+        self.missing_emails = missing_emails or []
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -30,6 +37,71 @@ def _ensure_list(value: Optional[Iterable[OperatorMessageSegment]]) -> List[Oper
     if not value:
         return []
     return list(value)
+
+
+def _parse_email_values(raw: Any) -> List[str]:
+    if isinstance(raw, list):
+        candidates = [str(item) for item in raw]
+    elif isinstance(raw, str):
+        candidates = re.split(r"[\s,;]+", raw)
+    else:
+        candidates = []
+    return [candidate.strip() for candidate in candidates if candidate and candidate.strip()]
+
+
+def _collect_emails_from_segments(segments: Sequence[OperatorMessageSegment]) -> Set[str]:
+    emails: Set[str] = set()
+    for segment in segments:
+        if (segment.segment_type or "").lower() != "emails":
+            continue
+        payload = segment.segment_payload if isinstance(segment.segment_payload, dict) else {}
+        for email in _parse_email_values(payload.get("emails")):
+            emails.add(email.lower())
+    return emails
+
+
+def _validate_segments(client: Client, segments: Sequence[OperatorMessageSegment]) -> None:
+    if not segments:
+        return
+
+    has_email_segment = False
+    for segment in segments:
+        if (segment.segment_type or "").lower() != "emails":
+            continue
+        has_email_segment = True
+        payload = segment.segment_payload if isinstance(segment.segment_payload, dict) else {}
+        values = _parse_email_values(payload.get("emails"))
+        if not values:
+            raise SegmentResolutionError("segment_email_empty")
+
+    if has_email_segment:
+        _lookup_users_by_emails(client, _collect_emails_from_segments(segments))
+
+
+def _lookup_users_by_emails(client: Client, emails: Set[str]) -> Dict[str, str]:
+    if not emails:
+        return {}
+
+    resp = (
+        client
+        .table("users")
+        .select("id, email")
+        .in_("email", list(emails))
+        .execute()
+    )
+
+    found: Dict[str, str] = {}
+    for row in resp.data or []:
+        email = (row.get("email") or "").strip().lower()
+        user_id = row.get("id")
+        if email and user_id:
+            found[email] = user_id
+
+    missing = sorted(email for email in emails if email not in found)
+    if missing:
+        raise SegmentResolutionError("segment_email_not_found", missing_emails=missing)
+
+    return found
 
 
 def _map_message(row: Dict[str, Any], *, segments: Optional[List[Dict[str, Any]]] = None) -> OperatorMessageResponse:
@@ -87,6 +159,7 @@ def _resolve_recipient_ids(client: Client, segments: Sequence[OperatorMessageSeg
 
     recipient_ids: List[str] = []
     seen = set()
+    email_lookup = _lookup_users_by_emails(client, _collect_emails_from_segments(segments))
 
     for segment in segments:
         segment_type = segment.segment_type or "all_sellers"
@@ -117,6 +190,14 @@ def _resolve_recipient_ids(client: Client, segments: Sequence[OperatorMessageSeg
                     if isinstance(user_id, str) and user_id and user_id not in seen:
                         seen.add(user_id)
                         recipient_ids.append(user_id)
+        elif segment_type == "emails":
+            payload = segment.segment_payload if isinstance(segment.segment_payload, dict) else {}
+            for email in _parse_email_values(payload.get("emails")):
+                normalized = email.lower()
+                user_id = email_lookup.get(normalized)
+                if user_id and user_id not in seen:
+                    seen.add(user_id)
+                    recipient_ids.append(user_id)
         else:
             logger.warning("Unsupported segment type %s; skipping", segment_type)
 
@@ -126,6 +207,8 @@ def _resolve_recipient_ids(client: Client, segments: Sequence[OperatorMessageSeg
 def create_message(payload: OperatorMessageCreateRequest, *, actor_id: Optional[str]) -> OperatorMessageResponse:
     client = get_supabase()
     segments = _ensure_list(payload.target_segments)
+
+    _validate_segments(client, segments)
 
     insert_data = {
         "title": payload.title,
@@ -199,8 +282,9 @@ def update_message(message_id: str, payload: OperatorMessageUpdateRequest, *, ac
         client.table("operator_messages").update(update_fields).eq("id", message_id).execute()
 
     if payload.target_segments is not None:
-        client.table("operator_message_segments").delete().eq("message_id", message_id).execute()
         segments = _ensure_list(payload.target_segments)
+        _validate_segments(client, segments)
+        client.table("operator_message_segments").delete().eq("message_id", message_id).execute()
         if segments:
             client.table("operator_message_segments").insert([
                 {

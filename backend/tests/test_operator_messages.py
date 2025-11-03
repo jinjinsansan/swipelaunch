@@ -14,7 +14,7 @@ BACKEND_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
-from app.models.operator_messages import OperatorMessageCreateRequest  # noqa: E402
+from app.models.operator_messages import OperatorMessageCreateRequest, OperatorMessageSegment  # noqa: E402
 from app.routes import admin_messages, operator_messages  # noqa: E402
 from app.services import operator_messages as message_service  # noqa: E402
 
@@ -166,8 +166,8 @@ def payload_list(payload: Any) -> List[Dict[str, Any]]:
 def _patch_supabase(monkeypatch):
     tables = {
         "users": [
-            {"id": "seller-1", "user_type": "seller"},
-            {"id": "seller-2", "user_type": "seller"},
+            {"id": "seller-1", "user_type": "seller", "email": "seller1@example.com"},
+            {"id": "seller-2", "user_type": "seller", "email": "seller2@example.com"},
         ]
     }
     stub = FakeSupabase(tables)
@@ -241,3 +241,52 @@ def test_mark_message_read(monkeypatch):
 def create_fake_token(user_id: str) -> str:
     # In tests we bypass actual JWT: routes patch _get_current_user, so token value doesn't matter.
     return f"token-for-{user_id}"
+
+
+def test_create_message_with_email_targets():
+    payload = OperatorMessageCreateRequest(
+        title="メールターゲット",
+        body_text="本文",
+        send_now=True,
+        target_segments=[
+            OperatorMessageSegment(segment_type="emails", segment_payload={"emails": ["seller1@example.com"]}),
+        ],
+    )
+    message = message_service.create_message(payload, actor_id="admin-1")
+    assert message.status == "sent"
+
+    stub = message_service.get_supabase()
+    recipients = stub.tables.get("operator_message_recipients", [])
+    assert len(recipients) == 1
+    assert recipients[0]["user_id"] == "seller-1"
+
+
+def test_create_message_with_unknown_email():
+    payload = OperatorMessageCreateRequest(
+        title="未登録メール",
+        body_text="本文",
+        send_now=True,
+        target_segments=[
+            OperatorMessageSegment(segment_type="emails", segment_payload={"emails": ["unknown@example.com"]}),
+        ],
+    )
+    with pytest.raises(message_service.SegmentResolutionError) as exc:
+        message_service.create_message(payload, actor_id="admin-1")
+
+    assert exc.value.missing_emails == ["unknown@example.com"]
+    assert exc.value.args[0] == "segment_email_not_found"
+
+
+def test_create_message_with_empty_email_segment():
+    payload = OperatorMessageCreateRequest(
+        title="空メール",
+        body_text="本文",
+        send_now=True,
+        target_segments=[
+            OperatorMessageSegment(segment_type="emails", segment_payload={"emails": []}),
+        ],
+    )
+    with pytest.raises(message_service.SegmentResolutionError) as exc:
+        message_service.create_message(payload, actor_id="admin-1")
+
+    assert exc.value.args[0] == "segment_email_empty"
