@@ -202,11 +202,11 @@ def test_create_and_dispatch_message():
 def test_dispatch_message_with_email_sends_mail(monkeypatch):
     sent_payload = {}
 
-    def fake_send_bulk_email(**kwargs):
+    def fake_send_bulk_email_async(**kwargs):
         sent_payload.update(kwargs)
         return [recipient.email for recipient in kwargs["recipients"]]
 
-    monkeypatch.setattr(message_service.mailgun, "send_bulk_email", fake_send_bulk_email)
+    monkeypatch.setattr(message_service.mailgun, "send_bulk_email_async", fake_send_bulk_email_async)
 
     # Configure Mailgun defaults
     monkeypatch.setattr(message_service.settings, "mailgun_api_key", "test-key", raising=False)

@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import httpx
 
 from app.config import settings
+from app.services import task_queue
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,61 @@ def send_bulk_email(
         logger.warning("Mailgun send skipped due to missing subject or sender email")
         return []
 
+    return deliver_bulk_email_sync(
+        subject=subject,
+        text=text,
+        html=html,
+        recipients=recipients,
+        sender_email=sender_email,
+        sender_name=sender_name,
+        reply_to=reply_to,
+    )
+
+
+def send_bulk_email_async(
+    *,
+    subject: str,
+    text: Optional[str],
+    html: Optional[str],
+    recipients: Sequence[MailgunRecipient],
+    sender_email: str,
+    sender_name: Optional[str] = None,
+    reply_to: Optional[str] = None,
+) -> List[str]:
+    if task_queue.enqueue_mailgun_send(
+        {
+            "subject": subject,
+            "text": text,
+            "html": html,
+            "recipients": [recipient.__dict__ for recipient in recipients],
+            "sender_email": sender_email,
+            "sender_name": sender_name,
+            "reply_to": reply_to,
+        }
+    ):
+        return [recipient.email for recipient in recipients if recipient.email.strip()]
+
+    return deliver_bulk_email_sync(
+        subject=subject,
+        text=text,
+        html=html,
+        recipients=recipients,
+        sender_email=sender_email,
+        sender_name=sender_name,
+        reply_to=reply_to,
+    )
+
+
+def deliver_bulk_email_sync(
+    *,
+    subject: str,
+    text: Optional[str],
+    html: Optional[str],
+    recipients: Sequence[MailgunRecipient],
+    sender_email: str,
+    sender_name: Optional[str] = None,
+    reply_to: Optional[str] = None,
+) -> List[str]:
     if not recipients:
         return []
 
@@ -68,48 +124,40 @@ def send_bulk_email(
 
     with httpx.Client(timeout=timeout, headers=headers) as client:
         for batch in _chunk(list(recipients), settings.mailgun_max_batch_size or 200):
-            to_field: List[str] = []
-            recipient_variables = {}
+            base_payload: Dict[str, Any] = {
+                "from": f"{sender_name} <{sender_email}>" if sender_name else sender_email,
+                "subject": subject,
+            }
+            if text:
+                base_payload["text"] = text
+            if html:
+                base_payload["html"] = html
+            if reply_to:
+                base_payload["h:Reply-To"] = reply_to
+
             for recipient in batch:
                 email = recipient.email.strip()
                 if not email:
                     continue
+                data = dict(base_payload)
+                data["to"] = [f"{recipient.name} <{email}>" if recipient.name else email]
                 if recipient.name:
-                    to_field.append(f"{recipient.name} <{email}>")
-                    recipient_variables[email] = {"name": recipient.name}
-                else:
-                    to_field.append(email)
-            if not to_field:
-                continue
+                    data["recipient-variables"] = json.dumps({email: {"name": recipient.name}}, ensure_ascii=False)
 
-            data = {
-                "from": f"{sender_name} <{sender_email}>" if sender_name else sender_email,
-                "to": to_field,
-                "subject": subject,
-            }
-            if text:
-                data["text"] = text
-            if html:
-                data["html"] = html
-            if reply_to:
-                data["h:Reply-To"] = reply_to
-            if recipient_variables:
-                data["recipient-variables"] = json.dumps(recipient_variables, ensure_ascii=False)
+                try:
+                    resp = client.post(endpoint, auth=auth, data=data)
+                except httpx.HTTPError as exc:  # pragma: no cover - network failure
+                    logger.exception("Mailgun request failed: %s", exc)
+                    continue
 
-            try:
-                resp = client.post(endpoint, auth=auth, data=data)
-            except httpx.HTTPError as exc:  # pragma: no cover - network failure
-                logger.exception("Mailgun request failed: %s", exc)
-                continue
+                if resp.status_code >= 400:
+                    logger.error(
+                        "Mailgun rejected request (status=%s, body=%s)",
+                        resp.status_code,
+                        resp.text,
+                    )
+                    continue
 
-            if resp.status_code >= 400:
-                logger.error(
-                    "Mailgun rejected request (status=%s, body=%s)",
-                    resp.status_code,
-                    resp.text,
-                )
-                continue
-
-            accepted.extend([item.email for item in batch if item.email.strip()])
+                accepted.append(email)
 
     return accepted

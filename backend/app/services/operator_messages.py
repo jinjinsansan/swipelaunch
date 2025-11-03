@@ -235,7 +235,7 @@ def _send_email_notifications(client: Client, message: Dict[str, Any], recipient
     text_body = _ensure_text_body(message.get("body_text"), html_body)
 
     recipients = [MailgunRecipient(email=contact["email"], name=contact.get("name")) for contact in contacts]
-    sent_emails = mailgun.send_bulk_email(
+    sent_emails = mailgun.send_bulk_email_async(
         subject=subject,
         text=text_body,
         html=html_body,
