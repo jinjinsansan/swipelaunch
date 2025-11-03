@@ -19,10 +19,11 @@ from app.models.landing_page import (
     LPStepsBulkUpdateRequest,
     LPStepsBulkUpdateResponse
 )
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 import re
 import secrets
 from app.utils.auth import decode_access_token
+from app.routes.admin import ADMIN_EMAILS
 
 router = APIRouter(prefix="/lp", tags=["landing_pages"])
 security = HTTPBearer()
@@ -30,6 +31,31 @@ security = HTTPBearer()
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
     return create_client(settings.supabase_url, settings.supabase_key)
+
+
+def fetch_user_admin_info(supabase: Client, user_id: str) -> Optional[Dict[str, Any]]:
+    """ユーザーの管理者情報を取得"""
+    try:
+        response = (
+            supabase
+            .table("users")
+            .select("id, email, is_admin")
+            .eq("id", user_id)
+            .single()
+            .execute()
+        )
+        return response.data
+    except Exception:
+        return None
+
+
+def is_admin_user(user: Optional[Dict[str, Any]]) -> bool:
+    if not user:
+        return False
+    if user.get("is_admin"):
+        return True
+    email = user.get("email")
+    return bool(email and email in ADMIN_EMAILS)
 
 def get_current_user_id(credentials: HTTPAuthorizationCredentials) -> str:
     """トークンから現在のユーザーIDを取得"""
@@ -466,6 +492,62 @@ async def publish_lp(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"LP公開エラー: {str(e)}"
+        )
+
+
+@router.post("/{lp_id}/unpublish", response_model=LPResponse)
+async def unpublish_lp(
+    lp_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """LPを非公開（下書き）に戻す"""
+    try:
+        user_id = get_current_user_id(credentials)
+        supabase = get_supabase()
+
+        user_info = fetch_user_admin_info(supabase, user_id)
+        can_manage_all = is_admin_user(user_info)
+
+        query = (
+            supabase
+            .table("landing_pages")
+            .select("*")
+            .eq("id", lp_id)
+        )
+        if not can_manage_all:
+            query = query.eq("seller_id", user_id)
+
+        lp_response = query.single().execute()
+        lp_data = lp_response.data
+
+        if not lp_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
+
+        if not can_manage_all and lp_data.get("seller_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="LPを操作する権限がありません"
+            )
+
+        response = (
+            supabase
+            .table("landing_pages")
+            .update({"status": "draft"})
+            .eq("id", lp_id)
+            .execute()
+        )
+
+        return LPResponse(**response.data[0])
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"LP非公開エラー: {str(e)}"
         )
 
 @router.post("/{lp_id}/duplicate", response_model=LPDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -908,11 +990,38 @@ async def bulk_update_steps(
 
             return payload
 
+        existing_step_sequence = [step for step in incoming_steps if step.id and step.id in existing_ids]
+
+        # 既存ステップは一度一時的な順序に退避させ、ユニーク制約違反を回避
+        TEMP_OFFSET = 1000
+        for temp_index, step in enumerate(existing_step_sequence):
+            temp_response = (
+                supabase
+                .table("lp_steps")
+                .update({"step_order": TEMP_OFFSET + temp_index})
+                .eq("id", step.id)
+                .eq("lp_id", lp_id)
+                .execute()
+            )
+            error = getattr(temp_response, "error", None)
+            if error:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="ステップ順序の更新に失敗しました"
+                )
+
         for index, step in enumerate(incoming_steps):
             payload = prepare_payload(index, step)
 
             if step.id and step.id in existing_ids:
-                response = supabase.table("lp_steps").update(payload).eq("id", step.id).eq("lp_id", lp_id).execute()
+                response = (
+                    supabase
+                    .table("lp_steps")
+                    .update(payload)
+                    .eq("id", step.id)
+                    .eq("lp_id", lp_id)
+                    .execute()
+                )
             else:
                 payload_with_lp = {"lp_id": lp_id, **payload}
                 response = supabase.table("lp_steps").insert(payload_with_lp).execute()
