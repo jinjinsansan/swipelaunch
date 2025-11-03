@@ -6,6 +6,10 @@ from typing import Optional, Sequence
 
 from supabase import Client
 
+from app.config import settings
+from app.services import mailgun
+from app.services.mailgun import MailgunRecipient
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +55,22 @@ def send_purchase_notification(
         return
 
     try:
+        buyer_email: Optional[str] = None
+        buyer_name: Optional[str] = None
+
+        buyer_resp = (
+            supabase
+            .table("users")
+            .select("email, display_name, username")
+            .eq("id", buyer_id)
+            .maybe_single()
+            .execute()
+        )
+        buyer_row = getattr(buyer_resp, "data", None) or None
+        if buyer_row:
+            buyer_email = (buyer_row.get("email") or "").strip() or None
+            buyer_name = buyer_row.get("display_name") or buyer_row.get("username") or None
+
         seller_name: Optional[str] = None
         if seller_id:
             seller_resp = (
@@ -138,6 +158,27 @@ def send_purchase_notification(
             "updated_at": now_iso,
         }
         supabase.table("operator_message_recipients").insert(recipient_payload).execute()
+
+        if buyer_email and mailgun.is_configured() and settings.mailgun_default_from_email:
+            try:
+                mailgun.send_bulk_email_async(
+                    subject=message_title,
+                    text=body_text,
+                    html=None,
+                    recipients=[MailgunRecipient(email=buyer_email, name=buyer_name)],
+                    sender_email=settings.mailgun_default_from_email,
+                    sender_name=settings.mailgun_default_from_name,
+                    reply_to=settings.mailgun_default_reply_to,
+                )
+            except Exception as mail_exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "Failed to enqueue purchase notification email",
+                    extra={
+                        "buyer_id": buyer_id,
+                        "buyer_email": buyer_email,
+                        "error": str(mail_exc),
+                    },
+                )
 
     except Exception as exc:  # pragma: no cover - logging only
         logger.warning(
