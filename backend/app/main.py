@@ -50,6 +50,7 @@ def metrics():
 # ルート追加
 from app.routes import (
     admin,
+    admin_messages,
     ai,
     analytics,
     announcements,
@@ -59,6 +60,7 @@ from app.routes import (
     lp,
     media,
     notes,
+    operator_messages,
     payouts,
     points,
     products,
@@ -89,11 +91,13 @@ app.include_router(purchase_history.router, prefix="/api")
 app.include_router(sales_history.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(admin_messages.router, prefix="/api")
 app.include_router(admin_payouts.router, prefix="/api")
 app.include_router(line.router, prefix="/api")
 app.include_router(announcements.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
+app.include_router(operator_messages.router, prefix="/api")
 app.include_router(payouts.router, prefix="/api")
 app.include_router(salons.router, prefix="/api")
 app.include_router(salon_announcements.router, prefix="/api")
