@@ -151,6 +151,7 @@ def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
         status=record.get("status", "draft"),
         published_at=record.get("published_at"),
         updated_at=record.get("updated_at"),
+        is_featured=bool(record.get("is_featured", False)),
         categories=list(record.get("categories") or []),
         allow_share_unlock=bool(record.get("allow_share_unlock", False)),
         official_share_tweet_id=record.get("official_share_tweet_id"),
@@ -567,10 +568,11 @@ async def list_public_notes(
         supabase
         .table("notes")
         .select(
-            "id,title,slug,cover_image_url,excerpt,is_paid,price_points,price_jpy,allow_point_purchase,allow_jpy_purchase,tax_rate,tax_inclusive,published_at,categories,allow_share_unlock,official_share_tweet_id,official_share_tweet_url,official_share_x_username,users(username)",
+            "id,title,slug,cover_image_url,excerpt,is_paid,price_points,price_jpy,allow_point_purchase,allow_jpy_purchase,tax_rate,tax_inclusive,published_at,categories,allow_share_unlock,official_share_tweet_id,official_share_tweet_url,official_share_x_username,is_featured,users(username)",
             count="exact"
         )
         .eq("status", "published")
+        .order("is_featured", desc=True)
         .order("published_at", desc=True)
         .range(offset, offset + limit - 1)
     )
@@ -612,6 +614,7 @@ async def list_public_notes(
                 official_share_tweet_id=record.get("official_share_tweet_id"),
                 official_share_tweet_url=record.get("official_share_tweet_url"),
                 official_share_x_username=record.get("official_share_x_username"),
+                is_featured=bool(record.get("is_featured", False)),
             )
         )
 
@@ -682,6 +685,7 @@ async def get_public_note(
         has_access=has_access,
         content_blocks=visible_blocks,
         published_at=note.get("published_at"),
+        is_featured=bool(note.get("is_featured", False)),
         categories=list(note.get("categories") or []),
         allow_share_unlock=bool(note.get("allow_share_unlock", False)),
         official_share_tweet_id=note.get("official_share_tweet_id"),

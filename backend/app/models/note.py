@@ -179,6 +179,7 @@ class NoteSummaryResponse(BaseModel):
     status: Literal["draft", "published"]
     published_at: Optional[datetime] = None
     updated_at: datetime
+    is_featured: bool = False
     categories: List[str] = Field(default_factory=list)
     allow_share_unlock: Optional[bool] = False
     official_share_tweet_id: Optional[str] = None
@@ -218,6 +219,7 @@ class PublicNoteSummary(BaseModel):
     tax_inclusive: bool
     author_username: Optional[str] = None
     published_at: Optional[datetime] = None
+    is_featured: bool = False
     categories: List[str] = Field(default_factory=list)
     allow_share_unlock: Optional[bool] = False
     official_share_tweet_id: Optional[str] = None
@@ -250,6 +252,7 @@ class PublicNoteDetailResponse(BaseModel):
     has_access: bool
     content_blocks: List[Any] = Field(default_factory=list)
     published_at: Optional[datetime] = None
+    is_featured: bool = False
     categories: List[str] = Field(default_factory=list)
     allow_share_unlock: Optional[bool] = False
     official_share_tweet_id: Optional[str] = None

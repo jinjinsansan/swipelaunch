@@ -65,6 +65,7 @@ def _map_salon(record: Dict[str, Any], member_count: int = 0) -> SalonResponse:
         status=record.get("status", "approved"),
         moderation_notes=record.get("moderation_notes"),
         member_count=member_count,
+        is_featured=bool(record.get("is_featured", False)),
         created_at=record.get("created_at"),
         updated_at=record.get("updated_at"),
     )

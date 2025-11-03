@@ -52,6 +52,7 @@ class SalonResponse(BaseModel):
     moderation_notes: Optional[str] = None
     member_count: int = 0
     lp_id: Optional[str] = None
+    is_featured: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -75,6 +76,7 @@ class SalonPublicListItem(BaseModel):
     monthly_price_jpy: Optional[int]
     allow_jpy_subscription: bool
     created_at: datetime
+    is_featured: bool = False
 
 
 class SalonPublicListResponse(BaseModel):
@@ -119,6 +121,7 @@ class SalonPublicResponse(BaseModel):
     allow_jpy_subscription: bool
     created_at: datetime
     updated_at: datetime
+    is_featured: bool = False
 
 
 class SalonMemberResponse(BaseModel):

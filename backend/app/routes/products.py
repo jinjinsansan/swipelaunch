@@ -409,14 +409,16 @@ async def get_public_products(
         # 販売中の商品を取得（seller情報をJOIN）
         products_response = supabase.table("products").select("*, seller:users!seller_id(username)").eq("is_available", True)
 
-        if lp_id:
-            products_response = products_response.eq("lp_id", lp_id)
+        lp_filter = lp_id
+        if lp_filter:
+            products_response = products_response.eq("lp_id", lp_filter)
         
         # seller_idでフィルタリング
         if seller_id_filter:
             products_response = products_response.eq("seller_id", seller_id_filter)
 
         # ソート順を決定
+        products_response = products_response.order("is_featured", desc=True)
         if sort == "popular":
             products_response = products_response.order("total_sales", desc=True).order("created_at", desc=True)
         else:  # latest
@@ -465,11 +467,11 @@ async def get_public_products(
         products = []
         for product in raw_products:
             seller_data = product.get("seller", {})
-            lp_id = product.get("lp_id")
-            lp_info = lp_metadata.get(lp_id or "", {}) if lp_id else {}
+            product_lp_id = product.get("lp_id")
+            lp_info = lp_metadata.get(product_lp_id or "", {}) if product_lp_id else {}
             raw_meta_image = lp_info.get("meta_image_url") if lp_info else None
             meta_image = raw_meta_image.strip() if isinstance(raw_meta_image, str) and raw_meta_image.strip() else None
-            thumbnail_url = lp_thumbnails.get(lp_id) if lp_id else None
+            thumbnail_url = lp_thumbnails.get(product_lp_id) if product_lp_id else None
             selected_thumbnail = thumbnail_url or meta_image
             if isinstance(selected_thumbnail, str):
                 selected_thumbnail = selected_thumbnail.strip() or None
@@ -478,7 +480,7 @@ async def get_public_products(
                 id=product["id"],
                 seller_id=product["seller_id"],
                 seller_username=seller_data.get("username", "Unknown"),
-                lp_id=lp_id,
+                lp_id=product_lp_id,
                 product_type=product.get("product_type", "points"),
                 salon_id=product.get("salon_id"),
                 lp_slug=lp_info.get("slug") if lp_info else None,
@@ -496,6 +498,7 @@ async def get_public_products(
                 tax_inclusive=bool(product.get("tax_inclusive", True)),
                 stock_quantity=product.get("stock_quantity"),
                 is_available=product["is_available"],
+                is_featured=bool(product.get("is_featured", False)),
                 total_sales=product.get("total_sales", 0),
                 created_at=product["created_at"],
                 updated_at=product["updated_at"]
@@ -505,8 +508,8 @@ async def get_public_products(
         count_query = supabase.table("products").select("id", count="exact").eq("is_available", True)
         if seller_id_filter:
             count_query = count_query.eq("seller_id", seller_id_filter)
-        if lp_id:
-            count_query = count_query.eq("lp_id", lp_id)
+        if lp_filter:
+            count_query = count_query.eq("lp_id", lp_filter)
         count_response = count_query.execute()
         total = count_response.count or 0
         

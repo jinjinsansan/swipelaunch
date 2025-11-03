@@ -239,7 +239,7 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         .select(
             "id, owner_id, title, description, thumbnail_url, subscription_plan_id, "
             "monthly_price_jpy, allow_point_subscription, allow_jpy_subscription, tax_rate, tax_inclusive, "
-            "is_active, created_at, updated_at"
+            "is_active, created_at, updated_at, is_featured"
         )
         .eq("id", salon_id)
         .single()
@@ -321,6 +321,7 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         allow_jpy_subscription=bool(salon_record.get("allow_jpy_subscription", False)),
         created_at=salon_record.get("created_at"),
         updated_at=salon_record.get("updated_at"),
+        is_featured=bool(salon_record.get("is_featured", False)),
     )
 
 
@@ -340,7 +341,7 @@ async def list_public_salons(
         .table("salons")
         .select(
             "id, owner_id, title, description, thumbnail_url, subscription_plan_id, "
-            "monthly_price_jpy, allow_jpy_subscription, allow_point_subscription, tax_rate, tax_inclusive, created_at"
+            "monthly_price_jpy, allow_jpy_subscription, allow_point_subscription, tax_rate, tax_inclusive, created_at, is_featured"
         )
         .eq("is_active", True)
     )
@@ -440,13 +441,14 @@ async def list_public_salons(
                 monthly_price_jpy=row.get("monthly_price_jpy"),
                 allow_jpy_subscription=bool(row.get("allow_jpy_subscription", False)),
                 created_at=row.get("created_at"),
+                is_featured=bool(row.get("is_featured", False)),
             )
         )
 
     if sort == "popular":
-        items.sort(key=lambda item: member_counts.get(item.id, 0), reverse=True)
+        items.sort(key=lambda item: (item.is_featured, member_counts.get(item.id, 0)), reverse=True)
     else:
-        items.sort(key=lambda item: item.created_at, reverse=True)
+        items.sort(key=lambda item: (item.is_featured, item.created_at), reverse=True)
 
     total = len(items)
     paged_items = items[offset : offset + limit]

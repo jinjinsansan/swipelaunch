@@ -55,6 +55,7 @@ class ProductResponse(BaseModel):
     tax_inclusive: bool
     stock_quantity: Optional[int] = None
     is_available: bool
+    is_featured: bool = False
     total_sales: int = 0
     redirect_url: Optional[str] = None
     thanks_lp_id: Optional[str] = None
@@ -116,6 +117,7 @@ class ProductWithSellerResponse(BaseModel):
     tax_inclusive: bool
     stock_quantity: Optional[int] = None
     is_available: bool
+    is_featured: bool = False
     total_sales: int = 0
     created_at: datetime
     updated_at: datetime

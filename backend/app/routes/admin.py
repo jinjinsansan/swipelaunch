@@ -2,7 +2,7 @@
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple, Literal
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -284,6 +284,63 @@ class NoteActionRequest(BaseModel):
 class LPStatusUpdateRequest(BaseModel):
     status: Literal['published', 'archived']
     reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class FeaturedItemToggleRequest(BaseModel):
+    entity_type: Literal['product', 'note', 'salon']
+    entity_id: str
+    is_featured: bool
+
+
+class FeaturedToggleResponse(BaseModel):
+    entity_type: Literal['product', 'note', 'salon']
+    entity_id: str
+    title: str
+    is_featured: bool
+
+
+class FeaturedProductSummary(BaseModel):
+    id: str
+    title: str
+    lp_slug: Optional[str] = None
+    seller_username: Optional[str] = None
+    is_available: bool
+    is_featured: bool
+    created_at: Optional[str] = None
+
+
+class FeaturedProductListResponse(BaseModel):
+    data: List[FeaturedProductSummary]
+    total: int
+
+
+class FeaturedNoteSummary(BaseModel):
+    id: str
+    title: str
+    slug: Optional[str] = None
+    author_username: Optional[str] = None
+    status: Optional[str] = None
+    is_featured: bool
+    published_at: Optional[str] = None
+
+
+class FeaturedNoteListResponse(BaseModel):
+    data: List[FeaturedNoteSummary]
+    total: int
+
+
+class FeaturedSalonSummary(BaseModel):
+    id: str
+    title: str
+    owner_username: Optional[str] = None
+    is_active: bool
+    is_featured: bool
+    created_at: Optional[str] = None
+
+
+class FeaturedSalonListResponse(BaseModel):
+    data: List[FeaturedSalonSummary]
+    total: int
 
 
 class AdminMarketplaceItemSchema(BaseModel):
@@ -2218,6 +2275,248 @@ async def update_lp_status(
             detail=f"LPステータスの更新に失敗しました: {exc}",
         )
 
+
+def _collect_user_map(supabase: Client, user_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    ids = [uid for uid in set(user_ids) if uid]
+    if not ids:
+        return {}
+    response = (
+        supabase
+        .table("users")
+        .select("id, username")
+        .in_("id", ids)
+        .execute()
+    )
+    rows, _ = handle_supabase_response(response, "users lookup for featured panel", raise_on_error=False)
+    return {row.get("id"): row for row in rows}
+
+
+@router.get("/featured/products", response_model=FeaturedProductListResponse)
+async def list_featured_products(
+    search: Optional[str] = Query(None, description="商品タイトル検索"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    admin: dict = Depends(require_admin),
+):
+    supabase = get_supabase()
+    query = (
+        supabase
+        .table("products")
+        .select("id,title,seller_id,lp_id,is_available,is_featured,created_at", count="exact")
+    )
+    if search:
+        query = query.ilike("title", f"%{search}%")
+    query = query.order("is_featured", desc=True).order("created_at", desc=True).range(offset, offset + limit - 1)
+    response = query.execute()
+    rows, total = handle_supabase_response(response, "featured products list")
+
+    lp_ids = {row.get("lp_id") for row in rows if row.get("lp_id")}
+    seller_ids = {row.get("seller_id") for row in rows if row.get("seller_id")}
+
+    seller_map = _collect_user_map(supabase, seller_ids)
+
+    lp_map: Dict[str, Dict[str, Any]] = {}
+    if lp_ids:
+        lp_response = (
+            supabase
+            .table("landing_pages")
+            .select("id, slug")
+            .in_("id", list(lp_ids))
+            .execute()
+        )
+        lp_rows, _ = handle_supabase_response(lp_response, "landing pages lookup for featured", raise_on_error=False)
+        for lp in lp_rows:
+            lp_map[lp.get("id")] = lp
+
+    items = [
+        FeaturedProductSummary(
+            id=row.get("id"),
+            title=row.get("title", ""),
+            lp_slug=(lp_map.get(row.get("lp_id"), {}) or {}).get("slug"),
+            seller_username=(seller_map.get(row.get("seller_id"), {}) or {}).get("username"),
+            is_available=bool(row.get("is_available", False)),
+            is_featured=bool(row.get("is_featured", False)),
+            created_at=row.get("created_at"),
+        )
+        for row in rows
+    ]
+
+    if total is None:
+        total = len(items)
+
+    return FeaturedProductListResponse(data=items, total=total)
+
+
+@router.get("/featured/notes", response_model=FeaturedNoteListResponse)
+async def list_featured_notes(
+    search: Optional[str] = Query(None, description="NOTEタイトル検索"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    admin: dict = Depends(require_admin),
+):
+    supabase = get_supabase()
+    query = (
+        supabase
+        .table("notes")
+        .select("id,title,slug,author_id,status,is_featured,published_at,created_at", count="exact")
+        .eq("status", "published")
+    )
+    if search:
+        query = query.ilike("title", f"%{search}%")
+    query = query.order("is_featured", desc=True).order("published_at", desc=True).order("created_at", desc=True).range(offset, offset + limit - 1)
+    response = query.execute()
+    rows, total = handle_supabase_response(response, "featured notes list")
+
+    author_ids = {row.get("author_id") for row in rows if row.get("author_id")}
+    author_map = _collect_user_map(supabase, author_ids)
+
+    items = [
+        FeaturedNoteSummary(
+            id=row.get("id"),
+            title=row.get("title", ""),
+            slug=row.get("slug"),
+            author_username=(author_map.get(row.get("author_id"), {}) or {}).get("username"),
+            status=row.get("status"),
+            is_featured=bool(row.get("is_featured", False)),
+            published_at=row.get("published_at") or row.get("created_at"),
+        )
+        for row in rows
+    ]
+
+    if total is None:
+        total = len(items)
+
+    return FeaturedNoteListResponse(data=items, total=total)
+
+
+@router.get("/featured/salons", response_model=FeaturedSalonListResponse)
+async def list_featured_salons(
+    search: Optional[str] = Query(None, description="サロンタイトル検索"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    admin: dict = Depends(require_admin),
+):
+    supabase = get_supabase()
+    query = (
+        supabase
+        .table("salons")
+        .select("id,title,owner_id,is_active,is_featured,created_at", count="exact")
+        .eq("is_active", True)
+    )
+    if search:
+        query = query.ilike("title", f"%{search}%")
+    query = query.order("is_featured", desc=True).order("created_at", desc=True).range(offset, offset + limit - 1)
+    response = query.execute()
+    rows, total = handle_supabase_response(response, "featured salons list")
+
+    owner_ids = {row.get("owner_id") for row in rows if row.get("owner_id")}
+    owner_map = _collect_user_map(supabase, owner_ids)
+
+    items = [
+        FeaturedSalonSummary(
+            id=row.get("id"),
+            title=row.get("title", ""),
+            owner_username=(owner_map.get(row.get("owner_id"), {}) or {}).get("username"),
+            is_active=bool(row.get("is_active", False)),
+            is_featured=bool(row.get("is_featured", False)),
+            created_at=row.get("created_at"),
+        )
+        for row in rows
+    ]
+
+    if total is None:
+        total = len(items)
+
+    return FeaturedSalonListResponse(data=items, total=total)
+
+
+@router.post("/featured/toggle", response_model=FeaturedToggleResponse)
+async def toggle_featured_flag(
+    request: FeaturedItemToggleRequest,
+    admin: dict = Depends(require_admin),
+):
+    supabase = get_supabase()
+
+    table_map = {
+        "product": {
+            "table": "products",
+            "id_field": "id",
+            "title_field": "title",
+            "owner_field": "seller_id",
+            "extra_fields": ["lp_id"],
+        },
+        "note": {
+            "table": "notes",
+            "id_field": "id",
+            "title_field": "title",
+            "owner_field": "author_id",
+            "extra_fields": [],
+        },
+        "salon": {
+            "table": "salons",
+            "id_field": "id",
+            "title_field": "title",
+            "owner_field": "owner_id",
+            "extra_fields": [],
+        },
+    }
+
+    meta = table_map.get(request.entity_type)
+    if not meta:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不正なエンティティ種別です")
+
+    select_fields = [meta["id_field"], meta["title_field"], meta["owner_field"], "is_featured"]
+    for extra in meta.get("extra_fields", []):
+        if extra not in select_fields:
+            select_fields.append(extra)
+    record_response = (
+        supabase
+        .table(meta["table"])
+        .select(",".join(select_fields))
+        .eq(meta["id_field"], request.entity_id)
+        .single()
+        .execute()
+    )
+
+    record = record_response.data
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="対象が見つかりません")
+
+    update_payload = {
+        "is_featured": request.is_featured,
+        "updated_at": now_utc_iso(),
+    }
+    supabase.table(meta["table"]).update(update_payload).eq(meta["id_field"], request.entity_id).execute()
+
+    action = f"{request.entity_type}_featured_{'on' if request.is_featured else 'off'}"
+    owner_id = record.get(meta["owner_field"])
+    target_kwargs = {
+        "target_user_id": owner_id,
+    }
+    if request.entity_type == "note":
+        target_kwargs["target_note_id"] = request.entity_id
+    elif request.entity_type == "salon":
+        target_kwargs["target_salon_id"] = request.entity_id
+    else:
+        target_kwargs["target_lp_id"] = record.get("lp_id")
+
+    create_moderation_event(
+        supabase,
+        action=action,
+        performed_by=admin.get("id"),
+        metadata={
+            "entity_type": request.entity_type,
+            "entity_id": request.entity_id,
+        },
+        **target_kwargs,
+    )
+
+    return FeaturedToggleResponse(
+        entity_type=request.entity_type,
+        entity_id=request.entity_id,
+        title=record.get(meta["title_field"], ""),
+        is_featured=request.is_featured,
+    )
 
 @router.get("/analytics/points", response_model=PointAnalyticsResponse)
 async def get_point_analytics(
