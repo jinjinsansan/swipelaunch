@@ -348,18 +348,19 @@ def list_user_inbox(*, user_id: str, limit: int = 50, offset: int = 0, filter_mo
         .range(offset, offset + limit - 1)
     )
 
-    if filter_mode == "archived":
-        query = query.eq("archived", True)
-    else:
-        query = query.eq("archived", False)
+    include_archived = filter_mode == "archived"
+    query = query.eq("archived", include_archived)
 
     if filter_mode == "unread":
         query = query.is_("read_at", "null")
-    elif filter_mode == "read":
-        query = query.not_("read_at", "is", None)
 
     resp = query.execute()
     recipients = resp.data or []
+
+    if filter_mode == "read":
+        recipients = [row for row in recipients if row.get("read_at")]
+    elif filter_mode == "unread":
+        recipients = [row for row in recipients if not row.get("read_at")]
     message_ids = [row.get("message_id") for row in recipients if row.get("message_id")]
     messages_map: Dict[str, Dict[str, Any]] = {}
     if message_ids:
@@ -396,7 +397,7 @@ def list_user_inbox(*, user_id: str, limit: int = 50, offset: int = 0, filter_mo
             "created_at": _parse_datetime(row.get("created_at")) or _utcnow(),
         })
 
-    total = getattr(resp, "count", None) or len(mapped)
+    total = len(mapped) if filter_mode in {"read", "unread"} else getattr(resp, "count", None) or len(mapped)
     return {"data": mapped, "total": total, "limit": limit, "offset": offset}
 
 
