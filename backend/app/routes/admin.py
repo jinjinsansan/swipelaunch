@@ -2254,6 +2254,23 @@ async def update_lp_status(
             "status": request.status,
             "updated_at": now_utc_iso(),
         }).eq("id", lp_id).execute()
+
+        try:
+            product_visibility = request.status == "published"
+            supabase.table("products").update({
+                "is_available": product_visibility,
+                "updated_at": now_utc_iso(),
+            }).eq("lp_id", lp_id).execute()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "Failed to sync product availability with LP status",
+                extra={
+                    "lp_id": lp_id,
+                    "status": request.status,
+                    "error": str(exc),
+                },
+            )
+
         create_moderation_event(
             supabase,
             action=f"lp_status_{request.status}",

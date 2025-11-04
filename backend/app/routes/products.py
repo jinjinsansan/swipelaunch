@@ -432,18 +432,29 @@ async def get_public_products(
         lp_ids = {product.get("lp_id") for product in raw_products if product.get("lp_id")}
 
         lp_metadata: Dict[str, Dict[str, Optional[str]]] = {}
+        lp_status_map: Dict[str, Optional[str]] = {}
         lp_thumbnails: Dict[str, Optional[str]] = {}
 
         if lp_ids:
             lp_id_list = list(lp_ids)
             # LPメタデータ取得
-            lp_meta_response = supabase.table("landing_pages").select("id, slug, title, meta_image_url").in_("id", lp_id_list).execute()
+            lp_meta_response = (
+                supabase
+                .table("landing_pages")
+                .select("id, slug, title, meta_image_url, status")
+                .in_("id", lp_id_list)
+                .execute()
+            )
             for lp in (lp_meta_response.data or []):
-                lp_metadata[lp["id"]] = {
+                lp_id_value = lp.get("id")
+                if not lp_id_value:
+                    continue
+                lp_metadata[lp_id_value] = {
                     "slug": lp.get("slug"),
                     "title": lp.get("title"),
                     "meta_image_url": lp.get("meta_image_url"),
                 }
+                lp_status_map[lp_id_value] = lp.get("status")
 
             # LPステップからサムネイル候補取得
             steps_response = (
@@ -469,6 +480,13 @@ async def get_public_products(
         for product in raw_products:
             seller_data = product.get("seller", {})
             product_lp_id = product.get("lp_id")
+            if product_lp_id:
+                lp_status = lp_status_map.get(product_lp_id)
+                if lp_status is None:
+                    # LP情報が取得できない場合は非公開扱い
+                    continue
+                if str(lp_status).lower() != "published":
+                    continue
             lp_info = lp_metadata.get(product_lp_id or "", {}) if product_lp_id else {}
             raw_meta_image = lp_info.get("meta_image_url") if lp_info else None
             meta_image = raw_meta_image.strip() if isinstance(raw_meta_image, str) and raw_meta_image.strip() else None
