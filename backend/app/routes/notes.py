@@ -1267,17 +1267,31 @@ async def purchase_note(
     success_url = f"{frontend_url}{success_path}?external_id={external_id}"
     error_url = f"{frontend_url}{error_path}?external_id={external_id}"
 
-    checkout_data = await one_lat_client.create_checkout_preference(
-        amount=amount_usd,
-        currency="USD",
-        title=f"Note Purchase - {note_record.get('title', 'NOTE')}",
-        external_id=external_id,
-        webhook_url=webhook_url,
-        success_url=success_url,
-        error_url=error_url,
-        payer_email=user_record.get("email"),
-        payer_name=user_record.get("username"),
-    )
+    try:
+        checkout_data = await one_lat_client.create_checkout_preference(
+            amount=amount_usd,
+            currency="USD",
+            title=f"Note Purchase - {note_record.get('title', 'NOTE')}",
+            external_id=external_id,
+            webhook_url=webhook_url,
+            success_url=success_url,
+            error_url=error_url,
+            payer_email=user_record.get("email"),
+            payer_name=user_record.get("username"),
+        )
+    except Exception as exc:  # pragma: no cover - external dependency
+        logger.exception(
+            "Failed to create OneLat checkout preference",
+            extra={
+                "note_id": note_id,
+                "user_id": user_id,
+                "external_id": external_id,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="決済ページの生成に失敗しました。しばらく待ってからもう一度お試しください。",
+        ) from exc
 
     metadata = {
         "note_slug": slug,
@@ -1299,7 +1313,21 @@ async def purchase_note(
         "metadata": metadata,
     }
 
-    order_response = supabase.table("payment_orders").insert(order_payload).execute()
+    try:
+        order_response = supabase.table("payment_orders").insert(order_payload).execute()
+    except Exception as exc:  # pragma: no cover - database failure
+        logger.exception(
+            "Failed to insert payment order",
+            extra={
+                "note_id": note_id,
+                "user_id": user_id,
+                "external_id": external_id,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="注文情報の作成に失敗しました",
+        ) from exc
     if not order_response.data:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
