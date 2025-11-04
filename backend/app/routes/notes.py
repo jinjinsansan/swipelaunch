@@ -7,7 +7,7 @@ import secrets
 import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any, Literal, Set
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -440,23 +440,52 @@ async def get_note_metrics(credentials: HTTPAuthorizationCredentials = Depends(s
         free_notes = total_notes - paid_notes
 
         note_ids = [note.get("id") for note in notes if note.get("id")]
+        note_id_candidates: Set[str] = {
+            note_id for note_id in note_ids if isinstance(note_id, str) and note_id.strip()
+        }
+
         purchases: List[Dict[str, Any]] = []
-        if note_ids:
+        yen_orders: List[Dict[str, Any]] = []
+        note_metadata_map: Dict[str, Dict[str, Any]] = {}
+
+        yen_order_response = (
+            supabase
+            .table("payment_orders")
+            .select("item_id, amount_jpy, completed_at, updated_at, created_at, metadata")
+            .eq("seller_id", user_id)
+            .eq("item_type", "note")
+            .eq("status", "COMPLETED")
+            .execute()
+        )
+        yen_orders = yen_order_response.data or []
+        for order in yen_orders:
+            note_id = order.get("item_id")
+            if isinstance(note_id, str) and note_id.strip():
+                trimmed_id = note_id.strip()
+                note_id_candidates.add(trimmed_id)
+                metadata = _ensure_metadata_dict(order.get("metadata"))
+                if metadata:
+                    note_metadata_map[trimmed_id] = metadata
+
+        if note_id_candidates:
             purchases_response = (
                 supabase
                 .table("note_purchases")
                 .select("note_id, points_spent, purchased_at")
-                .in_("note_id", note_ids)
+                .in_("note_id", list(note_id_candidates))
                 .execute()
             )
             purchases = purchases_response.data or []
 
         total_sales_points = 0
+        total_sales_amount_jpy = 0
         total_sales_count = 0
         monthly_sales_points = 0
+        monthly_sales_amount_jpy = 0
         monthly_sales_count = 0
         purchase_count_by_note = defaultdict(int)
         purchase_points_by_note = defaultdict(int)
+        purchase_amount_jpy_by_note = defaultdict(int)
 
         now = datetime.utcnow()
         thirty_days_ago = now - timedelta(days=30)
@@ -475,6 +504,27 @@ async def get_note_metrics(credentials: HTTPAuthorizationCredentials = Depends(s
             if purchased_at and purchased_at >= thirty_days_ago:
                 monthly_sales_points += points
                 monthly_sales_count += 1
+
+        for order in yen_orders:
+            note_id = order.get("item_id")
+            if not note_id:
+                continue
+            amount_jpy = int(order.get("amount_jpy") or 0)
+            total_sales_count += 1
+            if amount_jpy > 0:
+                total_sales_amount_jpy += amount_jpy
+                purchase_amount_jpy_by_note[note_id] += amount_jpy
+            purchase_count_by_note[note_id] += 1
+
+            purchased_at = _parse_datetime(
+                order.get("completed_at")
+                or order.get("updated_at")
+                or order.get("created_at")
+            )
+            if purchased_at and purchased_at >= thirty_days_ago:
+                monthly_sales_count += 1
+                if amount_jpy > 0:
+                    monthly_sales_amount_jpy += amount_jpy
 
         published_dates = [
             _parse_datetime(note.get("published_at"))
@@ -495,25 +545,51 @@ async def get_note_metrics(credentials: HTTPAuthorizationCredentials = Depends(s
         top_categories = [category for category, _ in categories_counter.most_common(5)]
 
         note_lookup = {note.get("id"): note for note in notes if note.get("id")}
+
+        missing_note_ids = [
+            note_id for note_id in note_id_candidates if note_id not in note_lookup
+        ]
+        if missing_note_ids:
+            extra_note_resp = (
+                supabase
+                .table("notes")
+                .select("id, title, slug")
+                .in_("id", missing_note_ids)
+                .execute()
+            )
+            for record in extra_note_resp.data or []:
+                note_id = record.get("id")
+                if note_id and note_id not in note_lookup:
+                    note_lookup[note_id] = record
         top_note_id = None
         best_count = 0
         best_points = 0
+        best_amount_jpy = 0
         for note_id, count in purchase_count_by_note.items():
             points = purchase_points_by_note.get(note_id, 0)
+            amount_jpy = purchase_amount_jpy_by_note.get(note_id, 0)
             if count > best_count or (count == best_count and points > best_points):
                 top_note_id = note_id
                 best_count = count
                 best_points = points
+                best_amount_jpy = amount_jpy
+            elif count == best_count and points == best_points and amount_jpy > best_amount_jpy:
+                top_note_id = note_id
+                best_amount_jpy = amount_jpy
 
         top_note: Optional[NoteMetricsTopNote] = None
-        if top_note_id and top_note_id in note_lookup:
-            note = note_lookup[top_note_id]
+        if top_note_id:
+            note = note_lookup.get(top_note_id)
+            metadata = note_metadata_map.get(top_note_id, {})
+            title = (note or {}).get("title") or metadata.get("note_title") or "NOTE"
+            slug = (note or {}).get("slug") or metadata.get("note_slug")
             top_note = NoteMetricsTopNote(
                 note_id=top_note_id,
-                title=note.get("title", ""),
-                slug=note.get("slug"),
+                title=title,
+                slug=slug,
                 purchase_count=best_count,
                 points_earned=best_points,
+                amount_jpy=best_amount_jpy,
             )
 
         return NoteMetricsResponse(
@@ -524,8 +600,10 @@ async def get_note_metrics(credentials: HTTPAuthorizationCredentials = Depends(s
             free_notes=free_notes,
             total_sales_count=total_sales_count,
             total_sales_points=total_sales_points,
+            total_sales_amount_jpy=total_sales_amount_jpy,
             monthly_sales_count=monthly_sales_count,
             monthly_sales_points=monthly_sales_points,
+            monthly_sales_amount_jpy=monthly_sales_amount_jpy,
             recent_published_count=recent_published_count,
             average_paid_price=average_paid_price,
             latest_published_at=latest_published_at,
@@ -543,8 +621,10 @@ async def get_note_metrics(credentials: HTTPAuthorizationCredentials = Depends(s
             free_notes=0,
             total_sales_count=0,
             total_sales_points=0,
+            total_sales_amount_jpy=0,
             monthly_sales_count=0,
             monthly_sales_points=0,
+            monthly_sales_amount_jpy=0,
             recent_published_count=0,
             average_paid_price=0,
             latest_published_at=None,

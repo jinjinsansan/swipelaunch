@@ -279,6 +279,7 @@ class NoteMetricsTopNote(BaseModel):
     slug: Optional[str] = None
     purchase_count: int
     points_earned: int
+    amount_jpy: int = 0
 
 
 class NoteMetricsResponse(BaseModel):
@@ -289,8 +290,10 @@ class NoteMetricsResponse(BaseModel):
     free_notes: int
     total_sales_count: int
     total_sales_points: int
+    total_sales_amount_jpy: int
     monthly_sales_count: int
     monthly_sales_points: int
+    monthly_sales_amount_jpy: int
     recent_published_count: int
     average_paid_price: int
     latest_published_at: Optional[datetime] = None
