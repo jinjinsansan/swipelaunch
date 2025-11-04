@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import secrets
@@ -40,6 +41,17 @@ security = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
 JPY_TO_USD_RATE = 145.0
+
+
+def _ensure_metadata_dict(raw: Optional[Any]) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:  # pragma: no cover - defensive conversion
+            return {}
+    return {}
 
 
 def get_supabase() -> Client:
@@ -1307,6 +1319,87 @@ async def purchase_note(
         checkout_url=checkout_data.get("checkout_url"),
         external_id=external_id,
     )
+
+
+@router.get("/purchase/status")
+async def get_purchase_status(
+    external_id: str = Query(..., min_length=5, max_length=255),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+
+    order_resp = (
+        supabase
+        .table("payment_orders")
+        .select("id, user_id, item_id, status, metadata, amount_jpy")
+        .eq("external_id", external_id)
+        .maybe_single()
+        .execute()
+    )
+    order = order_resp.data if order_resp else None
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="取引が見つかりません")
+
+    if order.get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="権限がありません")
+
+    status_value = str(order.get("status") or "PENDING").upper()
+    metadata = _ensure_metadata_dict(order.get("metadata"))
+    notification_sent = bool(metadata.get("purchase_notification_sent"))
+
+    note_info = None
+    note_resp = None
+    note_id = order.get("item_id")
+    if note_id:
+        note_resp = (
+            supabase
+            .table("notes")
+            .select("id, title, slug, author_id, price_jpy")
+            .eq("id", note_id)
+            .maybe_single()
+            .execute()
+        )
+        note_info = note_resp.data if note_resp else None
+
+    if status_value == "COMPLETED" and not notification_sent and note_id and note_info:
+        try:
+            send_purchase_notification(
+                supabase,
+                buyer_id=user_id,
+                content_title=note_info.get("title") or "NOTE",
+                content_type="NOTE",
+                seller_id=note_info.get("author_id"),
+                amount_jpy=order.get("amount_jpy") or note_info.get("price_jpy"),
+                points=None,
+            )
+            metadata["purchase_notification_sent"] = True
+            supabase.table("payment_orders").update({"metadata": metadata}).eq("id", order["id"]).execute()
+            notification_sent = True
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "Failed to ensure purchase notification",
+                extra={
+                    "external_id": external_id,
+                    "order_id": order.get("id"),
+                    "error": str(exc),
+                },
+            )
+
+    response_payload = {
+        "status": status_value,
+        "external_id": external_id,
+        "note_id": note_id,
+        "notification_sent": notification_sent,
+    }
+    if note_info:
+        response_payload["note"] = {
+            "id": note_info.get("id"),
+            "slug": note_info.get("slug"),
+            "title": note_info.get("title"),
+        }
+
+    return response_payload
 
 
 # ========================================
