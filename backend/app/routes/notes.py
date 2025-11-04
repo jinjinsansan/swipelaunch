@@ -1295,6 +1295,7 @@ async def purchase_note(
 
     metadata = {
         "note_slug": slug,
+        "note_title": note_record.get("title"),
         "author_id": note_record.get("author_id"),
     }
 

@@ -134,6 +134,8 @@ async def get_sales_history(
         if note_id:
             note_map[note_id] = record
 
+    note_id_candidates: Set[str] = set(note_map.keys())
+
     salon_map: Dict[str, Dict[str, Any]] = {}
     salon_resp = (
         supabase
@@ -203,15 +205,52 @@ async def get_sales_history(
         if buyer_id:
             buyer_ids.add(buyer_id)
 
-    # Note purchases via points
+    # Note yen orders
+    note_order_rows: List[Dict[str, Any]] = []
+    note_order_query = (
+        supabase
+        .table("payment_orders")
+        .select(
+            "id, user_id, item_id, amount_jpy, metadata, completed_at, updated_at, created_at, payment_method, "
+            "clearing_state, ready_for_payout_at, chargeback_hold_until, dispute_flag, dispute_status, risk_level, risk_score, reserve_amount_usd"
+        )
+        .eq("seller_id", seller_id)
+        .eq("item_type", "note")
+        .eq("status", "COMPLETED")
+        .order("completed_at", desc=True)
+        .range(0, note_limit - 1)
+    )
+    note_order_rows = note_order_query.execute().data or []
+    for row in note_order_rows:
+        buyer_id = row.get("user_id")
+        if buyer_id:
+            buyer_ids.add(buyer_id)
+        note_id = row.get("item_id")
+        if note_id:
+            note_id_candidates.add(note_id)
+
+    missing_note_ids = [note_id for note_id in note_id_candidates if note_id not in note_map]
+    if missing_note_ids:
+        extra_note_resp = (
+            supabase
+            .table("notes")
+            .select("id, title, slug")
+            .in_("id", missing_note_ids)
+            .execute()
+        )
+        for record in extra_note_resp.data or []:
+            note_id = record.get("id")
+            if note_id and note_id not in note_map:
+                note_map[note_id] = record
+
     note_point_rows: List[Dict[str, Any]] = []
-    note_ids = list(note_map.keys())
-    if note_ids:
+    filtered_note_ids = [note_id for note_id in note_id_candidates if note_id]
+    if filtered_note_ids:
         note_point_query = (
             supabase
             .table("note_purchases")
             .select("id, note_id, buyer_id, points_spent, purchased_at")
-            .in_("note_id", note_ids)
+            .in_("note_id", filtered_note_ids)
             .gt("points_spent", 0)
             .order("purchased_at", desc=True)
             .range(0, note_limit - 1)
@@ -219,28 +258,6 @@ async def get_sales_history(
         note_point_rows = note_point_query.execute().data or []
         for row in note_point_rows:
             buyer_id = row.get("buyer_id")
-            if buyer_id:
-                buyer_ids.add(buyer_id)
-
-    # Note yen orders
-    note_order_rows: List[Dict[str, Any]] = []
-    if note_ids:
-        note_order_query = (
-            supabase
-            .table("payment_orders")
-            .select(
-                "id, user_id, item_id, amount_jpy, metadata, completed_at, updated_at, created_at, payment_method, "
-                "clearing_state, ready_for_payout_at, chargeback_hold_until, dispute_flag, dispute_status, risk_level, risk_score, reserve_amount_usd"
-            )
-            .eq("seller_id", seller_id)
-            .eq("item_type", "note")
-            .eq("status", "COMPLETED")
-            .order("completed_at", desc=True)
-            .range(0, note_limit - 1)
-        )
-        note_order_rows = note_order_query.execute().data or []
-        for row in note_order_rows:
-            buyer_id = row.get("user_id")
             if buyer_id:
                 buyer_ids.add(buyer_id)
 
@@ -383,12 +400,14 @@ async def get_sales_history(
         amount_jpy = row.get("amount_jpy")
         metadata = _ensure_dict(row.get("metadata"))
         risk_snapshot = metadata.get("risk_snapshot") if isinstance(metadata.get("risk_snapshot"), dict) else {}
+        fallback_title = metadata.get("note_title") if isinstance(metadata.get("note_title"), str) else None
+        fallback_slug = metadata.get("note_slug") if isinstance(metadata.get("note_slug"), str) else None
         note_sales.append(
             SalesNoteRecord(
                 sale_id=row.get("id"),
                 note_id=note_id or "",
-                note_title=note.get("title") if note else None,
-                note_slug=note.get("slug") if note else None,
+                note_title=note.get("title") if note else fallback_title,
+                note_slug=note.get("slug") if note else fallback_slug,
                 buyer_id=buyer_id,
                 buyer_username=buyer_info.get("username") if buyer_info else None,
                 buyer_profile_image_url=buyer_info.get("profile_image_url") if buyer_info else None,
