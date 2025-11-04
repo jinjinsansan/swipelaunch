@@ -14,6 +14,7 @@ from app.models.product import (
 )
 from typing import Optional, Dict, Any, List
 import logging
+import json
 import uuid
 from datetime import datetime
 
@@ -34,6 +35,17 @@ def _coerce_float(value: Optional[Any]) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):  # pragma: no cover - defensive conversion
         return None
+
+
+def _ensure_metadata_dict(raw: Optional[Any]) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:  # pragma: no cover - defensive
+            return {}
+    return {}
 
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
@@ -1033,3 +1045,122 @@ async def purchase_product(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"商品購入エラー: {str(e)}"
         )
+
+
+@router.get("/orders/status")
+async def get_product_order_status(
+    external_id: str = Query(..., min_length=5, max_length=255),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+
+    order_resp = (
+        supabase
+        .table("payment_orders")
+        .select(
+            "id, user_id, item_id, status, metadata, amount_jpy, payment_method, completed_at, updated_at, created_at"
+        )
+        .eq("external_id", external_id)
+        .maybe_single()
+        .execute()
+    )
+    order = order_resp.data if order_resp else None
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="取引が見つかりません")
+
+    if order.get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="権限がありません")
+
+    metadata = _ensure_metadata_dict(order.get("metadata"))
+    notification_sent = bool(metadata.get("purchase_notification_sent"))
+
+    product_info: Optional[Dict[str, Any]] = None
+    product_id = order.get("item_id")
+    if product_id:
+        product_resp = (
+            supabase
+            .table("products")
+            .select("id, title, seller_id, thanks_lp_id, redirect_url")
+            .eq("id", product_id)
+            .maybe_single()
+            .execute()
+        )
+        product_info = product_resp.data if product_resp else None
+
+    thanks_lp_slug = None
+    thanks_lp_id = metadata.get("thanks_lp_id") or (product_info or {}).get("thanks_lp_id")
+    if thanks_lp_id:
+        try:
+            lp_resp = (
+                supabase
+                .table("landing_pages")
+                .select("slug")
+                .eq("id", thanks_lp_id)
+                .maybe_single()
+                .execute()
+            )
+            lp_data = lp_resp.data if lp_resp else None
+            if lp_data:
+                thanks_lp_slug = lp_data.get("slug")
+        except Exception:  # pragma: no cover - defensive
+            thanks_lp_slug = None
+
+    status_value = str(order.get("status") or "PENDING").upper()
+
+    if (
+        status_value == "COMPLETED"
+        and not notification_sent
+        and product_id
+        and product_info
+    ):
+        try:
+            quantity = int(metadata.get("quantity") or 1)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            quantity = 1
+
+        try:
+            notification_id = send_purchase_notification(
+                supabase,
+                buyer_id=user_id,
+                content_title=product_info.get("title") or "商品",
+                content_type="LP商品",
+                seller_id=product_info.get("seller_id"),
+                amount_jpy=order.get("amount_jpy"),
+                points=None,
+                quantity=quantity,
+            )
+            if notification_id:
+                metadata["purchase_notification_sent"] = True
+                metadata["purchase_notification_id"] = notification_id
+                supabase.table("payment_orders").update({"metadata": metadata}).eq("id", order["id"]).execute()
+                notification_sent = True
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "Failed to deliver product purchase notification",
+                extra={
+                    "external_id": external_id,
+                    "order_id": order.get("id"),
+                    "error": str(exc),
+                },
+            )
+
+    response_payload: Dict[str, Any] = {
+        "status": status_value,
+        "external_id": external_id,
+        "product_id": product_id,
+        "notification_sent": notification_sent,
+        "payment_method": order.get("payment_method"),
+        "amount_jpy": order.get("amount_jpy"),
+        "completed_at": order.get("completed_at"),
+        "thanks_lp_slug": thanks_lp_slug,
+        "redirect_url": metadata.get("redirect_url") or (product_info or {}).get("redirect_url"),
+    }
+
+    if product_info:
+        response_payload["product"] = {
+            "id": product_info.get("id"),
+            "title": product_info.get("title"),
+        }
+
+    return response_payload

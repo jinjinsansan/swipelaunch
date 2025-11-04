@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import logging
+import json
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_supabase_client, settings
 from app.constants.subscription_plans import (
     SUBSCRIPTION_PLANS,
     get_subscription_plan,
+    get_subscription_plan_by_id,
 )
 from app.models.subscriptions import (
     SubscriptionCancelResponse,
@@ -26,6 +28,7 @@ from app.models.subscriptions import (
     UserSubscriptionResponse,
 )
 from app.services.one_lat import one_lat_client
+from app.services.purchase_notifications import send_purchase_notification
 from app.utils.auth import decode_access_token
 
 
@@ -33,6 +36,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 security = HTTPBearer()
+
+
+def _ensure_metadata_dict(raw: Optional[Any]) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:  # pragma: no cover - defensive
+            return {}
+    return {}
+
 
 
 def _get_current_user_id(credentials: HTTPAuthorizationCredentials) -> str:
@@ -65,6 +80,183 @@ def _build_frontend_url(path: Optional[str], default_path: str, params: Dict[str
     if query:
         return f"{base_url}{normalized_path}?{query}"
     return f"{base_url}{normalized_path}"
+
+
+@router.get("/session-status")
+async def get_subscription_session_status(
+    external_id: str = Query(..., min_length=8, max_length=255),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    user_id = _get_current_user_id(credentials)
+    supabase = get_supabase_client()
+
+    session_resp = (
+        supabase
+        .table("one_lat_subscription_sessions")
+        .select(
+            "id, user_id, plan_key, subscription_plan_id, status, last_event_type, last_event_at, metadata, seller_id, seller_username, salon_id"
+        )
+        .eq("external_id", external_id)
+        .maybe_single()
+        .execute()
+    )
+
+    session = session_resp.data if session_resp else None
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="セッションが見つかりません")
+
+    if session.get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="権限がありません")
+
+    session_metadata = _ensure_metadata_dict(session.get("metadata"))
+    notification_sent = bool(session_metadata.get("purchase_notification_sent"))
+
+    plan = None
+    if session.get("plan_key"):
+        plan = get_subscription_plan(session["plan_key"])
+    if not plan and session.get("subscription_plan_id"):
+        plan = get_subscription_plan_by_id(session["subscription_plan_id"])
+
+    subscription_resp = (
+        supabase
+        .table("user_subscriptions")
+        .select(
+            "id, status, last_event_type, last_event_at, metadata, recurrent_payment_id, seller_id, seller_username, salon_id"
+        )
+        .eq("external_id", external_id)
+        .maybe_single()
+        .execute()
+    )
+    subscription = subscription_resp.data if subscription_resp else None
+
+    subscription_metadata = _ensure_metadata_dict(subscription.get("metadata")) if subscription else {}
+    if subscription_metadata.get("purchase_notification_sent"):
+        notification_sent = True
+
+    salon_id: Optional[str] = (
+        session.get("salon_id")
+        or subscription_metadata.get("salon_id")
+        or session_metadata.get("salon_id")
+    )
+
+    salon_info: Optional[Dict[str, Any]] = None
+    if salon_id:
+        salon_resp = (
+            supabase
+            .table("salons")
+            .select("id, title, owner_id")
+            .eq("id", salon_id)
+            .maybe_single()
+            .execute()
+        )
+        salon_info = salon_resp.data if salon_resp else None
+
+    membership_resp = None
+    membership_status: Optional[str] = None
+    if salon_id:
+        membership_resp = (
+            supabase
+            .table("salon_memberships")
+            .select("id, status, last_event_type, next_charge_at, last_charged_at")
+            .eq("salon_id", salon_id)
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        membership = membership_resp.data if membership_resp else None
+        if membership:
+            membership_status = membership.get("status")
+
+    session_status = str(session.get("status") or "PENDING").upper()
+    subscription_status = str(subscription.get("status") if subscription else session_status).upper()
+    seller_id = subscription.get("seller_id") if subscription else session.get("seller_id")
+    seller_username = subscription.get("seller_username") if subscription else session.get("seller_username")
+
+    success_statuses = {"ACTIVE", "COMPLETED", "RECURRENT_PAYMENT.ACTIVE", "RECURRENT_PAYMENT.COMPLETE"}
+    is_completed = (
+        subscription_status in success_statuses
+        or session_status in success_statuses
+        or (membership_status and membership_status.upper() == "ACTIVE")
+    )
+
+    if is_completed and not notification_sent:
+        amount_jpy: Optional[int] = None
+        billing_method = session_metadata.get("billing_method") or subscription_metadata.get("billing_method")
+        if isinstance(billing_method, str) and billing_method.lower() in {"salon_yen", "yen"}:
+            raw_amount = session_metadata.get("price_jpy") or subscription_metadata.get("price_jpy")
+            if raw_amount is not None:
+                try:
+                    amount_jpy = int(raw_amount)
+                except (TypeError, ValueError):  # pragma: no cover - defensive
+                    amount_jpy = None
+
+        points_value: Optional[int] = None
+        if amount_jpy is None and plan:
+            points_value = plan.points
+
+        try:
+            notification_id = send_purchase_notification(
+                supabase,
+                buyer_id=user_id,
+                content_title=(salon_info or {}).get("title") or (plan.label if plan else "サブスクリプション"),
+                content_type="オンラインサロン",
+                seller_id=(salon_info or {}).get("owner_id") or seller_id,
+                amount_jpy=amount_jpy,
+                points=points_value,
+            )
+            if notification_id:
+                session_metadata["purchase_notification_sent"] = True
+                session_metadata["purchase_notification_id"] = notification_id
+                supabase.table("one_lat_subscription_sessions").update({"metadata": session_metadata}).eq("id", session["id"]).execute()
+                notification_sent = True
+                if subscription:
+                    subscription_metadata["purchase_notification_sent"] = True
+                    subscription_metadata["purchase_notification_id"] = notification_id
+                    supabase.table("user_subscriptions").update({"metadata": subscription_metadata}).eq("id", subscription["id"]).execute()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "Failed to deliver subscription notification",
+                extra={
+                    "external_id": external_id,
+                    "user_id": user_id,
+                    "error": str(exc),
+                },
+            )
+
+    response_payload: Dict[str, Any] = {
+        "external_id": external_id,
+        "session_status": session_status,
+        "subscription_status": subscription_status,
+        "notification_sent": notification_sent,
+        "is_completed": is_completed,
+        "last_event_type": subscription.get("last_event_type") if subscription else session.get("last_event_type"),
+        "last_event_at": subscription.get("last_event_at") if subscription else session.get("last_event_at"),
+        "recurrent_payment_id": subscription.get("recurrent_payment_id") if subscription else None,
+    }
+
+    if plan:
+        response_payload["plan"] = {
+            "key": plan.key,
+            "label": plan.label,
+            "points": plan.points,
+            "usd_amount": plan.usd_amount,
+        }
+
+    if seller_id or seller_username:
+        response_payload["seller"] = {
+            "id": seller_id,
+            "username": seller_username,
+        }
+
+    if salon_info:
+        response_payload["salon"] = {
+            "id": salon_info.get("id"),
+            "title": salon_info.get("title"),
+        }
+        response_payload["membership_status"] = membership_status.upper() if membership_status else None
+
+    return response_payload
+
 
 
 @router.get("/plans", response_model=SubscriptionPlanListResponse)
