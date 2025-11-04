@@ -97,7 +97,7 @@ def test_purchase_notification_sends_email(monkeypatch, stub_supabase):
     monkeypatch.setattr(purchase_notifications.settings, "mailgun_default_from_name", "D-swipe")
     monkeypatch.setattr(purchase_notifications.settings, "mailgun_default_reply_to", "support@example.com")
 
-    purchase_notifications.send_purchase_notification(
+    message_id = purchase_notifications.send_purchase_notification(
         stub_supabase,
         buyer_id="buyer-1",
         content_title="テスト商品",
@@ -108,6 +108,7 @@ def test_purchase_notification_sends_email(monkeypatch, stub_supabase):
         quantity=1,
     )
 
+    assert isinstance(message_id, str)
     assert stub_supabase.operator_messages, "operator message should be created"
     assert stub_supabase.operator_message_recipients, "recipient record should be created"
     assert captured["subject"].startswith("ご購入ありがとうございます")
@@ -127,11 +128,12 @@ def test_purchase_notification_skips_email_when_unconfigured(monkeypatch, stub_s
     monkeypatch.setattr(purchase_notifications.settings, "mailgun_default_from_name", "D-swipe")
     monkeypatch.setattr(purchase_notifications.settings, "mailgun_default_reply_to", "support@example.com")
 
-    purchase_notifications.send_purchase_notification(
+    message_id = purchase_notifications.send_purchase_notification(
         stub_supabase,
         buyer_id="buyer-1",
         content_title="テスト商品",
         content_type="note",
     )
 
+    assert isinstance(message_id, str)
     assert "subject" not in sent

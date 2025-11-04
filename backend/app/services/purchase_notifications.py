@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Sequence
+from uuid import UUID
 
 from supabase import Client
 
@@ -37,6 +38,16 @@ def _format_points(points: Optional[int]) -> Optional[str]:
     return f"{points_int:,}ポイント"
 
 
+def _is_valid_uuid(candidate: Optional[str]) -> bool:
+    if not candidate or not isinstance(candidate, str):
+        return False
+    try:
+        UUID(candidate)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 def send_purchase_notification(
     supabase: Client,
     *,
@@ -48,11 +59,15 @@ def send_purchase_notification(
     points: Optional[int] = None,
     quantity: Optional[int] = None,
     extra_lines: Optional[Sequence[str]] = None,
-) -> None:
-    """Deliver a thank-you message to the buyer inbox via operator messages."""
+
+) -> Optional[str]:
+    """Deliver a thank-you message to the buyer inbox via operator messages.
+
+    Returns ``True`` when the inbox notification was created successfully, otherwise ``False``.
+    """
 
     if not buyer_id or not hasattr(supabase, "table"):
-        return
+        return None
 
     try:
         buyer_email: Optional[str] = None
@@ -61,7 +76,7 @@ def send_purchase_notification(
         buyer_resp = (
             supabase
             .table("users")
-            .select("email, display_name, username")
+            .select("email, username")
             .eq("id", buyer_id)
             .maybe_single()
             .execute()
@@ -69,21 +84,21 @@ def send_purchase_notification(
         buyer_row = getattr(buyer_resp, "data", None) or None
         if buyer_row:
             buyer_email = (buyer_row.get("email") or "").strip() or None
-            buyer_name = buyer_row.get("display_name") or buyer_row.get("username") or None
+            buyer_name = buyer_row.get("username") or None
 
         seller_name: Optional[str] = None
-        if seller_id:
+        if seller_id and _is_valid_uuid(seller_id):
             seller_resp = (
                 supabase
                 .table("users")
-                .select("display_name, username")
+                .select("username")
                 .eq("id", seller_id)
                 .maybe_single()
                 .execute()
             )
             seller_row = getattr(seller_resp, "data", None) or None
             if seller_row:
-                seller_name = seller_row.get("display_name") or seller_row.get("username")
+                seller_name = seller_row.get("username")
 
         currency_text = _format_currency_jpy(amount_jpy)
         points_text = _format_points(points)
@@ -140,11 +155,12 @@ def send_purchase_notification(
         }
 
         message_resp = supabase.table("operator_messages").insert(message_payload).execute()
-        message_row = getattr(message_resp, "data", None)
-        if not message_row:
+        message_data = getattr(message_resp, "data", None)
+        if not message_data:
             raise RuntimeError("operator_messages insert did not return a row")
 
-        message_id = message_row[0]["id"] if isinstance(message_row, list) else message_row.get("id")
+        message_obj = message_data[0] if isinstance(message_data, list) else message_data
+        message_id = message_obj.get("id") if isinstance(message_obj, dict) else None
         if not message_id:
             raise RuntimeError("operator_messages insert missing id")
 
@@ -159,17 +175,33 @@ def send_purchase_notification(
         }
         supabase.table("operator_message_recipients").insert(recipient_payload).execute()
 
-        if buyer_email and mailgun.is_configured() and settings.mailgun_default_from_email:
+        sender_email = settings.mailgun_default_from_email
+        if not sender_email and settings.mailgun_domain:
+            sender_email = f"no-reply@{settings.mailgun_domain}"
+
+        sender_name = settings.mailgun_default_from_name or "D-swipe事務局"
+        reply_to = settings.mailgun_default_reply_to or "info@dlogicai.com"
+
+        if buyer_email and mailgun.is_configured() and sender_email:
             try:
-                mailgun.send_bulk_email_async(
+                accepted = mailgun.send_bulk_email_async(
                     subject=message_title,
                     text=body_text,
                     html=None,
                     recipients=[MailgunRecipient(email=buyer_email, name=buyer_name)],
-                    sender_email=settings.mailgun_default_from_email,
-                    sender_name=settings.mailgun_default_from_name,
-                    reply_to=settings.mailgun_default_reply_to,
+                    sender_email=sender_email,
+                    sender_name=sender_name,
+                    reply_to=reply_to,
                 )
+                if accepted:
+                    (
+                        supabase
+                        .table("operator_message_recipients")
+                        .update({"email_sent_at": datetime.now(timezone.utc).isoformat()})
+                        .eq("message_id", message_id)
+                        .eq("user_id", buyer_id)
+                        .execute()
+                    )
             except Exception as mail_exc:  # pragma: no cover - defensive logging
                 logger.warning(
                     "Failed to enqueue purchase notification email",
@@ -179,6 +211,8 @@ def send_purchase_notification(
                         "error": str(mail_exc),
                     },
                 )
+
+        return message_id
 
     except Exception as exc:  # pragma: no cover - logging only
         logger.warning(
@@ -190,3 +224,4 @@ def send_purchase_notification(
                 "error": str(exc),
             },
         )
+        return None

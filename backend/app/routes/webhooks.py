@@ -265,7 +265,7 @@ async def _process_payment_order(
 
         if notification_context and merged_row.get("user_id"):
             try:
-                send_purchase_notification(
+                notification_id = send_purchase_notification(
                     supabase,
                     buyer_id=merged_row["user_id"],
                     content_title=notification_context.get("content_title", "コンテンツ"),
@@ -275,8 +275,10 @@ async def _process_payment_order(
                     points=notification_context.get("points"),
                     quantity=notification_context.get("quantity"),
                 )
-                metadata["purchase_notification_sent"] = True
-                supabase.table("payment_orders").update({"metadata": metadata}).eq("id", order_row["id"]).execute()
+                if notification_id:
+                    metadata["purchase_notification_sent"] = True
+                    metadata["purchase_notification_id"] = notification_id
+                    supabase.table("payment_orders").update({"metadata": metadata}).eq("id", order_row["id"]).execute()
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning(
                     "Failed to deliver purchase notification",
