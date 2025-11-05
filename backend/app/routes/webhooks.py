@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Request, HTTPException
 
-from app.config import get_supabase_client
+from app.config import get_supabase_client, settings
 from app.constants.subscription_plans import (
     get_subscription_plan,
     get_subscription_plan_by_id,
@@ -15,6 +15,7 @@ from app.constants.subscription_plans import (
 from app.services.one_lat import one_lat_client
 from app.services.payment_risk import evaluate_payment_order_risk
 from app.services.purchase_notifications import send_purchase_notification
+from app.services.platform_settings import get_platform_settings
 from supabase import Client
 import logging
 
@@ -32,6 +33,15 @@ STATUS_MAP = {
     "REFUNDED": "REFUNDED",
     "CANCELLED": "CANCELLED",
 }
+
+
+def _get_effective_exchange_rate() -> float:
+    platform_settings = get_platform_settings()
+    effective_rate = platform_settings.effective_exchange_rate
+    if effective_rate <= 0:
+        fallback = settings.default_exchange_rate_usd_jpy + settings.default_exchange_spread_jpy
+        return max(fallback, 0.01)
+    return effective_rate
 
 
 def _map_payment_status(raw_status: Optional[str]) -> str:
@@ -414,8 +424,8 @@ async def handle_payment_success(transaction: dict, payment_order: dict):
             points_to_add = transaction.get("points_amount")
             
             if not points_to_add:
-                # フォールバック: USD金額から計算（為替レート: 1 USD = 145円）
-                points_to_add = int(amount * 145)
+                # フォールバック: USD金額から計算（手動設定の為替レート＋スプレッド）
+                points_to_add = int(amount * _get_effective_exchange_rate())
                 logger.warning(f"⚠️ points_amount not found, calculated from amount: {points_to_add}")
             
             logger.info(f"💰 Attempting to add {points_to_add} points to user {user_id}")

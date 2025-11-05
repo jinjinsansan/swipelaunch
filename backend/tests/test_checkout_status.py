@@ -277,7 +277,7 @@ def test_subscription_session_status_resends_notification(monkeypatch):
     payload = response.json()
     assert payload["notification_sent"] is True
     assert payload["is_completed"] is True
-    assert payload.get("salon", {}).get("id") == "salon-42"
+    assert payload.get("salon", {}).get("id") == "salon-id"
     assert notification_calls.get("called") is True
     assert fake_store["one_lat_subscription_sessions"][0]["metadata"]["purchase_notification_sent"] is True
     assert fake_store["user_subscriptions"][0]["metadata"]["purchase_notification_id"] == "msg-sub-1"

@@ -28,14 +28,25 @@ from app.models.payouts import (
     PayoutSettings,
     PayoutSettingsUpsertRequest,
 )
+from app.services.platform_settings import get_platform_settings
 
 
 logger = logging.getLogger(__name__)
 
 
 PAYOUT_PENDING_STATUSES = {"pending", "funds_received", "ready_to_payout"}
-DEFAULT_POINT_EXCHANGE_RATE = Decimal("145.0")  # 1 USD = 145pt
 DEFAULT_USD_TO_USDT = Decimal("1.0")  # Assume 1:1 peg
+
+
+def _get_effective_exchange_rate_decimal(client: Optional[Client] = None) -> Decimal:
+    platform_settings = get_platform_settings(client=client)
+    effective_rate = Decimal(str(platform_settings.effective_exchange_rate))
+    if effective_rate <= 0:
+        fallback = Decimal(str(settings.default_exchange_rate_usd_jpy + settings.default_exchange_spread_jpy))
+        if fallback <= 0:
+            return Decimal("1")
+        return fallback
+    return effective_rate
 
 
 def get_supabase() -> Client:
@@ -641,6 +652,7 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
     created_entries: List[str] = []
 
     fee_ratio = Decimal(str(request.fee_percent)) / Decimal("100")
+    exchange_rate_decimal = _get_effective_exchange_rate_decimal(client)
 
     for seller_id, orders in grouped.items():
         period_start: Optional[datetime] = None
@@ -664,7 +676,7 @@ def generate_payouts(request: AdminPayoutGenerateRequest, *, actor_id: Optional[
                 amount_usd = _to_decimal(meta_usd)
             if amount_usd is None:
                 amount_jpy = _to_decimal(order.get("amount_jpy")) or Decimal("0")
-                amount_usd = amount_jpy / DEFAULT_POINT_EXCHANGE_RATE
+                amount_usd = amount_jpy / exchange_rate_decimal if amount_jpy else Decimal("0")
 
             gross_usd_total += amount_usd or Decimal("0")
             fee_usd = (amount_usd or Decimal("0")) * fee_ratio

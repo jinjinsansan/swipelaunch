@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     # Supabase
     supabase_url: str = "https://lvfmajyxrcvcfqtgornn.supabase.co"
     supabase_key: str = ""
+    supabase_service_role_key: Optional[str] = Field(default=None, env="SUPABASE_SERVICE_ROLE_KEY")
     
     # Cloudflare R2
     cloudflare_r2_account_id: str = ""
@@ -23,6 +24,9 @@ class Settings(BaseSettings):
     api_port: int = 8000
     frontend_url: str = Field(default="https://d-swipe.com", env="FRONTEND_URL")
     backend_public_url: str = Field(default="https://swipelaunch-backend.onrender.com", env="BACKEND_PUBLIC_URL")
+    default_exchange_rate_usd_jpy: float = Field(default=147.0, env="DEFAULT_EXCHANGE_RATE_USD_JPY")
+    default_exchange_spread_jpy: float = Field(default=3.0, env="DEFAULT_EXCHANGE_SPREAD_JPY")
+    default_platform_fee_percent: float = Field(default=10.0, env="DEFAULT_PLATFORM_FEE_PERCENT")
     
     # Security
     jwt_secret: str = "your-super-secret-jwt-key-change-this-in-production"

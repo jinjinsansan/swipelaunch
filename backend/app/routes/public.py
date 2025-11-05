@@ -24,6 +24,7 @@ from app.models.salons import (
     SalonPublicResponse,
 )
 from app.utils.auth import decode_access_token
+from app.services.platform_settings import get_platform_settings
 
 router = APIRouter(prefix="/public", tags=["public"])
 
@@ -992,6 +993,23 @@ async def confirm_line(slug: str, data: LineConfirmRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"LINE友達追加確認エラー: {str(e)}"
         )
+
+@router.get("/platform/payment-settings")
+async def get_platform_payment_settings():
+    try:
+        payment_settings = get_platform_settings()
+        return {
+            "exchange_rate_usd_jpy": payment_settings.exchange_rate_usd_jpy,
+            "spread_jpy": payment_settings.spread_jpy,
+            "effective_exchange_rate": payment_settings.effective_exchange_rate,
+            "platform_fee_percent": payment_settings.platform_fee_percent,
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"決済設定の取得に失敗しました: {str(exc)}",
+        )
+
 
 @router.get("/{slug}/required-actions", response_model=RequiredActionsStatusResponse)
 async def get_required_actions_status(

@@ -32,6 +32,7 @@ from app.models.note import (
 )
 from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
+from app.services.platform_settings import get_platform_settings
 from app.services.purchase_notifications import send_purchase_notification
 from app.services.note_content import augment_link_blocks
 
@@ -39,9 +40,6 @@ from app.services.note_content import augment_link_blocks
 router = APIRouter(prefix="/notes", tags=["notes"])
 security = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
-
-JPY_TO_USD_RATE = 145.0
-
 
 def _ensure_metadata_dict(raw: Optional[Any]) -> Dict[str, Any]:
     if isinstance(raw, dict):
@@ -52,6 +50,20 @@ def _ensure_metadata_dict(raw: Optional[Any]) -> Dict[str, Any]:
         except json.JSONDecodeError:  # pragma: no cover - defensive conversion
             return {}
     return {}
+
+
+def _get_effective_exchange_rate() -> float:
+    platform_settings = get_platform_settings()
+    effective_rate = platform_settings.effective_exchange_rate
+    if effective_rate <= 0:
+        fallback = settings.default_exchange_rate_usd_jpy + settings.default_exchange_spread_jpy
+        return max(fallback, 0.01)
+    return effective_rate
+
+
+def _convert_jpy_to_usd(amount_jpy: float) -> float:
+    rate = _get_effective_exchange_rate()
+    return round(amount_jpy / rate, 2)
 
 
 def get_supabase() -> Client:
@@ -1335,7 +1347,7 @@ async def purchase_note(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="price_jpy が設定されていません")
 
     amount_jpy = int(price_jpy)
-    amount_usd = round(amount_jpy / JPY_TO_USD_RATE, 2)
+    amount_usd = _convert_jpy_to_usd(amount_jpy)
     external_id = f"note_yen_{note_id}_{uuid.uuid4().hex[:8]}"
 
     backend_url = settings.backend_public_url.rstrip("/")

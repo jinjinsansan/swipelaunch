@@ -172,7 +172,7 @@ class AdminRiskOrderListResponse(BaseModel):
 class AdminPayoutGenerateRequest(BaseModel):
     reference_date: Optional[datetime] = None
     lookback_days: int = Field(default=14, ge=1, le=60)
-    fee_percent: float = Field(default=5.0, ge=0.0, le=25.0)
+    fee_percent: float = Field(default=10.0, ge=0.0, le=25.0)
     min_net_threshold_usd: float = Field(default=5.0, ge=0.0)
 
 

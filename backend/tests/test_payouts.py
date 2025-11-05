@@ -197,6 +197,11 @@ def test_generate_payouts_creates_entries(monkeypatch):
             "payout_settings": [
                 {"user_id": "seller-1", "usdt_address": "T1234567890", "payout_cycle_days": 10},
             ],
+            "platform_settings": [
+                {"key": "exchange_rate_usd_jpy", "value": 145.0, "updated_at": "2025-01-01T00:00:00Z"},
+                {"key": "exchange_rate_spread_jpy", "value": 0.0, "updated_at": "2025-01-01T00:00:00Z"},
+                {"key": "platform_fee_percent", "value": 10.0, "updated_at": "2025-01-01T00:00:00Z"},
+            ],
         }
     )
 

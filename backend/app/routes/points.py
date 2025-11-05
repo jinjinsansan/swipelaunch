@@ -17,6 +17,7 @@ from datetime import datetime
 
 from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
+from app.services.platform_settings import get_platform_settings
 from app.services.jpyc_service import JPYCService, jpyc_to_wei
 import uuid
 import logging
@@ -25,6 +26,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/points", tags=["points"])
 security = HTTPBearer()
+
+
+def _get_effective_exchange_rate() -> float:
+    platform_settings = get_platform_settings()
+    effective_rate = platform_settings.effective_exchange_rate
+    if effective_rate <= 0:
+        fallback = settings.default_exchange_rate_usd_jpy + settings.default_exchange_spread_jpy
+        return max(fallback, 0.01)
+    return effective_rate
 
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
@@ -79,8 +89,8 @@ async def purchase_points_one_lat(
         
         user = user_response.data
         
-        # 金額計算（1 USD = 145円（ポイント））
-        amount_usd = data.amount / 145.0
+        # 金額計算（手動設定の為替レート＋スプレッドを使用）
+        amount_usd = round(data.amount / _get_effective_exchange_rate(), 2)
         
         # 一意のExternal ID生成
         external_id = f"point_purchase_{user_id}_{uuid.uuid4().hex[:8]}"

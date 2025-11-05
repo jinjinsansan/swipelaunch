@@ -6,7 +6,8 @@ from typing import Any, Dict
 
 from supabase import Client
 
-DEFAULT_JPY_TO_USD = Decimal("145")
+from app.config import settings
+from app.services.platform_settings import get_platform_settings
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -39,6 +40,17 @@ def _to_datetime(value: Any) -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _get_effective_exchange_rate_decimal() -> Decimal:
+    platform_settings = get_platform_settings()
+    effective_rate = Decimal(str(platform_settings.effective_exchange_rate))
+    if effective_rate <= 0:
+        fallback = Decimal(str(settings.default_exchange_rate_usd_jpy + settings.default_exchange_spread_jpy))
+        if fallback <= 0:
+            return Decimal("1")
+        return fallback
+    return effective_rate
+
+
 def _count_recent_orders(client: Client, user_id: str, completed_at: datetime) -> Dict[str, int]:
     window_start = completed_at - timedelta(hours=1)
     total_resp = (
@@ -69,10 +81,12 @@ def _determine_risk_level(score: int) -> str:
 
 
 def evaluate_payment_order_risk(client: Client, order_row: Dict[str, Any]) -> Dict[str, Any]:
+    effective_rate = _get_effective_exchange_rate_decimal()
+
     amount_jpy = _to_decimal(order_row.get("amount_jpy"))
     amount_usd = _to_decimal(order_row.get("amount_usd")) if order_row.get("amount_usd") is not None else Decimal("0")
     if amount_jpy == 0 and amount_usd > 0:
-        amount_jpy = amount_usd * DEFAULT_JPY_TO_USD
+        amount_jpy = amount_usd * effective_rate
     currency = order_row.get("currency") or "JPY"
     metadata = order_row.get("metadata") or {}
     completed_at = _to_datetime(order_row.get("completed_at") or datetime.now(timezone.utc))
@@ -118,7 +132,7 @@ def evaluate_payment_order_risk(client: Client, order_row: Dict[str, Any]) -> Di
         reserve_percent = Decimal("0.10")
 
     ready_for_payout_at = completed_at + timedelta(days=hold_days)
-    base_amount_usd = amount_usd if amount_usd > 0 else (amount_jpy / DEFAULT_JPY_TO_USD)
+    base_amount_usd = amount_usd if amount_usd > 0 else (amount_jpy / effective_rate)
     reserve_amount_usd = (base_amount_usd * reserve_percent) if reserve_percent > 0 else Decimal("0")
 
     return {

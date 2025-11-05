@@ -10,7 +10,15 @@ from pydantic import BaseModel, Field
 from supabase import Client, create_client
 
 from app.config import settings
+from app.models.platform_settings import (
+    PlatformPaymentSettings,
+    PlatformPaymentSettingsUpdateRequest,
+)
 from app.services.risk_scoring import calculate_note_risk, calculate_salon_risk
+from app.services.platform_settings import (
+    get_platform_settings as load_platform_settings,
+    update_platform_settings as persist_platform_settings,
+)
 from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -3487,4 +3495,33 @@ async def update_reward_settings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"報酬設定更新に失敗しました: {str(e)}"
+        )
+
+
+@router.get("/payment-settings", response_model=PlatformPaymentSettings)
+async def get_payment_settings(admin: dict = Depends(require_admin)) -> PlatformPaymentSettings:
+    try:
+        return load_platform_settings()
+    except Exception as exc:
+        logger.exception("Failed to load payment settings")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"決済設定の取得に失敗しました: {str(exc)}",
+        )
+
+
+@router.put("/payment-settings", response_model=PlatformPaymentSettings)
+async def update_payment_settings(
+    request: PlatformPaymentSettingsUpdateRequest,
+    admin: dict = Depends(require_admin),
+) -> PlatformPaymentSettings:
+    try:
+        return persist_platform_settings(request, actor_id=str(admin.get("id")))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to update payment settings")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"決済設定の更新に失敗しました: {str(exc)}",
         )
