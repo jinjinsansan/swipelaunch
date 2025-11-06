@@ -88,6 +88,60 @@ def _log_team_action(
     supabase.table("team_audit_logs").insert(log_payload).execute()
 
 
+def _ensure_primary_team(supabase: Client, user_id: str) -> Optional[Dict]:
+    existing_resp = (
+        supabase
+        .table("teams")
+        .select("id, name, owner_user_id, created_at")
+        .eq("owner_user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    existing = getattr(existing_resp, "data", None)
+    if existing:
+        return existing
+
+    user_resp = (
+        supabase
+        .table("users")
+        .select("username, email")
+        .eq("id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    user_info = getattr(user_resp, "data", None) or {}
+    fallback_name = user_info.get("username") or user_info.get("email") or "メインチーム"
+    now_iso = _now_iso()
+
+    insert_resp = (
+        supabase
+        .table("teams")
+        .insert({
+            "owner_user_id": user_id,
+            "name": fallback_name,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+        .execute()
+    )
+    team_row = (insert_resp.data or [None])[0]
+    if not team_row:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="チームの初期化に失敗しました")
+
+    supabase.table("team_members").upsert({
+        "team_id": team_row.get("id"),
+        "user_id": user_id,
+        "role": "owner",
+        "status": "active",
+        "invited_at": now_iso,
+        "accepted_at": now_iso,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }, on_conflict="team_id,user_id").execute()
+
+    return team_row
+
+
 def _build_team_summary_map(rows: List[Dict], contexts: List[TeamContext]) -> List[TeamSummary]:
     context_map = {ctx.team_id: ctx for ctx in contexts}
     summaries: List[TeamSummary] = []
@@ -115,7 +169,10 @@ async def list_my_teams(credentials: HTTPAuthorizationCredentials = Depends(secu
 
     contexts = list_team_memberships(supabase, user_id)
     if not contexts:
-        return []
+        _ensure_primary_team(supabase, user_id)
+        contexts = list_team_memberships(supabase, user_id)
+        if not contexts:
+            return []
 
     team_ids = [ctx.team_id for ctx in contexts]
     resp = (
