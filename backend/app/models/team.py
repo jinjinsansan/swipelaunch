@@ -44,4 +44,4 @@ class TeamInviteResponse(BaseModel):
 
 
 class TeamUpdateMemberRequest(BaseModel):
-    status: Optional[str] = Field(default=None, regex="^(active|invited|disabled)$")
+    status: Optional[str] = Field(default=None, pattern="^(active|invited|disabled)$")
