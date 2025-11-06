@@ -24,12 +24,6 @@ import re
 import secrets
 from app.utils.auth import decode_access_token
 from app.routes.admin import ADMIN_EMAILS
-from app.services.team_access import (
-    assert_manager_or_owner,
-    assert_owner,
-    get_accessible_owner_ids,
-    resolve_team_context,
-)
 
 router = APIRouter(prefix="/lp", tags=["landing_pages"])
 security = HTTPBearer()
@@ -142,43 +136,6 @@ def ensure_owned_salon(supabase: Client, owner_id: str, salon_id: Optional[str])
         )
 
 
-def fetch_lp_with_permission(
-    supabase: Client,
-    lp_id: str,
-    user_id: str,
-    *,
-    required_role: str = "manager",
-) -> Dict[str, Any]:
-    response = (
-        supabase
-        .table("landing_pages")
-        .select("*")
-        .eq("id", lp_id)
-        .maybe_single()
-        .execute()
-    )
-    lp_data = getattr(response, "data", None)
-    if not lp_data:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="LPが見つかりません"
-        )
-
-    seller_id = lp_data.get("seller_id")
-    if not seller_id:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="LPの所有者情報が不正です"
-        )
-
-    if required_role == "owner":
-        assert_owner(supabase, user_id, seller_id)
-    else:
-        assert_manager_or_owner(supabase, user_id, seller_id)
-
-    return lp_data
-
-
 def build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optional[LinkedSalonInfo]:
     if not salon_id:
         return None
@@ -241,18 +198,15 @@ async def create_lp(
     try:
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
-        team_context = resolve_team_context(supabase, user_id, required_role="manager")
-        owner_id = team_context.owner_id
-
         salon_id = data.salon_id or None
-        ensure_owned_salon(supabase, owner_id, salon_id)
+        ensure_owned_salon(supabase, user_id, salon_id)
         normalized_slug = normalize_slug(data.slug)
 
         existing_response = supabase.table("landing_pages").select("*").eq("slug", normalized_slug).execute()
 
         if existing_response.data:
             existing_lp = existing_response.data[0]
-            if existing_lp.get("seller_id") == owner_id:
+            if existing_lp.get("seller_id") == user_id:
                 update_payload = {
                     "title": data.title,
                     "swipe_direction": data.swipe_direction,
@@ -280,7 +234,7 @@ async def create_lp(
         
         # LP作成
         lp_data = {
-            "seller_id": owner_id,
+            "seller_id": user_id,
             "title": data.title,
             "slug": normalized_slug,
             "swipe_direction": data.swipe_direction,
@@ -334,17 +288,9 @@ async def get_lps(
     try:
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
-        owner_ids = get_accessible_owner_ids(supabase, user_id, minimum_role="manager")
-        if not owner_ids:
-            return LPListResponse(data=[], total=0, limit=limit, offset=offset)
-
+        
         # クエリ構築（ユーザー情報をJOIN）
-        query = (
-            supabase
-            .table("landing_pages")
-            .select("*, owner:users!seller_id(username, email)")
-            .in_("seller_id", owner_ids)
-        )
+        query = supabase.table("landing_pages").select("*, owner:users!seller_id(username, email)").eq("seller_id", user_id)
         
         if status_filter:
             query = query.eq("status", status_filter)
@@ -386,7 +332,16 @@ async def get_lp(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
-        lp_data = fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
+        # LP取得
+        lp_response = supabase.table("landing_pages").select("*").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+        
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
+        
+        lp_data = lp_response.data
         
         # ステップ取得
         steps_response = supabase.table("lp_steps").select("*").eq("lp_id", lp_id).order("step_order").execute()
@@ -435,8 +390,15 @@ async def update_lp(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
-        lp_data = fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
-
+        # LP存在確認
+        lp_response = supabase.table("landing_pages").select("*").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+        
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
+        
         # 更新データ準備
         update_data = data.model_dump(exclude_unset=True)
         
@@ -449,7 +411,7 @@ async def update_lp(
         if "salon_id" in update_data:
             salon_id = update_data.get("salon_id") or None
             update_data["salon_id"] = salon_id
-            ensure_owned_salon(supabase, lp_data.get("seller_id"), salon_id)
+            ensure_owned_salon(supabase, user_id, salon_id)
         
         # 更新
         response = supabase.table("landing_pages").update(update_data).eq("id", lp_id).execute()
@@ -476,8 +438,15 @@ async def delete_lp(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
-        fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
-
+        # LP存在確認
+        lp_response = supabase.table("landing_pages").select("id").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+        
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
+        
         # 削除（カスケード削除でステップとCTAも削除される）
         supabase.table("landing_pages").delete().eq("id", lp_id).execute()
         
@@ -503,8 +472,15 @@ async def publish_lp(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
-        fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
-
+        # LP存在確認
+        lp_response = supabase.table("landing_pages").select("*").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+        
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
+        
         # 公開
         response = supabase.table("landing_pages").update({"status": "published"}).eq("id", lp_id).execute()
         
@@ -532,20 +508,29 @@ async def unpublish_lp(
         user_info = fetch_user_admin_info(supabase, user_id)
         can_manage_all = is_admin_user(user_info)
 
-        if can_manage_all:
-            lp_response = (
-                supabase
-                .table("landing_pages")
-                .select("*")
-                .eq("id", lp_id)
-                .maybe_single()
-                .execute()
+        query = (
+            supabase
+            .table("landing_pages")
+            .select("*")
+            .eq("id", lp_id)
+        )
+        if not can_manage_all:
+            query = query.eq("seller_id", user_id)
+
+        lp_response = query.single().execute()
+        lp_data = lp_response.data
+
+        if not lp_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
             )
-            lp_data = getattr(lp_response, "data", None)
-            if not lp_data:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="LPが見つかりません")
-        else:
-            lp_data = fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
+
+        if not can_manage_all and lp_data.get("seller_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="LPを操作する権限がありません"
+            )
 
         response = (
             supabase
@@ -575,8 +560,16 @@ async def duplicate_lp(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
 
-        original_lp = fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
-        owner_id = original_lp.get("seller_id")
+        # 元のLPを取得（本人のもののみ）
+        lp_response = supabase.table("landing_pages").select("*").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
+
+        original_lp = lp_response.data
 
         # 新しいスラッグとタイトルを生成
         base_slug = f"{original_lp.get('slug', '')}-copy" if original_lp.get("slug") else secrets.token_hex(3)
@@ -589,7 +582,7 @@ async def duplicate_lp(
 
         # 新しいLPレコードを作成
         new_lp_data = {
-            "seller_id": owner_id,
+            "seller_id": user_id,
             "title": new_title,
             "slug": new_slug,
             "swipe_direction": original_lp.get("swipe_direction", "vertical"),
@@ -742,7 +735,14 @@ async def create_step(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
-        fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
+        # LP存在確認（自分のLPか確認）
+        lp_response = supabase.table("landing_pages").select("id").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+        
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
         
         # ステップ作成
         step_data = {
@@ -816,7 +816,14 @@ async def update_step(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
-        fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
+        # LP存在確認
+        lp_response = supabase.table("landing_pages").select("id").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+        
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
         
         # ステップ存在確認
         step_response = supabase.table("lp_steps").select("*").eq("id", step_id).eq("lp_id", lp_id).single().execute()
@@ -885,7 +892,14 @@ async def delete_step(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
-        fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
+        # LP存在確認
+        lp_response = supabase.table("landing_pages").select("id").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+        
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
         
         # ステップ削除
         supabase.table("lp_steps").delete().eq("id", step_id).eq("lp_id", lp_id).execute()
@@ -917,7 +931,21 @@ async def bulk_update_steps(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
 
-        fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
+        lp_response = (
+            supabase
+            .table("landing_pages")
+            .select("id")
+            .eq("id", lp_id)
+            .eq("seller_id", user_id)
+            .single()
+            .execute()
+        )
+
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
 
         incoming_steps = data.steps or []
 
@@ -1055,7 +1083,14 @@ async def create_cta(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
-        fetch_lp_with_permission(supabase, lp_id, user_id, required_role="manager")
+        # LP存在確認
+        lp_response = supabase.table("landing_pages").select("id").eq("id", lp_id).eq("seller_id", user_id).single().execute()
+        
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
         
         # CTA作成
         cta_data = {
@@ -1099,15 +1134,14 @@ async def update_cta(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
+        # CTA取得して、LPの所有者確認
         cta_response = supabase.table("lp_ctas").select("*, landing_pages!inner(seller_id)").eq("id", cta_id).single().execute()
-        cta_data = cta_response.data
-        if not cta_data:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CTAが見つかりません")
-
-        seller_id = (cta_data.get("landing_pages") or {}).get("seller_id")
-        if not seller_id:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LPの所有者情報が不正です")
-        assert_manager_or_owner(supabase, user_id, seller_id)
+        
+        if not cta_response.data or cta_response.data.get("landing_pages", {}).get("seller_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="CTAが見つかりません"
+            )
         
         # 更新データ準備
         update_data = data.model_dump(exclude_unset=True)
@@ -1143,15 +1177,14 @@ async def delete_cta(
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
         
+        # CTA取得して、LPの所有者確認
         cta_response = supabase.table("lp_ctas").select("*, landing_pages!inner(seller_id)").eq("id", cta_id).single().execute()
-        cta_data = cta_response.data
-        if not cta_data:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CTAが見つかりません")
-
-        seller_id = (cta_data.get("landing_pages") or {}).get("seller_id")
-        if not seller_id:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="LPの所有者情報が不正です")
-        assert_manager_or_owner(supabase, user_id, seller_id)
+        
+        if not cta_response.data or cta_response.data.get("landing_pages", {}).get("seller_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="CTAが見つかりません"
+            )
         
         # 削除
         supabase.table("lp_ctas").delete().eq("id", cta_id).execute()

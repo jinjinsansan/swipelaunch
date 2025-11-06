@@ -74,7 +74,6 @@ from app.routes import (
     salon_posts,
     subscriptions,
     salons,
-    teams,
     test,
     webhooks,
     x_auth,
@@ -107,7 +106,6 @@ app.include_router(salon_roles.router, prefix="/api")
 app.include_router(salon_events.router, prefix="/api")
 app.include_router(salon_posts.router, prefix="/api")
 app.include_router(subscriptions.router, prefix="/api")
-app.include_router(teams.router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn
