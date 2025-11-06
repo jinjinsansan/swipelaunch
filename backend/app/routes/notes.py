@@ -66,6 +66,17 @@ def _convert_jpy_to_usd(amount_jpy: float) -> float:
     return round(amount_jpy / rate, 2)
 
 
+def _generate_share_token() -> str:
+    return secrets.token_urlsafe(16)
+
+
+def _build_share_url(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    base_url = settings.frontend_url.rstrip("/")
+    return f"{base_url}/notes/share/{token}"
+
+
 def get_supabase() -> Client:
     return create_client(settings.supabase_url, settings.supabase_key)
 
@@ -159,6 +170,9 @@ def generate_unique_slug(supabase: Client, base_slug: str, exclude_note_id: Opti
 
 
 def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
+    visibility = record.get("visibility") or ("public" if record.get("status") == "published" else "private")
+    visibility = visibility if visibility in {"public", "limited", "private"} else "private"
+    share_token = record.get("share_token") if visibility == "limited" else None
     return NoteSummaryResponse(
         id=record["id"],
         author_id=record["author_id"],
@@ -184,6 +198,9 @@ def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
         official_share_x_user_id=record.get("official_share_x_user_id"),
         official_share_x_username=record.get("official_share_x_username"),
         official_share_set_at=record.get("official_share_set_at"),
+        visibility=visibility,
+        share_url=_build_share_url(share_token),
+        share_token_rotated_at=record.get("share_token_rotated_at"),
     )
 
 
@@ -350,6 +367,16 @@ async def create_note(
     price_jpy = data.price_jpy if allow_jpy_purchase else None
     is_paid_flag = bool(data.is_paid and (allow_point_purchase or allow_jpy_purchase))
 
+    visibility = data.visibility or "private"
+    if visibility not in {"public", "limited", "private"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="visibility の指定が不正です")
+
+    share_token: Optional[str] = None
+    share_token_rotated_at: Optional[str] = None
+    if visibility == "limited":
+        share_token = _generate_share_token()
+        share_token_rotated_at = datetime.utcnow().isoformat()
+
     note_data = {
         "author_id": user_id,
         "title": data.title,
@@ -366,6 +393,9 @@ async def create_note(
         "tax_inclusive": data.tax_inclusive,
         "status": "draft",
         "categories": data.categories,
+        "visibility": visibility,
+        "share_token": share_token,
+        "share_token_rotated_at": share_token_rotated_at,
     }
 
     response = supabase.table("notes").insert(note_data).execute()
@@ -677,6 +707,7 @@ async def list_public_notes(
             count="exact"
         )
         .eq("status", "published")
+        .eq("visibility", "public")
         .order("is_featured", desc=True)
         .order("published_at", desc=True)
         .range(offset, offset + limit - 1)
@@ -741,6 +772,7 @@ async def get_public_note(
         .select("*, users(username)")
         .eq("slug", slug)
         .eq("status", "published")
+        .eq("visibility", "public")
         .single()
         .execute()
     )
@@ -749,6 +781,82 @@ async def get_public_note(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
 
     note = response.data
+    user = note.get("users") or {}
+    salon_ids = _fetch_note_salon_ids(supabase, note["id"])
+
+    has_access = False
+    if not note.get("is_paid"):
+        has_access = True
+    elif user_id:
+        if note.get("author_id") == user_id:
+            has_access = True
+        else:
+            has_access = _user_has_purchased(supabase, note["id"], user_id)
+            if not has_access:
+                has_access = _user_has_active_salon_access(supabase, user_id, salon_ids)
+
+    content_blocks = note.get("content_blocks") or []
+    visible_blocks: List[Any] = []
+    for block in content_blocks:
+        access = block.get("access", "public")
+        if access != "paid" or has_access:
+            visible_blocks.append(block)
+
+    visible_blocks = augment_link_blocks(visible_blocks)
+
+    return PublicNoteDetailResponse(
+        id=note["id"],
+        title=note.get("title", ""),
+        slug=note.get("slug", ""),
+        author_id=note.get("author_id"),
+        author_username=user.get("username"),
+        cover_image_url=note.get("cover_image_url"),
+        excerpt=note.get("excerpt"),
+        is_paid=bool(note.get("is_paid")),
+        price_points=int(note.get("price_points") or 0),
+        price_jpy=int(note.get("price_jpy")) if note.get("price_jpy") is not None else None,
+        allow_point_purchase=bool(note.get("allow_point_purchase", True)),
+        allow_jpy_purchase=bool(note.get("allow_jpy_purchase", False)),
+        tax_rate=_coerce_float(note.get("tax_rate")),
+        tax_inclusive=bool(note.get("tax_inclusive", True)),
+        has_access=has_access,
+        content_blocks=visible_blocks,
+        published_at=note.get("published_at"),
+        is_featured=bool(note.get("is_featured", False)),
+        categories=list(note.get("categories") or []),
+        allow_share_unlock=bool(note.get("allow_share_unlock", False)),
+        official_share_tweet_id=note.get("official_share_tweet_id"),
+        official_share_tweet_url=note.get("official_share_tweet_url"),
+        official_share_x_username=note.get("official_share_x_username"),
+        salon_access_ids=salon_ids,
+    )
+
+
+@router.get("/share/{token}", response_model=PublicNoteDetailResponse)
+async def get_note_via_share_token(
+    token: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    supabase = get_supabase()
+    user_id = get_optional_user_id(credentials)
+
+    response = (
+        supabase
+        .table("notes")
+        .select("*, users(username)")
+        .eq("share_token", token)
+        .eq("status", "published")
+        .single()
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
+
+    note = response.data
+    if (note.get("visibility") or "private") != "limited":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
+
     user = note.get("users") or {}
     salon_ids = _fetch_note_salon_ids(supabase, note["id"])
 
@@ -851,6 +959,27 @@ async def update_note(
 
     update_data: Dict[str, Any] = {"updated_at": datetime.utcnow().isoformat()}
 
+    current_visibility = note.get("visibility") or "private"
+    if current_visibility not in {"public", "limited", "private"}:
+        current_visibility = "private"
+
+    if data.visibility is not None:
+        new_visibility = data.visibility
+        if new_visibility not in {"public", "limited", "private"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="visibility の指定が不正です")
+        update_data["visibility"] = new_visibility
+        if new_visibility == "limited":
+            update_data.setdefault("share_token", note.get("share_token") or _generate_share_token())
+            update_data.setdefault("share_token_rotated_at", datetime.utcnow().isoformat())
+        else:
+            update_data["share_token"] = None
+            update_data["share_token_rotated_at"] = None
+        current_visibility = new_visibility
+
+    if current_visibility == "limited" and not note.get("share_token") and "share_token" not in update_data:
+        update_data["share_token"] = _generate_share_token()
+        update_data["share_token_rotated_at"] = datetime.utcnow().isoformat()
+
     if data.title and data.title != note.get("title"):
         update_data["title"] = data.title
         if note.get("status") == "draft":
@@ -930,6 +1059,56 @@ async def update_note(
     else:
         salon_ids = _fetch_note_salon_ids(supabase, note_id)
 
+    return map_note_detail(updated_note, salon_ids=salon_ids)
+
+
+@router.post("/{note_id}/share-token/rotate", response_model=NoteDetailResponse)
+async def rotate_note_share_token(
+    note_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+
+    existing_response = (
+        supabase
+        .table("notes")
+        .select("*")
+        .eq("id", note_id)
+        .single()
+        .execute()
+    )
+
+    if not existing_response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ノートが見つかりません")
+
+    note = existing_response.data
+    ensure_note_access(note, user_id)
+
+    visibility = note.get("visibility") or "private"
+    if visibility != "limited":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="限定公開ノートのみ共有URLを再発行できます")
+
+    new_token = _generate_share_token()
+    now_iso = datetime.utcnow().isoformat()
+
+    response = (
+        supabase
+        .table("notes")
+        .update({
+            "share_token": new_token,
+            "share_token_rotated_at": now_iso,
+            "updated_at": now_iso,
+        })
+        .eq("id", note_id)
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="共有URLの再発行に失敗しました")
+
+    updated_note = response.data[0]
+    salon_ids = _fetch_note_salon_ids(supabase, note_id)
     return map_note_detail(updated_note, salon_ids=salon_ids)
 
 
@@ -1158,6 +1337,10 @@ async def publish_note(
         "published_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
     }
+
+    if (note.get("visibility") or "private") == "limited" and not note.get("share_token"):
+        update_data["share_token"] = _generate_share_token()
+        update_data["share_token_rotated_at"] = datetime.utcnow().isoformat()
 
     response = supabase.table("notes").update(update_data).eq("id", note_id).execute()
     if not response.data:

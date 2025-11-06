@@ -5,6 +5,10 @@ from datetime import datetime
 from pydantic import BaseModel, Field, validator, root_validator
 
 
+# Visibility options for notes
+NoteVisibility = Literal["public", "limited", "private"]
+
+
 class NoteBlock(BaseModel):
     """Content block for note articles."""
 
@@ -28,6 +32,7 @@ class NoteCreateRequest(BaseModel):
     tax_inclusive: bool = Field(True, description="税込表示かどうか")
     categories: List[str] = Field(default_factory=list, description="カテゴリー一覧")
     salon_ids: List[str] = Field(default_factory=list, description="無料閲覧を許可するサロンID一覧")
+    visibility: NoteVisibility = Field("private", description="公開範囲 (public/limited/private)")
 
     @validator("content_blocks")
     def validate_blocks(cls, value: List[NoteBlock]) -> List[NoteBlock]:
@@ -110,6 +115,7 @@ class NoteUpdateRequest(BaseModel):
     tax_inclusive: Optional[bool] = None
     categories: Optional[List[str]] = Field(None, description="カテゴリー一覧")
     salon_ids: Optional[List[str]] = Field(None, description="無料閲覧を許可するサロンID一覧")
+    visibility: Optional[NoteVisibility] = Field(None, description="公開範囲 (public/limited/private)")
 
     @validator("price_points")
     def validate_price(cls, value: Optional[int]) -> Optional[int]:
@@ -187,6 +193,9 @@ class NoteSummaryResponse(BaseModel):
     official_share_x_user_id: Optional[str] = None
     official_share_x_username: Optional[str] = None
     official_share_set_at: Optional[datetime] = None
+    visibility: NoteVisibility = "private"
+    share_url: Optional[str] = None
+    share_token_rotated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
