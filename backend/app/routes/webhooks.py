@@ -14,7 +14,10 @@ from app.constants.subscription_plans import (
 )
 from app.services.one_lat import one_lat_client
 from app.services.payment_risk import evaluate_payment_order_risk
-from app.services.purchase_notifications import send_purchase_notification
+from app.services.purchase_notifications import (
+    send_purchase_notification,
+    send_seller_purchase_notification,
+)
 from app.services.platform_settings import get_platform_settings
 from supabase import Client
 import logging
@@ -103,22 +106,44 @@ def _fulfill_product_order(supabase: Client, order_row: Dict[str, Any]) -> Optio
         supabase.table("products").update(updates).eq("id", product_id).execute()
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to update product after payment", extra={"error": str(exc), "product_id": product_id})
+        payment_method_code = (order_row.get("payment_method") or "yen").lower()
+        if payment_method_code == "points":
+            payment_method_label = "ポイント決済"
+        elif payment_method_code in {"yen", "jpy"}:
+            payment_method_label = "円決済"
+        else:
+            payment_method_label = payment_method_code
+
         return {
             "content_title": product.get("title") or "商品",
             "seller_id": product.get("seller_id"),
+            "buyer_id": order_row.get("user_id"),
             "amount_jpy": order_row.get("amount_jpy") or (int(product.get("price_jpy") or 0) * quantity if product.get("price_jpy") else None),
             "points": None,
             "quantity": quantity,
             "content_type": "LP商品",
+            "payment_method": payment_method_label,
+            "purchased_at": datetime.now(timezone.utc),
         }
+
+    payment_method_code = (order_row.get("payment_method") or "yen").lower()
+    if payment_method_code == "points":
+        payment_method_label = "ポイント決済"
+    elif payment_method_code in {"yen", "jpy"}:
+        payment_method_label = "円決済"
+    else:
+        payment_method_label = payment_method_code
 
     return {
         "content_title": product.get("title") or "商品",
         "seller_id": product.get("seller_id"),
+        "buyer_id": order_row.get("user_id"),
         "amount_jpy": order_row.get("amount_jpy") or (int(product.get("price_jpy") or 0) * quantity if product.get("price_jpy") else None),
         "points": None,
         "quantity": quantity,
         "content_type": "LP商品",
+        "payment_method": payment_method_label,
+        "purchased_at": datetime.now(timezone.utc),
     }
 
 
@@ -153,13 +178,24 @@ def _fulfill_note_order(supabase: Client, order_row: Dict[str, Any]) -> Optional
         else:  # pragma: no cover - defensive
             logger.error("Failed to record note purchase", extra={"error": str(exc), "note_id": note_id, "user_id": user_id})
 
+    payment_method_code = (order_row.get("payment_method") or "yen").lower()
+    if payment_method_code == "points":
+        payment_method_label = "ポイント決済"
+    elif payment_method_code in {"yen", "jpy"}:
+        payment_method_label = "円決済"
+    else:
+        payment_method_label = payment_method_code
+
     return {
         "content_title": (note_data or {}).get("title") or "NOTE",
         "seller_id": (note_data or {}).get("author_id"),
+        "buyer_id": order_row.get("user_id"),
         "amount_jpy": order_row.get("amount_jpy") or (note_data or {}).get("price_jpy"),
         "points": None,
         "quantity": None,
         "content_type": "NOTE",
+        "payment_method": payment_method_label,
+        "purchased_at": datetime.now(timezone.utc),
     }
 
 
@@ -295,6 +331,40 @@ async def _process_payment_order(
                     extra={
                         "order_id": order_row.get("id"),
                         "user_id": merged_row.get("user_id"),
+                        "error": str(exc),
+                    },
+                )
+
+            try:
+                seller_payment_method = notification_context.get("payment_method")
+                if not seller_payment_method:
+                    amount_jpy = notification_context.get("amount_jpy")
+                    points_value = notification_context.get("points")
+                    if amount_jpy and points_value:
+                        seller_payment_method = "円 + ポイント決済"
+                    elif amount_jpy:
+                        seller_payment_method = "円決済"
+                    elif points_value:
+                        seller_payment_method = "ポイント決済"
+
+                send_seller_purchase_notification(
+                    supabase,
+                    seller_id=notification_context.get("seller_id"),
+                    content_title=notification_context.get("content_title", "コンテンツ"),
+                    content_type=notification_context.get("content_type", "コンテンツ"),
+                    buyer_id=notification_context.get("buyer_id") or merged_row.get("user_id"),
+                    amount_jpy=notification_context.get("amount_jpy"),
+                    points=notification_context.get("points"),
+                    quantity=notification_context.get("quantity"),
+                    payment_method=seller_payment_method,
+                    purchased_at=notification_context.get("purchased_at"),
+                )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "Failed to deliver seller purchase notification",
+                    extra={
+                        "order_id": order_row.get("id"),
+                        "seller_id": notification_context.get("seller_id"),
                         "error": str(exc),
                     },
                 )

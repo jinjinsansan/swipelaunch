@@ -20,7 +20,10 @@ from datetime import datetime
 
 from app.services.one_lat import one_lat_client
 from app.services.platform_settings import get_platform_settings
-from app.services.purchase_notifications import send_purchase_notification
+from app.services.purchase_notifications import (
+    send_purchase_notification,
+    send_seller_purchase_notification,
+)
 from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -939,6 +942,18 @@ async def purchase_product(
                 amount_jpy=None,
                 points=total_points,
                 quantity=data.quantity,
+            )
+
+            send_seller_purchase_notification(
+                supabase,
+                seller_id=product.get("seller_id"),
+                content_title=product.get("title", "商品"),
+                content_type="LP商品",
+                buyer_id=user.get("id"),
+                amount_jpy=None,
+                points=total_points,
+                quantity=data.quantity,
+                payment_method="ポイント決済",
             )
 
             return ProductPurchaseResponse(

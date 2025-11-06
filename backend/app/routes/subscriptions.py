@@ -28,7 +28,10 @@ from app.models.subscriptions import (
     UserSubscriptionResponse,
 )
 from app.services.one_lat import one_lat_client
-from app.services.purchase_notifications import send_purchase_notification
+from app.services.purchase_notifications import (
+    send_purchase_notification,
+    send_seller_purchase_notification,
+)
 from app.utils.auth import decode_access_token
 
 
@@ -213,6 +216,26 @@ async def get_subscription_session_status(
                     subscription_metadata["purchase_notification_sent"] = True
                     subscription_metadata["purchase_notification_id"] = notification_id
                     supabase.table("user_subscriptions").update({"metadata": subscription_metadata}).eq("id", subscription["id"]).execute()
+
+            seller_payment_method: Optional[str] = None
+            if amount_jpy and points_value:
+                seller_payment_method = "円 + ポイント決済"
+            elif amount_jpy:
+                seller_payment_method = "円決済"
+            elif points_value:
+                seller_payment_method = "ポイント決済"
+
+            send_seller_purchase_notification(
+                supabase,
+                seller_id=(salon_info or {}).get("owner_id") or seller_id,
+                content_title=(salon_info or {}).get("title") or (plan.label if plan else "サブスクリプション"),
+                content_type="オンラインサロン",
+                buyer_id=user_id,
+                amount_jpy=amount_jpy,
+                points=points_value,
+                quantity=1,
+                payment_method=seller_payment_method,
+            )
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.warning(
                 "Failed to deliver subscription notification",

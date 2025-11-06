@@ -225,3 +225,187 @@ def send_purchase_notification(
             },
         )
         return None
+
+
+def send_seller_purchase_notification(
+    supabase: Client,
+    *,
+    seller_id: Optional[str],
+    content_title: str,
+    content_type: str,
+    buyer_id: Optional[str] = None,
+    amount_jpy: Optional[int] = None,
+    points: Optional[int] = None,
+    quantity: Optional[int] = None,
+    payment_method: Optional[str] = None,
+    purchased_at: Optional[datetime] = None,
+    extra_lines: Optional[Sequence[str]] = None,
+) -> Optional[str]:
+    if not seller_id or not _is_valid_uuid(seller_id):
+        return None
+
+    try:
+        seller_resp = (
+            supabase
+            .table("users")
+            .select("email, username")
+            .eq("id", seller_id)
+            .maybe_single()
+            .execute()
+        )
+        seller_row = getattr(seller_resp, "data", None) or None
+        if not seller_row:
+            return None
+
+        seller_email: Optional[str] = (seller_row.get("email") or "").strip() or None
+        seller_name: Optional[str] = seller_row.get("username") or None
+
+        buyer_name: Optional[str] = None
+        if buyer_id and _is_valid_uuid(buyer_id):
+            buyer_resp = (
+                supabase
+                .table("users")
+                .select("username")
+                .eq("id", buyer_id)
+                .maybe_single()
+                .execute()
+            )
+            buyer_row = getattr(buyer_resp, "data", None) or None
+            if buyer_row:
+                buyer_name = buyer_row.get("username") or None
+
+        currency_text = _format_currency_jpy(amount_jpy)
+        points_text = _format_points(points)
+        payment_parts = [value for value in (currency_text, points_text) if value]
+        payment_summary = " / ".join(payment_parts) if payment_parts else None
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        purchased_at_text = (
+            purchased_at.isoformat()
+            if isinstance(purchased_at, datetime)
+            else now_iso
+        )
+
+        lines = [
+            "以下のコンテンツが購入されました。",
+            f"コンテンツ: 「{content_title}」 ({content_type})",
+        ]
+
+        if quantity and quantity > 1:
+            lines.append(f"数量: {quantity}")
+
+        if buyer_name:
+            lines.append(f"購入者: {buyer_name}")
+
+        if payment_method:
+            lines.append(f"決済方法: {payment_method}")
+
+        if payment_summary:
+            lines.append(f"お支払い内容: {payment_summary}")
+
+        lines.append(f"購入日時: {purchased_at_text}")
+
+        if extra_lines:
+            lines.extend(extra_lines)
+
+        lines.extend(
+            [
+                "",
+                "――――――――――――――――――",
+                "D-swipe",
+                "info@dlogicai.com",
+                "公式LINE: https://lin.ee/lYIZWhd",
+            ]
+        )
+
+        body_text = "\n".join(lines)
+        message_title = f"【販売報告】{content_title}"
+
+        message_payload = {
+            "title": message_title,
+            "body_text": body_text,
+            "body_html": None,
+            "category": "sales",
+            "priority": "normal",
+            "status": "sent",
+            "send_at": now_iso,
+            "created_by": None,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "admin_hidden": False,
+            "admin_archived_at": None,
+        }
+
+        message_resp = supabase.table("operator_messages").insert(message_payload).execute()
+        message_data = getattr(message_resp, "data", None)
+        if not message_data:
+            raise RuntimeError("operator_messages insert did not return a row")
+
+        message_obj = message_data[0] if isinstance(message_data, list) else message_data
+        message_id = message_obj.get("id") if isinstance(message_obj, dict) else None
+        if not message_id:
+            raise RuntimeError("operator_messages insert missing id")
+
+        recipient_payload = {
+            "message_id": message_id,
+            "user_id": seller_id,
+            "delivery_status": "delivered",
+            "archived": False,
+            "read_at": None,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        supabase.table("operator_message_recipients").insert(recipient_payload).execute()
+
+        sender_email = settings.mailgun_default_from_email
+        if not sender_email and settings.mailgun_domain:
+            sender_email = f"no-reply@{settings.mailgun_domain}"
+
+        sender_name = settings.mailgun_default_from_name or "D-swipe事務局"
+        reply_to = settings.mailgun_default_reply_to or "info@dlogicai.com"
+
+        if seller_email and mailgun.is_configured() and sender_email:
+            try:
+                accepted = mailgun.send_bulk_email_async(
+                    subject=message_title,
+                    text=body_text,
+                    html=None,
+                    recipients=[MailgunRecipient(email=seller_email, name=seller_name)],
+                    sender_email=sender_email,
+                    sender_name=sender_name,
+                    reply_to=reply_to,
+                )
+                if accepted:
+                    (
+                        supabase
+                        .table("operator_message_recipients")
+                        .update({
+                            "email_sent_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                        .eq("message_id", message_id)
+                        .eq("user_id", seller_id)
+                        .execute()
+                    )
+            except Exception as mail_exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "Failed to enqueue seller purchase notification email",
+                    extra={
+                        "seller_id": seller_id,
+                        "seller_email": seller_email,
+                        "error": str(mail_exc),
+                    },
+                )
+
+        return message_id
+
+    except Exception as exc:  # pragma: no cover - logging only
+        logger.warning(
+            "Failed to send seller purchase notification",
+            extra={
+                "seller_id": seller_id,
+                "content_title": content_title,
+                "content_type": content_type,
+                "error": str(exc),
+            },
+        )
+        return None
