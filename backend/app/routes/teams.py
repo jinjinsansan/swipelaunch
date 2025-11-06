@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from supabase import Client, create_client
 
@@ -537,5 +537,3 @@ async def remove_team_member(
         action="member_removed",
         target_user_id=member_user_id,
     )
-
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
