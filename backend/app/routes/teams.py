@@ -566,11 +566,7 @@ async def update_team_member(
     )
 
 
-@router.delete(
-    "/{team_id}/members/{member_user_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    response_class=Response,
-)
+@router.delete("/{team_id}/members/{member_user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_team_member(
     team_id: str,
     member_user_id: str,
