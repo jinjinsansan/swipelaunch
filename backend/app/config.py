@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     default_exchange_rate_usd_jpy: float = Field(default=147.0, env="DEFAULT_EXCHANGE_RATE_USD_JPY")
     default_exchange_spread_jpy: float = Field(default=3.0, env="DEFAULT_EXCHANGE_SPREAD_JPY")
     default_platform_fee_percent: float = Field(default=10.0, env="DEFAULT_PLATFORM_FEE_PERCENT")
+    account_share_invite_expiry_days: int = Field(default=7, env="ACCOUNT_SHARE_INVITE_EXPIRY_DAYS")
     
     # Security
     jwt_secret: str = "your-super-secret-jwt-key-change-this-in-production"
