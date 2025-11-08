@@ -1838,7 +1838,7 @@ class NoteAIService:
         system_prompt = (
             "あなたは優秀な編集者です。文脈を崩さずに文章の質を高め、目的に合わせた調整を行います。"
         )
-        user_prompt = f"""
+        user_prompt = f'''
 以下はNOTE記事の概要です。内容を把握したうえで、指定した段落をリライトしてください。
 
 {summary}
@@ -1857,7 +1857,7 @@ JSONで以下の形式で回答してください:
   "tone": "適用したトーン",
   "alternatives": ["追加案1", "追加案2"]
 }}
-"""
+'''
 
         result = NoteAIService._call_json_chat(system_prompt, user_prompt, temperature=0.65)
         revised_text = result.get("revised_text") or original_text
