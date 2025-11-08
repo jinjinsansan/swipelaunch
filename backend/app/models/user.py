@@ -29,6 +29,7 @@ class UserResponse(BaseModel):
     profile_image_url: Optional[str] = None
     last_login_at: Optional[datetime] = None
     x_connection_status: bool = False
+    preferred_locale: Literal["ja", "en"] = "ja"
     
     class Config:
         from_attributes = True
@@ -53,6 +54,7 @@ class ProfileUpdateRequest(BaseModel):
     sns_url: Optional[str] = Field(None, max_length=2048, description="SNSプロフィールURL")
     line_url: Optional[str] = Field(None, max_length=2048, description="公式LINEのURL")
     profile_image_url: Optional[str] = Field(None, max_length=2048, description="プロフィール画像URL")
+    preferred_locale: Optional[Literal["ja", "en"]] = Field(None, description="表示言語の優先設定")
 
     model_config = ConfigDict(extra="forbid")
 
@@ -76,6 +78,16 @@ class ProfileUpdateRequest(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("有効なURLを入力してください（httpまたはhttps）")
         return sanitized
+
+    @field_validator("preferred_locale")
+    @classmethod
+    def validate_locale(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        if normalized not in {"ja", "en"}:
+            raise ValueError("preferred_locale は 'ja' または 'en' を指定してください")
+        return normalized
 
 
 class GoogleAuthRequest(BaseModel):

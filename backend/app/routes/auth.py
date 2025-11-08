@@ -78,6 +78,11 @@ def build_user_response(user_info: dict) -> UserResponse:
             .execute()
         )
         has_x_connection = bool(x_connection and x_connection.data)
+    preferred_locale = user_info.get("preferred_locale") or "ja"
+    if isinstance(preferred_locale, str):
+        preferred_locale = preferred_locale.strip().lower() or "ja"
+    else:
+        preferred_locale = "ja"
     return UserResponse(
         id=user_info["id"],
         email=user_info["email"],
@@ -90,7 +95,8 @@ def build_user_response(user_info: dict) -> UserResponse:
         line_url=user_info.get("line_url"),
         profile_image_url=user_info.get("profile_image_url"),
         last_login_at=user_info.get("last_login_at"),
-        x_connection_status=has_x_connection
+        x_connection_status=has_x_connection,
+        preferred_locale=preferred_locale if preferred_locale in {"ja", "en"} else "ja",
     )
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -135,7 +141,8 @@ async def register(data: UserRegisterRequest):
             "sns_url": None,
             "line_url": None,
             "profile_image_url": None,
-            "last_login_at": None
+            "last_login_at": None,
+            "preferred_locale": "ja",
         }
         
         db_response = supabase.table("users").insert(user_data).execute()
@@ -430,6 +437,9 @@ async def update_profile(
 
         if data.profile_image_url is not None:
             update_data["profile_image_url"] = normalize_optional_text(data.profile_image_url)
+
+        if data.preferred_locale is not None:
+            update_data["preferred_locale"] = data.preferred_locale
 
         # 更新がある場合のみ実行
         if update_data:

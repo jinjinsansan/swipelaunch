@@ -38,6 +38,7 @@ from app.services.purchase_notifications import (
     send_seller_purchase_notification,
 )
 from app.services.note_content import augment_link_blocks
+from app.utils.locale import normalize_locale, locale_path_prefix, DEFAULT_LOCALE
 
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -73,11 +74,12 @@ def _generate_share_token() -> str:
     return secrets.token_urlsafe(16)
 
 
-def _build_share_url(token: Optional[str]) -> Optional[str]:
+def _build_share_url(token: Optional[str], locale: Optional[str] = None) -> Optional[str]:
     if not token:
         return None
     base_url = settings.frontend_url.rstrip("/")
-    return f"{base_url}/notes/share/{token}"
+    prefix = locale_path_prefix(locale)
+    return f"{base_url}{prefix}/notes/share/{token}"
 
 
 def get_supabase() -> Client:
@@ -172,7 +174,7 @@ def generate_unique_slug(supabase: Client, base_slug: str, exclude_note_id: Opti
         suffix += 1
 
 
-def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
+def map_note_summary(record: Dict[str, Any], *, locale: Optional[str] = None) -> NoteSummaryResponse:
     visibility = record.get("visibility") or ("public" if record.get("status") == "published" else "private")
     visibility = visibility if visibility in {"public", "limited", "private"} else "private"
     share_token = record.get("share_token") if visibility == "limited" else None
@@ -202,13 +204,13 @@ def map_note_summary(record: Dict[str, Any]) -> NoteSummaryResponse:
         official_share_x_username=record.get("official_share_x_username"),
         official_share_set_at=record.get("official_share_set_at"),
         visibility=visibility,
-        share_url=_build_share_url(share_token),
+        share_url=_build_share_url(share_token, locale),
         share_token_rotated_at=record.get("share_token_rotated_at"),
     )
 
 
-def map_note_detail(record: Dict[str, Any], salon_ids: Optional[List[str]] = None) -> NoteDetailResponse:
-    summary = map_note_summary(record)
+def map_note_detail(record: Dict[str, Any], salon_ids: Optional[List[str]] = None, *, locale: Optional[str] = None) -> NoteDetailResponse:
+    summary = map_note_summary(record, locale=locale)
     content_blocks = augment_link_blocks(record.get("content_blocks") or [])
     return NoteDetailResponse(
         **summary.dict(),
@@ -685,8 +687,10 @@ async def list_public_notes(
     search: Optional[str] = Query(None, min_length=1),
     categories: Optional[List[str]] = Query(None),
     author_username: Optional[str] = Query(None, min_length=1, max_length=120),
+    locale: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
     supabase = get_supabase()
+    _ = normalize_locale(locale)
 
     target_author_id: Optional[str] = None
     if author_username:
@@ -765,9 +769,11 @@ async def list_public_notes(
 async def get_public_note(
     slug: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    locale: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
     supabase = get_supabase()
     user_id = get_optional_user_id(credentials)
+    _ = normalize_locale(locale)
 
     response = (
         supabase
@@ -839,9 +845,11 @@ async def get_public_note(
 async def get_note_via_share_token(
     token: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    locale: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
     supabase = get_supabase()
     user_id = get_optional_user_id(credentials)
+    _ = normalize_locale(locale)
 
     response = (
         supabase
@@ -1424,6 +1432,7 @@ def _user_has_purchased(supabase: Client, note_id: str, user_id: str) -> bool:
 async def purchase_note(
     note_id: str,
     payment_method: Literal["points", "yen"] = Query("points"),
+    locale: Optional[str] = Query(None, min_length=2, max_length=5),
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     user_id = get_current_user_id(credentials)
@@ -1435,7 +1444,7 @@ async def purchase_note(
     user_response = (
         supabase
         .table("users")
-        .select("email, username, point_balance")
+        .select("email, username, point_balance, preferred_locale")
         .eq("id", user_id)
         .single()
         .execute()
@@ -1445,6 +1454,8 @@ async def purchase_note(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ユーザーが見つかりません")
 
     user_record = user_response.data
+    user_locale = normalize_locale(user_record.get("preferred_locale"))
+    requested_locale = normalize_locale(locale) if locale else user_locale
 
     note_response = (
         supabase
@@ -1525,7 +1536,7 @@ async def purchase_note(
                 buyer_id=user_id,
                 points=purchase_result.points_spent,
                 quantity=1,
-                payment_method="ポイント決済",
+                payment_method="points",
             )
 
         return purchase_result
@@ -1551,8 +1562,9 @@ async def purchase_note(
     frontend_url = settings.frontend_url.rstrip("/")
     webhook_url = f"{backend_url}/api/webhooks/one-lat"
     slug = note_record.get("slug")
-    success_path = f"/notes/{slug}/purchase/success" if slug else "/notes/purchase/success"
-    error_path = f"/notes/{slug}/purchase/error" if slug else "/notes/purchase/error"
+    locale_prefix = locale_path_prefix(requested_locale)
+    success_path = f"{locale_prefix}/notes/{slug}/purchase/success" if slug else f"{locale_prefix}/notes/purchase/success"
+    error_path = f"{locale_prefix}/notes/{slug}/purchase/error" if slug else f"{locale_prefix}/notes/purchase/error"
     success_url = f"{frontend_url}{success_path}?external_id={external_id}"
     error_url = f"{frontend_url}{error_path}?external_id={external_id}"
 
@@ -1586,6 +1598,7 @@ async def purchase_note(
         "note_slug": slug,
         "note_title": note_record.get("title"),
         "author_id": note_record.get("author_id"),
+        "locale": requested_locale,
     }
 
     order_payload = {

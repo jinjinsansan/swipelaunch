@@ -10,6 +10,7 @@ from supabase import Client
 from app.config import settings
 from app.services import mailgun
 from app.services.mailgun import MailgunRecipient
+from app.utils.locale import normalize_locale, DEFAULT_LOCALE
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ def _format_currency_jpy(amount: Optional[int]) -> Optional[str]:
     return f"¥{amount_int:,}"
 
 
-def _format_points(points: Optional[int]) -> Optional[str]:
+def _format_points(points: Optional[int], locale: str) -> Optional[str]:
     if points is None:
         return None
     try:
@@ -35,7 +36,7 @@ def _format_points(points: Optional[int]) -> Optional[str]:
         return None
     if points_int <= 0:
         return None
-    return f"{points_int:,}ポイント"
+    return f"{points_int:,}ポイント" if locale == "ja" else f"{points_int:,} points"
 
 
 def _is_valid_uuid(candidate: Optional[str]) -> bool:
@@ -46,6 +47,145 @@ def _is_valid_uuid(candidate: Optional[str]) -> bool:
     except (ValueError, TypeError):
         return False
     return True
+
+
+CONTENT_TYPE_LABELS = {
+    "ja": {
+        "NOTE": "NOTE",
+        "PRODUCT": "プロダクト",
+        "SALON": "サロン",
+        "SUBSCRIPTION": "サブスクリプション",
+    },
+    "en": {
+        "NOTE": "NOTE",
+        "PRODUCT": "Product",
+        "SALON": "Salon",
+        "SUBSCRIPTION": "Subscription",
+    },
+}
+
+
+PURCHASE_EMAIL_TEXT = {
+    "ja": {
+        "subject": "ご購入ありがとうございます：{title}",
+        "greeting": "ご購入ありがとうございました。",
+        "content": "ご購入コンテンツ: 「{title}」 ({content_type})",
+        "quantity": "数量: {quantity}",
+        "seller": "販売者: {seller}",
+        "payment": "お支払い内容: {summary}",
+        "contact": "デジタルコンテンツの詳細については、販売者へ直接お問い合わせください。",
+        "footer": [
+            "――――――――――――――――――",
+            "D-swipe",
+            "info@dlogicai.com",
+            "公式LINE: https://lin.ee/lYIZWhd",
+        ],
+        "sender_name": "D-swipe事務局",
+    },
+    "en": {
+        "subject": "Thank you for your purchase: {title}",
+        "greeting": "Thank you for your purchase.",
+        "content": "Purchased content: \"{title}\" ({content_type})",
+        "quantity": "Quantity: {quantity}",
+        "seller": "Seller: {seller}",
+        "payment": "Payment details: {summary}",
+        "contact": "If you have any questions about this digital content, please contact the seller directly.",
+        "footer": [
+            "――――――――――――――――――",
+            "D-swipe",
+            "info@dlogicai.com",
+            "Official LINE: https://lin.ee/lYIZWhd",
+        ],
+        "sender_name": "D-swipe Support",
+    },
+}
+
+
+SELLER_EMAIL_TEXT = {
+    "ja": {
+        "subject": "【販売報告】{title}",
+        "intro": "以下のコンテンツが購入されました。",
+        "content": "コンテンツ: 「{title}」 ({content_type})",
+        "quantity": "数量: {quantity}",
+        "buyer": "購入者: {buyer}",
+        "payment_method": "決済方法: {method}",
+        "payment": "お支払い内容: {summary}",
+        "purchased_at": "購入日時: {timestamp}",
+        "footer": [
+            "",
+            "――――――――――――――――――",
+            "D-swipe",
+            "info@dlogicai.com",
+            "公式LINE: https://lin.ee/lYIZWhd",
+        ],
+        "sender_name": "D-swipe事務局",
+    },
+    "en": {
+        "subject": "Sales notification: {title}",
+        "intro": "The following content has been purchased.",
+        "content": "Content: \"{title}\" ({content_type})",
+        "quantity": "Quantity: {quantity}",
+        "buyer": "Buyer: {buyer}",
+        "payment_method": "Payment method: {method}",
+        "payment": "Payment details: {summary}",
+        "purchased_at": "Purchase time: {timestamp}",
+        "footer": [
+            "",
+            "――――――――――――――――――",
+            "D-swipe",
+            "info@dlogicai.com",
+            "Official LINE: https://lin.ee/lYIZWhd",
+        ],
+        "sender_name": "D-swipe Support",
+    },
+}
+
+
+PAYMENT_METHOD_LABELS = {
+    "ja": {
+        "points": "ポイント決済",
+        "yen": "日本円決済",
+        "mixed": "円 + ポイント決済",
+        "subscription": "サブスクリプション",
+        "other": "その他",
+    },
+    "en": {
+        "points": "Point payment",
+        "yen": "JPY payment",
+        "mixed": "Mixed (JPY + points)",
+        "subscription": "Subscription",
+        "other": "Other",
+    },
+}
+
+
+def _localize_content_type(content_type: Optional[str], locale: str) -> str:
+    if not content_type:
+        return "Content" if locale == "en" else "コンテンツ"
+    key = str(content_type).upper()
+    labels = CONTENT_TYPE_LABELS.get(locale) or CONTENT_TYPE_LABELS[DEFAULT_LOCALE]
+    return labels.get(key, key)
+
+
+def _normalize_payment_method(raw_value: Optional[str]) -> str:
+    if not raw_value:
+        return "other"
+    value = str(raw_value).strip().lower()
+    if "ポイント" in raw_value:
+        return "points"
+    if "円" in raw_value:
+        if "ポイント" in raw_value:
+            return "mixed"
+        return "yen"
+    if "point" in value:
+        return "points"
+    if any(keyword in value for keyword in ("yen", "jpy")):
+        return "yen"
+    if "subscription" in value:
+        return "subscription"
+    if "mixed" in value:
+        return "mixed"
+    return "other"
 
 
 def send_purchase_notification(
@@ -59,12 +199,8 @@ def send_purchase_notification(
     points: Optional[int] = None,
     quantity: Optional[int] = None,
     extra_lines: Optional[Sequence[str]] = None,
-
 ) -> Optional[str]:
-    """Deliver a thank-you message to the buyer inbox via operator messages.
-
-    Returns ``True`` when the inbox notification was created successfully, otherwise ``False``.
-    """
+    """Deliver a localized thank-you message to the buyer inbox via operator messages."""
 
     if not buyer_id or not hasattr(supabase, "table"):
         return None
@@ -72,11 +208,12 @@ def send_purchase_notification(
     try:
         buyer_email: Optional[str] = None
         buyer_name: Optional[str] = None
+        buyer_locale: str = DEFAULT_LOCALE
 
         buyer_resp = (
             supabase
             .table("users")
-            .select("email, username")
+            .select("email, username, preferred_locale")
             .eq("id", buyer_id)
             .maybe_single()
             .execute()
@@ -85,6 +222,7 @@ def send_purchase_notification(
         if buyer_row:
             buyer_email = (buyer_row.get("email") or "").strip() or None
             buyer_name = buyer_row.get("username") or None
+            buyer_locale = normalize_locale(buyer_row.get("preferred_locale"))
 
         seller_name: Optional[str] = None
         if seller_id and _is_valid_uuid(seller_id):
@@ -101,43 +239,38 @@ def send_purchase_notification(
                 seller_name = seller_row.get("username")
 
         currency_text = _format_currency_jpy(amount_jpy)
-        points_text = _format_points(points)
+        points_text = _format_points(points, buyer_locale)
 
         payment_parts = [value for value in (currency_text, points_text) if value]
         payment_summary = " / ".join(payment_parts) if payment_parts else None
 
         now_iso = datetime.now(timezone.utc).isoformat()
+        translations = PURCHASE_EMAIL_TEXT.get(buyer_locale) or PURCHASE_EMAIL_TEXT[DEFAULT_LOCALE]
+        content_type_label = _localize_content_type(content_type, buyer_locale)
 
         lines = [
-            "ご購入ありがとうございました。",
-            f"ご購入コンテンツ: 「{content_title}」 ({content_type})",
+            translations["greeting"],
+            translations["content"].format(title=content_title, content_type=content_type_label),
         ]
 
         if quantity and quantity > 1:
-            lines.append(f"数量: {quantity}")
+            lines.append(translations["quantity"].format(quantity=quantity))
 
         if seller_name:
-            lines.append(f"販売者: {seller_name}")
+            lines.append(translations["seller"].format(seller=seller_name))
 
         if payment_summary:
-            lines.append(f"お支払い内容: {payment_summary}")
+            lines.append(translations["payment"].format(summary=payment_summary))
 
         if extra_lines:
             lines.extend(extra_lines)
 
-        lines.append("デジタルコンテンツの詳細については、販売者へ直接お問い合わせください。")
+        lines.append(translations["contact"])
         lines.append("")
-        lines.extend(
-            [
-                "――――――――――――――――――",
-                "D-swipe",
-                "info@dlogicai.com",
-                "公式LINE: https://lin.ee/lYIZWhd",
-            ]
-        )
+        lines.extend(translations["footer"])
 
         body_text = "\n".join(lines)
-        message_title = f"ご購入ありがとうございます：{content_title}"
+        message_title = translations["subject"].format(title=content_title)
 
         message_payload = {
             "title": message_title,
@@ -179,7 +312,8 @@ def send_purchase_notification(
         if not sender_email and settings.mailgun_domain:
             sender_email = f"no-reply@{settings.mailgun_domain}"
 
-        sender_name = settings.mailgun_default_from_name or "D-swipe事務局"
+        default_sender_name = translations["sender_name"]
+        sender_name = settings.mailgun_default_from_name or default_sender_name
         reply_to = settings.mailgun_default_reply_to or "info@dlogicai.com"
 
         if buyer_email and mailgun.is_configured() and sender_email:
@@ -248,7 +382,7 @@ def send_seller_purchase_notification(
         seller_resp = (
             supabase
             .table("users")
-            .select("email, username")
+            .select("email, username, preferred_locale")
             .eq("id", seller_id)
             .maybe_single()
             .execute()
@@ -259,6 +393,7 @@ def send_seller_purchase_notification(
 
         seller_email: Optional[str] = (seller_row.get("email") or "").strip() or None
         seller_name: Optional[str] = seller_row.get("username") or None
+        seller_locale = normalize_locale(seller_row.get("preferred_locale"))
 
         buyer_name: Optional[str] = None
         if buyer_id and _is_valid_uuid(buyer_id):
@@ -275,7 +410,7 @@ def send_seller_purchase_notification(
                 buyer_name = buyer_row.get("username") or None
 
         currency_text = _format_currency_jpy(amount_jpy)
-        points_text = _format_points(points)
+        points_text = _format_points(points, seller_locale)
         payment_parts = [value for value in (currency_text, points_text) if value]
         payment_summary = " / ".join(payment_parts) if payment_parts else None
 
@@ -286,40 +421,40 @@ def send_seller_purchase_notification(
             else now_iso
         )
 
+        translations = SELLER_EMAIL_TEXT.get(seller_locale) or SELLER_EMAIL_TEXT[DEFAULT_LOCALE]
+        content_type_label = _localize_content_type(content_type, seller_locale)
+        normalized_payment_method = _normalize_payment_method(payment_method)
+        payment_method_label = PAYMENT_METHOD_LABELS.get(seller_locale, PAYMENT_METHOD_LABELS[DEFAULT_LOCALE]).get(
+            normalized_payment_method,
+            PAYMENT_METHOD_LABELS[DEFAULT_LOCALE][normalized_payment_method],
+        )
+
         lines = [
-            "以下のコンテンツが購入されました。",
-            f"コンテンツ: 「{content_title}」 ({content_type})",
+            translations["intro"],
+            translations["content"].format(title=content_title, content_type=content_type_label),
         ]
 
         if quantity and quantity > 1:
-            lines.append(f"数量: {quantity}")
+            lines.append(translations["quantity"].format(quantity=quantity))
 
         if buyer_name:
-            lines.append(f"購入者: {buyer_name}")
+            lines.append(translations["buyer"].format(buyer=buyer_name))
 
-        if payment_method:
-            lines.append(f"決済方法: {payment_method}")
+        if payment_method_label:
+            lines.append(translations["payment_method"].format(method=payment_method_label))
 
         if payment_summary:
-            lines.append(f"お支払い内容: {payment_summary}")
+            lines.append(translations["payment"].format(summary=payment_summary))
 
-        lines.append(f"購入日時: {purchased_at_text}")
+        lines.append(translations["purchased_at"].format(timestamp=purchased_at_text))
 
         if extra_lines:
             lines.extend(extra_lines)
 
-        lines.extend(
-            [
-                "",
-                "――――――――――――――――――",
-                "D-swipe",
-                "info@dlogicai.com",
-                "公式LINE: https://lin.ee/lYIZWhd",
-            ]
-        )
+        lines.extend(translations["footer"])
 
         body_text = "\n".join(lines)
-        message_title = f"【販売報告】{content_title}"
+        message_title = translations["subject"].format(title=content_title)
 
         message_payload = {
             "title": message_title,
@@ -361,7 +496,8 @@ def send_seller_purchase_notification(
         if not sender_email and settings.mailgun_domain:
             sender_email = f"no-reply@{settings.mailgun_domain}"
 
-        sender_name = settings.mailgun_default_from_name or "D-swipe事務局"
+        default_sender_name = translations["sender_name"]
+        sender_name = settings.mailgun_default_from_name or default_sender_name
         reply_to = settings.mailgun_default_reply_to or "info@dlogicai.com"
 
         if seller_email and mailgun.is_configured() and sender_email:
