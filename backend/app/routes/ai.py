@@ -1,15 +1,32 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from app.models.ai import (
     AIWizardInput,
     AITextGenerationRequest,
     AITextGenerationResponse,
     AIImprovementSuggestion,
-    AIImprovementResponse
+    AIImprovementResponse,
+    NoteRewriteRequest,
+    NoteRewriteResponse,
+    NoteProofreadRequest,
+    NoteProofreadResponse,
+    NoteStructureRequest,
+    NoteStructureResponse,
+    NoteReviewRequest,
+    NoteReviewResponse,
 )
-from app.services.ai_service import AIService
+from app.services.ai_service import AIService, NoteAIService
 from app.routes.auth import get_current_user
+from app.config import settings
 
 router = APIRouter(prefix="/ai", tags=["AI"])
+
+
+def _ensure_ai_ready() -> None:
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI機能は現在利用できません。管理者にお問い合わせください。",
+        )
 
 @router.post("/wizard", response_model=dict)
 async def ai_wizard(
@@ -49,6 +66,64 @@ async def generate_text(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"テキスト生成エラー: {str(e)}")
+
+
+@router.post("/notes/rewrite", response_model=NoteRewriteResponse)
+async def rewrite_note_block(
+    request: NoteRewriteRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _ensure_ai_ready()
+    try:
+        return await NoteAIService.rewrite_block(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NOTEリライトに失敗しました: {exc}")
+
+
+@router.post("/notes/proofread", response_model=NoteProofreadResponse)
+async def proofread_note(
+    request: NoteProofreadRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _ensure_ai_ready()
+    try:
+        return await NoteAIService.proofread(request)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"NOTE校正に失敗しました: {exc}")
+
+
+@router.post("/notes/structure", response_model=NoteStructureResponse)
+async def suggest_note_structure(
+    request: NoteStructureRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _ensure_ai_ready()
+    try:
+        return await NoteAIService.suggest_structure(request)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"構成提案に失敗しました: {exc}")
+
+
+@router.post("/notes/review", response_model=NoteReviewResponse)
+async def review_note(
+    request: NoteReviewRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _ensure_ai_ready()
+    try:
+        return await NoteAIService.review(request)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"レビュー生成に失敗しました: {exc}")
 
 @router.post("/improve", response_model=dict)
 async def suggest_improvements(

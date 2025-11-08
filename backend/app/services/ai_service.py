@@ -6,7 +6,23 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from app.config import settings
-from app.models.ai import AIWizardInput, BonusItem, Testimonial
+from app.models.ai import (
+    AIWizardInput,
+    BonusItem,
+    Testimonial,
+    NoteAIContext,
+    NoteProofreadRequest,
+    NoteProofreadResponse,
+    NoteProofreadCorrection,
+    NoteRewriteRequest,
+    NoteRewriteResponse,
+    NoteStructureRequest,
+    NoteStructureResponse,
+    NoteStructureSuggestion,
+    NoteReviewRequest,
+    NoteReviewResponse,
+    NoteReviewIssue,
+)
 from app.services.template_mapper import (
     select_hero_for_business,
     get_hero_metadata,
@@ -1735,3 +1751,292 @@ LP情報:
         )
 
         return json.loads(response.choices[0].message.content)
+
+
+NOTE_AI_MODEL = "gpt-4o-mini"
+
+
+class NoteAIService:
+    """NOTE記事向けのAI補助機能"""
+
+    @staticmethod
+    def _ensure_enabled() -> None:
+        if not settings.openai_api_key:
+            raise RuntimeError("OpenAI API key is not configured.")
+
+    @staticmethod
+    def _block_text(block: Any) -> str:
+        text: Optional[str] = getattr(block, "text", None)
+        if not text and isinstance(block, dict):
+            text = block.get("text")  # type: ignore[assignment]
+        return str(text or "")
+
+    @staticmethod
+    def _build_context_summary(context: NoteAIContext) -> str:
+        lines: List[str] = [
+            f"タイトル: {context.title}",
+            f"概要: {context.excerpt or '（未設定）'}",
+        ]
+        if context.categories:
+            lines.append(f"カテゴリ: {', '.join(context.categories)}")
+        if context.audience:
+            lines.append(f"想定読者: {context.audience}")
+        if context.tone:
+            lines.append(f"希望トーン: {context.tone}")
+        lines.append("本文ブロック:")
+        for block in context.blocks:
+            snippet = block.text
+            if not snippet and isinstance(block.data, dict):
+                raw = block.data.get("text")
+                if isinstance(raw, str):
+                    snippet = raw
+                elif block.type == "list" and isinstance(block.data.get("items"), list):
+                    items = [str(item) for item in block.data["items"] if isinstance(item, str)]
+                    snippet = " / ".join(items[:4])
+            snippet = (snippet or "").strip()
+            if len(snippet) > 160:
+                snippet = snippet[:160] + "…"
+            lines.append(f"- [{block.type}] {block.id}: {snippet or '（内容なし）'}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _call_json_chat(system_prompt: str, user_prompt: str, temperature: float = 0.6) -> Dict[str, Any]:
+        client = get_openai_client()
+        response = client.chat.completions.create(
+            model=NOTE_AI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=temperature,
+        )
+        raw = response.choices[0].message.content if response.choices else None
+        if not raw:
+            return {}
+        return json.loads(raw)
+
+    @staticmethod
+    async def rewrite_block(request: NoteRewriteRequest) -> NoteRewriteResponse:
+        NoteAIService._ensure_enabled()
+        context = request.context
+        summary = NoteAIService._build_context_summary(context)
+        target = next((block for block in context.blocks if block.id == request.target_block_id), None)
+        if not target:
+            raise ValueError("Target block not found in context")
+        original_text = (target.text or "").strip()
+        if not original_text and isinstance(target.data, dict):
+            raw = target.data.get("text")
+            if isinstance(raw, str):
+                original_text = raw.strip()
+        if not original_text:
+            raise ValueError("Target block does not contain rewritable text")
+
+        instructions = request.instructions or "読みやすさと説得力を高めてください。"
+        style_hint = request.style_hint or context.tone or "自然で信頼感のある日本語"
+
+        system_prompt = (
+            "あなたは優秀な編集者です。文脈を崩さずに文章の質を高め、目的に合わせた調整を行います。"
+        )
+        user_prompt = f"""
+以下はNOTE記事の概要です。内容を把握したうえで、指定した段落をリライトしてください。
+
+{summary}
+
+対象ブロックID: {target.id}
+元の文章:
+"""{original_text}"""
+
+指示: {instructions}
+トーンの希望: {style_hint}
+
+JSONで以下の形式で回答してください:
+{{
+  "revised_text": "リライト後の文章",
+  "reasoning": "変更の意図",
+  "tone": "適用したトーン",
+  "alternatives": ["追加案1", "追加案2"]
+}}
+"""
+
+        result = NoteAIService._call_json_chat(system_prompt, user_prompt, temperature=0.65)
+        revised_text = result.get("revised_text") or original_text
+        reasoning = result.get("reasoning")
+        tone_applied = result.get("tone") or style_hint
+        alternatives = result.get("alternatives") if isinstance(result.get("alternatives"), list) else None
+
+        return NoteRewriteResponse(
+            block_id=target.id,
+            original_text=original_text,
+            revised_text=revised_text,
+            reasoning=reasoning,
+            tone_applied=tone_applied,
+            alternatives=alternatives,
+        )
+
+    @staticmethod
+    async def proofread(request: NoteProofreadRequest) -> NoteProofreadResponse:
+        NoteAIService._ensure_enabled()
+        context = request.context
+        summary = NoteAIService._build_context_summary(context)
+        focus = request.focus or "spelling"
+
+        system_prompt = "あなたは日本語の校正者です。誤字脱字、文体の整合性、語尾の統一も確認します。"
+        user_prompt = f"""
+以下のNOTE記事について、{focus} を中心に校正結果を提示してください。
+
+{summary}
+
+JSON形式で以下の通りに回答してください:
+{{
+  "summary": "全体的な所感",
+  "corrections": [
+    {{
+      "block_id": "対象ブロックID",
+      "original": "修正前の表現",
+      "suggestion": "修正案",
+      "explanation": "理由"
+    }}
+  ]
+}}
+"""
+
+        result = NoteAIService._call_json_chat(system_prompt, user_prompt, temperature=0.4)
+        corrections_payload = result.get("corrections") if isinstance(result.get("corrections"), list) else []
+        corrections: List[NoteProofreadCorrection] = []
+        for item in corrections_payload:
+            block_id = item.get("block_id")
+            original = item.get("original")
+            suggestion = item.get("suggestion")
+            if not (block_id and original and suggestion):
+                continue
+            corrections.append(
+                NoteProofreadCorrection(
+                    block_id=block_id,
+                    original=original,
+                    suggestion=suggestion,
+                    explanation=item.get("explanation"),
+                )
+            )
+
+        return NoteProofreadResponse(
+            summary=result.get("summary"),
+            corrections=corrections,
+        )
+
+    @staticmethod
+    async def suggest_structure(request: NoteStructureRequest) -> NoteStructureResponse:
+        NoteAIService._ensure_enabled()
+        context = request.context
+        summary = NoteAIService._build_context_summary(context)
+        goal = request.desired_outcome or "読者の理解と購買意欲を高める"
+
+        system_prompt = "あなたは構成編集の専門家です。読みやすさと説得力を両立させる提案を行います。"
+        user_prompt = f"""
+以下のNOTE記事を読み、構成と流れを改善するための提案を最大3つ提示してください。
+
+{summary}
+
+目標: {goal}
+
+JSON形式で回答してください:
+{{
+  "outline": ["提案後の簡易アウトライン"],
+  "suggestions": [
+    {{
+      "title": "提案タイトル",
+      "description": "提案の詳細",
+      "action": "insert|reorder|expand|trim",
+      "block_id": "関連ブロックID",
+      "suggested_text": "挿入や修正の例"
+    }}
+  ]
+}}
+"""
+
+        result = NoteAIService._call_json_chat(system_prompt, user_prompt, temperature=0.5)
+        outline = result.get("outline") if isinstance(result.get("outline"), list) else None
+        suggestions_raw = result.get("suggestions") if isinstance(result.get("suggestions"), list) else []
+        suggestions: List[NoteStructureSuggestion] = []
+        for item in suggestions_raw:
+            title = item.get("title")
+            description = item.get("description")
+            if not title or not description:
+                continue
+            action = item.get("action") or "insert"
+            if action not in {"insert", "reorder", "expand", "trim"}:
+                action = "insert"
+            suggestions.append(
+                NoteStructureSuggestion(
+                    title=title,
+                    description=description,
+                    action=action,  # type: ignore[arg-type]
+                    block_id=item.get("block_id"),
+                    suggested_text=item.get("suggested_text"),
+                )
+            )
+
+        return NoteStructureResponse(suggestions=suggestions, outline=outline)
+
+    @staticmethod
+    async def review(request: NoteReviewRequest) -> NoteReviewResponse:
+        NoteAIService._ensure_enabled()
+        context = request.context
+        summary = NoteAIService._build_context_summary(context)
+
+        system_prompt = "あなたは編集長です。記事全体を評価し、改善すべき点を示してください。"
+        user_prompt = f"""
+以下のNOTE記事を評価し、読者体験と説得力の観点からフィードバックを提示してください。
+
+{summary}
+
+JSON形式で回答してください:
+{{
+  "score": 0-100 の整数,
+  "summary": "全体講評",
+  "issues": [
+    {{
+      "severity": "info|warn|error",
+      "message": "指摘内容",
+      "block_id": "対象ブロックID",
+      "field": "任意のフィールド"
+    }}
+  ],
+  "recommended_actions": ["次のステップ"]
+}}
+"""
+
+        result = NoteAIService._call_json_chat(system_prompt, user_prompt, temperature=0.45)
+        score = result.get("score")
+        if not isinstance(score, int):
+            score = 75
+        summary_text = result.get("summary") or "全体として読みやすい記事です。"
+        issues_raw = result.get("issues") if isinstance(result.get("issues"), list) else []
+        issues: List[NoteReviewIssue] = []
+        for item in issues_raw:
+            message = item.get("message")
+            severity = item.get("severity") or "info"
+            if not message:
+                continue
+            if severity not in {"info", "warn", "error"}:
+                severity = "info"
+            issues.append(
+                NoteReviewIssue(
+                    severity=severity,  # type: ignore[arg-type]
+                    message=message,
+                    block_id=item.get("block_id"),
+                    field=item.get("field"),
+                )
+            )
+
+        recommended_actions = result.get("recommended_actions")
+        if not isinstance(recommended_actions, list):
+            recommended_actions = []
+
+        return NoteReviewResponse(
+            score=score,
+            summary=summary_text,
+            issues=issues,
+            recommended_actions=recommended_actions,
+        )
+

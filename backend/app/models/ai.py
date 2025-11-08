@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any, Literal
 
 
 class BonusItem(BaseModel):
@@ -111,3 +111,90 @@ class AIImprovementResponse(BaseModel):
     suggestions: List[Dict[str, Any]]
     priority: str  # 'high', 'medium', 'low'
     reasoning: str
+
+
+class NoteBlockPayload(BaseModel):
+    id: str
+    type: str
+    access: Optional[str] = None
+    text: Optional[str] = None
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NoteAIContext(BaseModel):
+    title: str
+    excerpt: Optional[str] = None
+    categories: List[str] = Field(default_factory=list)
+    tone: Optional[str] = None
+    audience: Optional[str] = None
+    language: Literal["ja", "en"] = "ja"
+    blocks: List[NoteBlockPayload]
+
+
+class NoteRewriteRequest(BaseModel):
+    context: NoteAIContext
+    target_block_id: str
+    instructions: Optional[str] = None
+    style_hint: Optional[str] = None
+
+
+class NoteRewriteResponse(BaseModel):
+    block_id: str
+    original_text: str
+    revised_text: str
+    reasoning: Optional[str] = None
+    tone_applied: Optional[str] = None
+    alternatives: Optional[List[str]] = None
+
+
+class NoteProofreadRequest(BaseModel):
+    context: NoteAIContext
+    focus: Optional[Literal["spelling", "style", "consistency"]] = None
+
+
+class NoteProofreadCorrection(BaseModel):
+    block_id: str
+    original: str
+    suggestion: str
+    explanation: Optional[str] = None
+
+
+class NoteProofreadResponse(BaseModel):
+    corrections: List[NoteProofreadCorrection]
+    summary: Optional[str] = None
+
+
+class NoteStructureSuggestion(BaseModel):
+    block_id: Optional[str] = None
+    title: str
+    description: str
+    action: Literal["insert", "reorder", "expand", "trim"] = "insert"
+    suggested_text: Optional[str] = None
+
+
+class NoteStructureRequest(BaseModel):
+    context: NoteAIContext
+    desired_outcome: Optional[str] = None
+
+
+class NoteStructureResponse(BaseModel):
+    suggestions: List[NoteStructureSuggestion]
+    outline: Optional[List[str]] = None
+
+
+class NoteReviewRequest(BaseModel):
+    context: NoteAIContext
+
+
+class NoteReviewIssue(BaseModel):
+    severity: Literal["info", "warn", "error"]
+    message: str
+    block_id: Optional[str] = None
+    field: Optional[str] = None
+
+
+class NoteReviewResponse(BaseModel):
+    score: int
+    summary: str
+    issues: List[NoteReviewIssue]
+    recommended_actions: List[str] = Field(default_factory=list)
