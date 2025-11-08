@@ -1834,6 +1834,12 @@ class NoteAIService:
 
         instructions = request.instructions or "読みやすさと説得力を高めてください。"
         style_hint = request.style_hint or context.tone or "自然で信頼感のある日本語"
+        original_line_count = max(
+            1,
+            len([line for line in original_text.splitlines() if line.strip()]),
+        )
+        original_length = max(1, len(original_text))
+        block_type = target.type
 
         system_prompt = (
             "あなたは優秀な編集者です。文脈を崩さずに文章の質を高め、目的に合わせた調整を行います。"
@@ -1844,11 +1850,22 @@ class NoteAIService:
 {summary}
 
 対象ブロックID: {target.id}
+ブロックタイプ: {block_type}
 元の文章:
 """{original_text}"""
 
 指示: {instructions}
 トーンの希望: {style_hint}
+原文の段落数: {original_line_count}
+原文の文字数: {original_length}
+
+必ず守ること:
+- 重要な事実や具体例、数値などの情報を削除しない
+- 文章量は原文の80%〜120%程度を維持し、極端に短くしない
+- 改行位置と段落構造をできる限り維持する（段落の削除は禁止）
+- 箇条書きの場合は項目数・順序を変えずに各項目を自然な表現へ整える
+- 原文になかった情報を作り足さない
+- 自然で読みやすい日本語に整える
 
 JSONで以下の形式で回答してください:
 {{
@@ -1860,10 +1877,37 @@ JSONで以下の形式で回答してください:
 '''
 
         result = NoteAIService._call_json_chat(system_prompt, user_prompt, temperature=0.65)
-        revised_text = result.get("revised_text") or original_text
-        reasoning = result.get("reasoning")
-        tone_applied = result.get("tone") or style_hint
-        alternatives = result.get("alternatives") if isinstance(result.get("alternatives"), list) else None
+        revised_text_raw = result.get("revised_text")
+        revised_text = revised_text_raw if isinstance(revised_text_raw, str) else ""
+        revised_text = revised_text.strip()
+        reasoning_raw = result.get("reasoning")
+        reasoning = reasoning_raw if isinstance(reasoning_raw, str) else None
+        tone_raw = result.get("tone")
+        tone_applied = tone_raw if isinstance(tone_raw, str) and tone_raw else style_hint
+        alternatives_raw = result.get("alternatives")
+        alternatives = (
+            [item for item in alternatives_raw if isinstance(item, str)]
+            if isinstance(alternatives_raw, list)
+            else None
+        )
+
+        if not revised_text:
+            revised_text = original_text
+            fallback_note = "AIの提案が空だったため原文を維持しました。"
+            reasoning = fallback_note if reasoning is None else f"{reasoning}\n{fallback_note}"
+
+        if len(revised_text) < max(20, int(original_length * 0.7)):
+            fallback_note = "AIの提案が原文より短すぎたため原文を維持しました。"
+            revised_text = original_text
+            reasoning = fallback_note if reasoning is None else f"{reasoning}\n{fallback_note}"
+
+        if original_line_count > 1:
+            original_paragraphs = [line for line in original_text.splitlines() if line.strip()]
+            revised_paragraphs = [line for line in revised_text.splitlines() if line.strip()]
+            if len(revised_paragraphs) < original_line_count:
+                fallback_note = "AIの提案が段落構造を維持できなかったため原文を維持しました。"
+                revised_text = original_text
+                reasoning = fallback_note if reasoning is None else f"{reasoning}\n{fallback_note}"
 
         return NoteRewriteResponse(
             block_id=target.id,
