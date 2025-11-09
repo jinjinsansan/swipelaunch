@@ -1809,7 +1809,30 @@ class NoteAIService:
         text: Optional[str] = getattr(block, "text", None)
         if not text and isinstance(block, dict):
             text = block.get("text")  # type: ignore[assignment]
-        return str(text or "")
+        if text:
+            return str(text)
+
+        data: Optional[Dict[str, Any]] = None
+        if hasattr(block, "data"):
+            possible = getattr(block, "data")
+            if isinstance(possible, dict):
+                data = possible
+        elif isinstance(block, dict):
+            possible = block.get("data")
+            if isinstance(possible, dict):
+                data = possible
+
+        if data:
+            raw_text = data.get("text")
+            if isinstance(raw_text, str) and raw_text.strip():
+                return raw_text
+            items = data.get("items")
+            if isinstance(items, list):
+                collected = [str(item).strip() for item in items if isinstance(item, str) and item.strip()]
+                if collected:
+                    return "\n".join(collected)
+
+        return ""
 
     @staticmethod
     def _build_context_summary(context: NoteAIContext) -> str:
@@ -1963,6 +1986,39 @@ class NoteAIService:
             cohort_id=cohort_id,
             parameters=parameters,
         )
+
+    @staticmethod
+    def _normalize_line_endings(text: str) -> str:
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    @staticmethod
+    def _apply_proofread_suggestion(original_text: str, snippet: str, suggestion: str) -> str:
+        original = NoteAIService._normalize_line_endings(original_text)
+        needle = NoteAIService._normalize_line_endings(snippet)
+        replacement = NoteAIService._normalize_line_endings(suggestion)
+
+        if not original:
+            return replacement
+
+        if needle and needle in original:
+            return original.replace(needle, replacement, 1)
+
+        collapsed_original = re.sub(r"\s+", " ", original)
+        collapsed_needle = re.sub(r"\s+", " ", needle)
+        collapsed_replacement = re.sub(r"\s+", " ", replacement)
+
+        if needle and collapsed_needle in collapsed_original:
+            # When only spacing differs, prefer using collapsed substitution but fall back to replacement structure.
+            if replacement.strip():
+                return replacement
+            return original
+
+        # If replacement is empty, keep original text. Otherwise prefer replacement when longer than snippet heuristic.
+        if replacement.strip():
+            if not needle or len(replacement) >= len(needle) or len(original) <= len(replacement) * 1.1:
+                return replacement
+
+        return original
 
     @staticmethod
     def _evaluate_compliance(text: str) -> NoteRewriteCompliance:
@@ -2337,6 +2393,8 @@ JSON形式で以下のように回答してください:
         summary = NoteAIService._build_context_summary(context)
         focus = request.focus or "spelling"
 
+        block_lookup: Dict[str, Any] = {str(block.id): block for block in context.blocks if getattr(block, "id", None)}
+
         system_prompt = "あなたは日本語の校正者です。誤字脱字、文体の整合性、語尾の統一も確認します。"
         user_prompt = f"""
 以下のNOTE記事について、{focus} を中心に校正結果を提示してください。
@@ -2349,8 +2407,8 @@ JSON形式で以下の通りに回答してください:
   "corrections": [
     {{
       "block_id": "対象ブロックID",
-      "original": "修正前の表現",
-      "suggestion": "修正案",
+      "original": "修正前の表現（原文から抜粋）",
+      "suggestion": "該当ブロック全体の修正後テキスト（段落や改行を含めて完全に出力）",
       "explanation": "理由"
     }}
   ]
@@ -2366,11 +2424,14 @@ JSON形式で以下の通りに回答してください:
             suggestion = item.get("suggestion")
             if not (block_id and original and suggestion):
                 continue
+            block = block_lookup.get(str(block_id))
+            block_text = NoteAIService._block_text(block) if block else ""
+            applied = NoteAIService._apply_proofread_suggestion(block_text, str(original), str(suggestion))
             corrections.append(
                 NoteProofreadCorrection(
                     block_id=block_id,
                     original=original,
-                    suggestion=suggestion,
+                    suggestion=applied,
                     explanation=item.get("explanation"),
                 )
             )
