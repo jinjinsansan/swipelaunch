@@ -244,6 +244,7 @@ class NoteStructureSuggestion(BaseModel):
     description: str
     action: Literal["insert", "reorder", "expand", "trim"] = "insert"
     suggested_text: Optional[str] = None
+    suggested_block_type: Optional[Literal["paragraph", "heading", "quote", "list"]] = None
 
 
 class NoteStructureRequest(BaseModel):

@@ -1928,6 +1928,8 @@ class NoteAIService:
         metrics: NoteRewriteMetrics,
         original_stats: Dict[str, int],
         warnings: List[str],
+        block_type: Optional[str],
+        revised_text: str,
     ) -> int:
         score = 100.0
 
@@ -1957,6 +1959,19 @@ class NoteAIService:
             score -= 10  # 変化がない場合は減点
 
         score -= min(40, len(warnings) * 6)
+
+        if block_type == "heading":
+            if "\n" in revised_text:
+                score -= 35
+            if len(revised_text.strip()) > 60:
+                score -= min(30, len(revised_text.strip()) - 60)
+        elif block_type == "list":
+            if metrics.bullet_count == 0:
+                score -= 35
+        elif block_type == "quote":
+            paragraph_gap = metrics.paragraph_count - max(1, original_stats["paragraph_count"])
+            if paragraph_gap > 1:
+                score -= min(20, paragraph_gap * 8)
 
         return max(0, min(100, int(round(score))))
 
@@ -1990,6 +2005,14 @@ class NoteAIService:
     @staticmethod
     def _normalize_line_endings(text: str) -> str:
         return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    @staticmethod
+    def _sanitize_heading_text(text: str) -> str:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return ""
+        heading = re.sub(r"\s+", " ", lines[0])
+        return heading[:80]
 
     @staticmethod
     def _apply_proofread_suggestion(original_text: str, snippet: str, suggestion: str) -> str:
@@ -2113,6 +2136,45 @@ class NoteAIService:
             request.target_block_id,
         )
 
+        block_type_label = {
+            "paragraph": "本文",
+            "heading": "見出し",
+            "quote": "引用",
+            "list": "箇条書き",
+        }.get(block_type or "paragraph", str(block_type))
+
+        type_requirements: List[str] = []
+        if block_type == "heading":
+            type_requirements.extend(
+                [
+                    "見出しは1行で完結にまとめ、60文字以内を目安にする",
+                    "終止符（。や！など）は可能な限り付けず、キーワードを並べて印象を高める",
+                ]
+            )
+        elif block_type == "list":
+            type_requirements.extend(
+                [
+                    "各項目は箇条書きの形式（- ・ 1. などの記号）を維持する",
+                    "項目数や順序を大きく変えず、内容の磨き込みに集中する",
+                ]
+            )
+        elif block_type == "quote":
+            type_requirements.extend(
+                [
+                    "引用の趣旨を尊重しつつ、句読点や改行を整えて読みやすくする",
+                    "引用でない新しい主張や要素を追加しない",
+                ]
+            )
+
+        base_requirements = [
+            "重要な事実や具体例、数値などの情報を削除しない",
+            "文章量は原文の80%〜120%程度で維持する",
+            "段落構造や箇条書きの項目数を保ちつつ、表現を自然な日本語へ整える",
+            "原文になかった情報や主張を無断で付け足さない",
+            "各候補は互いに十分な差異をつけ、編集方針が分かるようにする",
+        ]
+        requirements_text = "\n".join([f"- {item}" for item in base_requirements + type_requirements])
+
         system_prompt = (
             "あなたは優秀な編集者です。文脈を崩さずに文章の質を高め、複数の改善案を提示します。"
         )
@@ -2122,18 +2184,14 @@ class NoteAIService:
 {summary}
 
 対象ブロックID: {target.id}
-ブロックタイプ: {block_type}
+ブロックタイプ: {block_type_label} ({block_type})
 元の文章:
 """{original_text}"""
 
 指示: {instructions}
 トーンの希望: {style_hint}
 必ず守ること:
-- 重要な事実や具体例、数値などの情報を削除しない
-- 文章量は原文の80%〜120%程度で維持する
-- 段落構造や箇条書きの項目数を保ちつつ、表現を自然な日本語へ整える
-- 原文になかった情報や主張を無断で付け足さない
-- 各候補は互いに十分な差異をつけ、編集方針が分かるようにする
+{requirements_text}
 
 JSON形式で以下のように回答してください:
 {{
@@ -2181,7 +2239,14 @@ JSON形式で以下のように回答してください:
             revised_text = revised.strip()
             if not revised_text:
                 continue
+            revised_text = NoteAIService._normalize_line_endings(revised_text)
 
+            heading_adjusted = False
+            if block_type == "heading":
+                sanitized_heading = NoteAIService._sanitize_heading_text(revised_text)
+                if sanitized_heading != revised_text:
+                    heading_adjusted = True
+                    revised_text = sanitized_heading
             title_raw = payload.get("title")
             title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else f"候補{index + 1}"
             reasoning_raw = payload.get("reasoning") or payload.get("analysis")
@@ -2193,6 +2258,9 @@ JSON形式で以下のように回答してください:
             strengths = [str(item).strip() for item in strengths_raw if isinstance(item, str) and item.strip()] if isinstance(strengths_raw, list) else []
             warnings_raw = payload.get("warnings")
             warnings = [str(item).strip() for item in warnings_raw if isinstance(item, str) and item.strip()] if isinstance(warnings_raw, list) else []
+
+            if heading_adjusted:
+                warnings.append("見出しは1行で整理してください。")
 
             metrics = NoteAIService._build_metrics(original_text, revised_text)
 
@@ -2206,6 +2274,18 @@ JSON形式で以下のように回答してください:
 
             if original_stats["bullet_count"] > 0 and metrics.bullet_count != original_stats["bullet_count"]:
                 warnings.append("箇条書きの項目数が原文と一致していません。")
+
+            if block_type == "heading":
+                if "\n" in revised_text:
+                    warnings.append("見出しは改行を含めず1行で記述してください。")
+                if len(revised_text.strip()) > 60:
+                    warnings.append("見出しは60文字以内に収めてください。")
+            elif block_type == "list":
+                if metrics.bullet_count == 0:
+                    warnings.append("箇条書きの形式を維持してください。")
+            elif block_type == "quote":
+                if metrics.paragraph_count > max(1, original_stats["paragraph_count"]) + 1:
+                    warnings.append("引用ブロックが冗長です。段落を整理してください。")
 
             if revised_text == original_text:
                 warnings.append("原文と内容がほとんど変わっていません。")
@@ -2223,7 +2303,14 @@ JSON形式で以下のように回答してください:
             strengths = list(dict.fromkeys(strengths))
             warnings = list(dict.fromkeys(warnings))
 
-            score = NoteAIService._score_candidate(original_text, metrics, original_stats, warnings)
+            score = NoteAIService._score_candidate(
+                original_text,
+                metrics,
+                original_stats,
+                warnings,
+                block_type,
+                revised_text,
+            )
             if compliance.status == "block":
                 score = min(score, 10)
             elif compliance.status == "caution":
@@ -2250,7 +2337,14 @@ JSON形式で以下のように回答してください:
             revised_text=original_text,
             reasoning="変更を適用しない場合はこちらを選択してください。",
             tone_applied=context.tone or "原文",
-            score=NoteAIService._score_candidate(original_text, original_metrics, original_stats, ["原文と同一です。"]),
+            score=NoteAIService._score_candidate(
+                original_text,
+                original_metrics,
+                original_stats,
+                ["原文と同一です。"],
+                block_type,
+                original_text,
+            ),
             metrics=original_metrics,
             strengths=["内容をそのまま維持します。"],
             warnings=["原文と同一です。"],
@@ -2456,6 +2550,12 @@ JSON形式で以下の通りに回答してください:
 
 目標: {goal}
 
+補足条件:
+- suggested_text には説明文ではなく、そのままNOTEに挿入できる完成済みの文章を記載する（1〜3段落程度）
+- action が reorder または trim の場合は suggested_text を空文字にしてもよい
+- suggested_block_type には paragraph・heading・list・quote のいずれかを指定し、該当しない場合は null を指定する
+- 構成変更だけでなく、必要に応じて完成した見出しや本文の例も提示する
+
 JSON形式で回答してください:
 {{
   "outline": ["提案後の簡易アウトライン"],
@@ -2465,7 +2565,8 @@ JSON形式で回答してください:
       "description": "提案の詳細",
       "action": "insert|reorder|expand|trim",
       "block_id": "関連ブロックID",
-      "suggested_text": "挿入や修正の例"
+      "suggested_block_type": "paragraph|heading|list|quote|null",
+      "suggested_text": "挿入や修正の例（挿入不要な場合は空文字）"
     }}
   ]
 }}
@@ -2483,13 +2584,32 @@ JSON形式で回答してください:
             action = item.get("action") or "insert"
             if action not in {"insert", "reorder", "expand", "trim"}:
                 action = "insert"
+            raw_text = item.get("suggested_text") if isinstance(item.get("suggested_text"), str) else None
+            suggested_text = None
+            if isinstance(raw_text, str):
+                normalized_text = NoteAIService._normalize_line_endings(raw_text).strip()
+                if normalized_text:
+                    suggested_text = normalized_text
+
+            block_type_hint_raw = item.get("suggested_block_type")
+            block_type_hint = block_type_hint_raw.lower() if isinstance(block_type_hint_raw, str) else None
+            if block_type_hint not in {"paragraph", "heading", "list", "quote"}:
+                block_type_hint = None
+
+            if action in {"reorder", "trim"}:
+                suggested_text = None
+
+            if suggested_text and suggested_text.strip() == description.strip():
+                suggested_text = None
+
             suggestions.append(
                 NoteStructureSuggestion(
                     title=title,
                     description=description,
                     action=action,  # type: ignore[arg-type]
                     block_id=item.get("block_id"),
-                    suggested_text=item.get("suggested_text"),
+                    suggested_text=suggested_text,
+                    suggested_block_type=block_type_hint,  # type: ignore[arg-type]
                 )
             )
 
