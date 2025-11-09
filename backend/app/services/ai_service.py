@@ -1962,7 +1962,7 @@ class NoteAIService:
         score -= min(40, len(warnings) * 6)
 
         if tone_not_applied:
-            score -= 40
+            score -= 60
 
         if block_type == "heading":
             if "\n" in revised_text:
@@ -2124,6 +2124,12 @@ class NoteAIService:
 
         instructions = request.instructions or "読みやすさと説得力を高めてください。"
         style_hint = request.style_hint or context.tone or "自然で信頼感のある日本語"
+        if request.style_hint:
+            tone_instruction = (
+                f"文章全体を「{style_hint}」のトーンに書き換えてください。語尾・助詞・語彙の選び方もそのトーンに統一し、"
+                "原文の意味や事実は維持しつつ話し言葉のニュアンスを出してください。"
+            )
+            instructions = f"{instructions}\n{tone_instruction}" if instructions else tone_instruction
         block_type = target.type
         original_stats = {
             "length": len(original_text),
@@ -2187,6 +2193,8 @@ class NoteAIService:
         system_prompt = (
             "あなたは優秀な編集者です。文脈を崩さずに文章の質を高め、複数の改善案を提示します。"
         )
+        if request.style_hint:
+            system_prompt += f" 出力は必ず「{style_hint}」のトーンで統一し、語尾や言い回しもそのスタイルに合わせてください。"
         user_prompt = f'''
 以下はNOTE記事の概要です。内容を把握したうえで、指定した段落をリライトし、最大3つの改善案を提示してください。
 
@@ -2220,7 +2228,8 @@ JSON形式で以下のように回答してください:
 候補が1つしか適切でない場合は1つのみで構いません。
 '''
 
-        result = NoteAIService._call_json_chat(system_prompt, user_prompt, temperature=0.65)
+        temperature = 0.8 if request.style_hint else 0.65
+        result = NoteAIService._call_json_chat(system_prompt, user_prompt, temperature=temperature)
 
         raw_candidates: List[Dict[str, Any]] = []
         if isinstance(result.get("candidates"), list):
