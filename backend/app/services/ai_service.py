@@ -1930,6 +1930,7 @@ class NoteAIService:
         warnings: List[str],
         block_type: Optional[str],
         revised_text: str,
+        tone_not_applied: bool,
     ) -> int:
         score = 100.0
 
@@ -1959,6 +1960,9 @@ class NoteAIService:
             score -= 10  # 変化がない場合は減点
 
         score -= min(40, len(warnings) * 6)
+
+        if tone_not_applied:
+            score -= 40
 
         if block_type == "heading":
             if "\n" in revised_text:
@@ -2173,6 +2177,11 @@ class NoteAIService:
             "原文になかった情報や主張を無断で付け足さない",
             "各候補は互いに十分な差異をつけ、編集方針が分かるようにする",
         ]
+        if request.style_hint:
+            base_requirements.append(
+                f"指定されたトーン「{style_hint}」を必ず適用し、語尾や言い回しをそのトーンに統一する"
+            )
+
         requirements_text = "\n".join([f"- {item}" for item in base_requirements + type_requirements])
 
         system_prompt = (
@@ -2231,6 +2240,8 @@ JSON形式で以下のように回答してください:
                 ]
 
         candidates: List[NoteRewriteCandidate] = []
+        original_normalized = NoteAIService._normalize_line_endings(original_text).strip()
+        tone_required = bool(request.style_hint)
 
         for index, payload in enumerate(raw_candidates[:3]):
             revised = payload.get("revised_text") or payload.get("text") or ""
@@ -2287,8 +2298,13 @@ JSON形式で以下のように回答してください:
                 if metrics.paragraph_count > max(1, original_stats["paragraph_count"]) + 1:
                     warnings.append("引用ブロックが冗長です。段落を整理してください。")
 
-            if revised_text == original_text:
+            revised_normalized = revised_text.strip()
+            if revised_normalized == original_normalized:
                 warnings.append("原文と内容がほとんど変わっていません。")
+
+            tone_not_applied = tone_required and revised_normalized == original_normalized
+            if tone_not_applied:
+                warnings.append("指定したトーンが適用されていません。")
 
             if not strengths:
                 if metrics.paragraph_count == original_stats["paragraph_count"]:
@@ -2310,6 +2326,7 @@ JSON形式で以下のように回答してください:
                 warnings,
                 block_type,
                 revised_text,
+                tone_not_applied,
             )
             if compliance.status == "block":
                 score = min(score, 10)
@@ -2331,6 +2348,10 @@ JSON形式で以下のように回答してください:
             candidates.append(candidate)
 
         original_metrics = NoteAIService._build_metrics(original_text, original_text)
+        original_warnings = ["原文と同一です。"]
+        if tone_required:
+            original_warnings.append("指定したトーンが適用されていません。")
+        original_warnings = list(dict.fromkeys(original_warnings))
         original_candidate = NoteRewriteCandidate(
             id=str(uuid4()),
             title="原文を維持",
@@ -2341,13 +2362,14 @@ JSON形式で以下のように回答してください:
                 original_text,
                 original_metrics,
                 original_stats,
-                ["原文と同一です。"],
+                original_warnings,
                 block_type,
                 original_text,
+                tone_required,
             ),
             metrics=original_metrics,
             strengths=["内容をそのまま維持します。"],
-            warnings=["原文と同一です。"],
+            warnings=original_warnings,
             compliance=NoteRewriteCompliance(),
         )
 
