@@ -1,7 +1,11 @@
+import hashlib
 import json
+import logging
+import math
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
+from uuid import uuid4
 
 from openai import OpenAI
 
@@ -16,6 +20,12 @@ from app.models.ai import (
     NoteProofreadCorrection,
     NoteRewriteRequest,
     NoteRewriteResponse,
+    NoteRewriteCandidate,
+    NoteRewriteMetrics,
+    NoteRewriteQuality,
+    NoteRewriteCompliance,
+    NoteRewriteFeedbackRequest,
+    NoteRewriteExperiment,
     NoteStructureRequest,
     NoteStructureResponse,
     NoteStructureSuggestion,
@@ -1755,6 +1765,36 @@ LP情報:
 
 NOTE_AI_MODEL = "gpt-4o-mini"
 
+LOGGER = logging.getLogger(__name__)
+
+
+COMPLIANCE_HEURISTICS: List[Dict[str, Any]] = [
+    {
+        "pattern": re.compile(r"(100[%％]|１００％|絶対に|必ず)[^\n]{0,20}(稼げる|儲かる|成功する)", re.IGNORECASE),
+        "status": "block",
+        "category": "over_promise",
+        "reason": "「絶対に」「100%」などの確約表現と収益の組み合わせは景品表示法に抵触する可能性があります。",
+    },
+    {
+        "pattern": re.compile(r"(完治|治癒|治す|全快)[^\n]{0,10}(癌|がん|病気|疾患|ウイルス)", re.IGNORECASE),
+        "status": "caution",
+        "category": "medical_claim",
+        "reason": "医療・治療効果を断定する表現が含まれています。薬機法に配慮してください。",
+    },
+    {
+        "pattern": re.compile(r"(副作用なし|リスク0|誰でも)[^\n]{0,15}(痩せる|やせる|保証)", re.IGNORECASE),
+        "status": "caution",
+        "category": "health_claim",
+        "reason": "健康・減量に関するリスクゼロを断定する表現が含まれています。",
+    },
+    {
+        "pattern": re.compile(r"1日で|１日で|24時間で|即日で"),
+        "status": "caution",
+        "category": "time_promise",
+        "reason": "極端に短期間での成果を断定する表現が含まれています。",
+    },
+]
+
 
 class NoteAIService:
     """NOTE記事向けのAI補助機能"""
@@ -1817,6 +1857,173 @@ class NoteAIService:
         return json.loads(raw)
 
     @staticmethod
+    def _split_paragraphs(text: str) -> List[str]:
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
+    @staticmethod
+    def _sentence_count(text: str) -> int:
+        segments = re.split(r"[。．\.！？!?]+", text)
+        count = len([segment.strip() for segment in segments if segment.strip()])
+        return max(1, count)
+
+    @staticmethod
+    def _bullet_count(text: str) -> int:
+        bullet_pattern = re.compile(r"^([\-*•●・]|[0-9]+[\.)、．])\s*")
+        count = 0
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if bullet_pattern.match(stripped):
+                count += 1
+        return count
+
+    @staticmethod
+    def _estimate_reading_time_seconds(length: int) -> int:
+        # 日本語文章を1分あたり約420文字読むと仮定
+        seconds = math.ceil((length / 420) * 60)
+        return max(15, seconds)
+
+    @staticmethod
+    def _build_metrics(original_text: str, revised_text: str) -> NoteRewriteMetrics:
+        original_length = max(1, len(original_text))
+        revised_length = len(revised_text)
+        paragraphs = NoteAIService._split_paragraphs(revised_text)
+        metrics = NoteRewriteMetrics(
+            paragraph_count=len(paragraphs) or 1,
+            sentence_count=NoteAIService._sentence_count(revised_text),
+            length=revised_length,
+            length_ratio=round(revised_length / original_length, 3),
+            bullet_count=NoteAIService._bullet_count(revised_text),
+            reading_time_seconds=NoteAIService._estimate_reading_time_seconds(revised_length),
+        )
+        return metrics
+
+    @staticmethod
+    def _score_candidate(
+        original_text: str,
+        metrics: NoteRewriteMetrics,
+        original_stats: Dict[str, int],
+        warnings: List[str],
+    ) -> int:
+        score = 100.0
+
+        ratio = metrics.length_ratio
+        if ratio < 0.85:
+            score -= (0.85 - ratio) * 160 + 20
+        elif ratio > 1.25:
+            score -= (ratio - 1.25) * 160 + 20
+        else:
+            score += max(0.0, (1.05 - abs(1 - ratio)) * 10)
+
+        paragraph_diff = abs(metrics.paragraph_count - max(1, original_stats["paragraph_count"]))
+        if paragraph_diff > 0:
+            score -= min(35, paragraph_diff * 12)
+
+        sentence_diff = abs(metrics.sentence_count - max(1, original_stats["sentence_count"]))
+        if sentence_diff > 4:
+            score -= (sentence_diff - 4) * 4
+
+        original_bullets = original_stats["bullet_count"]
+        if original_bullets > 0:
+            bullet_diff = abs(metrics.bullet_count - original_bullets)
+            if bullet_diff > 0:
+                score -= min(30, bullet_diff * 10)
+
+        if metrics.length == original_stats["length"] and original_text.strip():
+            score -= 10  # 変化がない場合は減点
+
+        score -= min(40, len(warnings) * 6)
+
+        return max(0, min(100, int(round(score))))
+
+    @staticmethod
+    def _assign_rewrite_experiment(
+        request: NoteRewriteRequest,
+        context: NoteAIContext,
+        user_id: Optional[str] = None,
+    ) -> NoteRewriteExperiment:
+        experiment_id = "note-ai-rewrite-phase7"
+        seed_components = [experiment_id, request.target_block_id or ""]
+        if user_id:
+            seed_components.append(user_id)
+        seed_components.append(context.title or "")
+        seed = "::".join(seed_components)
+        digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+        bucket = int(digest[:8], 16) % 100
+        variant_id = "control" if bucket < 50 else "quality_insights"
+        cohort_id = "bucket-{:02d}".format(bucket // 10)
+        parameters = {
+            "assignment_seed": digest,
+            "bucket": bucket,
+        }
+        return NoteRewriteExperiment(
+            experiment_id=experiment_id,
+            variant_id=variant_id,
+            cohort_id=cohort_id,
+            parameters=parameters,
+        )
+
+    @staticmethod
+    def _evaluate_compliance(text: str) -> NoteRewriteCompliance:
+        normalized = text.strip()
+        if not normalized:
+            return NoteRewriteCompliance()
+
+        status: Literal["pass", "caution", "block"] = "pass"  # type: ignore[assignment]
+        categories: List[str] = []
+        reasons: List[str] = []
+        allow_application = True
+
+        for rule in COMPLIANCE_HEURISTICS:
+            pattern = rule.get("pattern")
+            if isinstance(pattern, re.Pattern) and pattern.search(normalized):
+                category = rule.get("category")
+                reason = rule.get("reason")
+                rule_status = rule.get("status", "caution")
+                if isinstance(category, str) and category not in categories:
+                    categories.append(category)
+                if isinstance(reason, str):
+                    reasons.append(reason)
+                if rule_status == "block":
+                    status = "block"
+                    allow_application = False
+                elif status != "block" and rule_status == "caution":
+                    status = "caution"
+
+        try:
+            client = get_openai_client()
+            moderation = client.moderations.create(
+                model="omni-moderation-latest",
+                input=normalized[:15000],
+            )
+            results = getattr(moderation, "results", None)
+            result = results[0] if results else None
+            if result:
+                flagged = getattr(result, "flagged", False)
+                category_map = getattr(result, "categories", {}) or {}
+                if flagged:
+                    status = "block"
+                    allow_application = False
+                    reasons.append("OpenAIモデレーションで不適切と判定されました。")
+                for category_name, is_flagged in category_map.items():
+                    if is_flagged and category_name not in categories:
+                        categories.append(str(category_name))
+        except Exception as exc:  # pylint: disable=broad-except
+            LOGGER.warning("Compliance moderation check failed: %s", exc)
+            if status == "pass":
+                status = "caution"
+            reasons.append("自動モデレーションチェックが完了しませんでした。内容を再確認してください。")
+
+        unique_reasons = list(dict.fromkeys(reasons))
+        return NoteRewriteCompliance(
+            status=status,
+            categories=categories,
+            reasons=unique_reasons,
+            allow_application=allow_application,
+        )
+
+    @staticmethod
     async def rewrite_block(request: NoteRewriteRequest) -> NoteRewriteResponse:
         NoteAIService._ensure_enabled()
         context = request.context
@@ -1834,18 +2041,27 @@ class NoteAIService:
 
         instructions = request.instructions or "読みやすさと説得力を高めてください。"
         style_hint = request.style_hint or context.tone or "自然で信頼感のある日本語"
-        original_line_count = max(
-            1,
-            len([line for line in original_text.splitlines() if line.strip()]),
-        )
-        original_length = max(1, len(original_text))
         block_type = target.type
+        original_stats = {
+            "length": len(original_text),
+            "paragraph_count": len(NoteAIService._split_paragraphs(original_text)) or 1,
+            "sentence_count": NoteAIService._sentence_count(original_text),
+            "bullet_count": NoteAIService._bullet_count(original_text),
+        }
+
+        experiment = NoteAIService._assign_rewrite_experiment(request, context)
+        LOGGER.info(
+            "note_ai_rewrite_exposure: experiment_id=%s variant_id=%s block_id=%s",
+            experiment.experiment_id,
+            experiment.variant_id,
+            request.target_block_id,
+        )
 
         system_prompt = (
-            "あなたは優秀な編集者です。文脈を崩さずに文章の質を高め、目的に合わせた調整を行います。"
+            "あなたは優秀な編集者です。文脈を崩さずに文章の質を高め、複数の改善案を提示します。"
         )
         user_prompt = f'''
-以下はNOTE記事の概要です。内容を把握したうえで、指定した段落をリライトしてください。
+以下はNOTE記事の概要です。内容を把握したうえで、指定した段落をリライトし、最大3つの改善案を提示してください。
 
 {summary}
 
@@ -1856,67 +2072,263 @@ class NoteAIService:
 
 指示: {instructions}
 トーンの希望: {style_hint}
-原文の段落数: {original_line_count}
-原文の文字数: {original_length}
-
 必ず守ること:
 - 重要な事実や具体例、数値などの情報を削除しない
-- 文章量は原文の80%〜120%程度を維持し、極端に短くしない
-- 改行位置と段落構造をできる限り維持する（段落の削除は禁止）
-- 箇条書きの場合は項目数・順序を変えずに各項目を自然な表現へ整える
-- 原文になかった情報を作り足さない
-- 自然で読みやすい日本語に整える
+- 文章量は原文の80%〜120%程度で維持する
+- 段落構造や箇条書きの項目数を保ちつつ、表現を自然な日本語へ整える
+- 原文になかった情報や主張を無断で付け足さない
+- 各候補は互いに十分な差異をつけ、編集方針が分かるようにする
 
-JSONで以下の形式で回答してください:
+JSON形式で以下のように回答してください:
 {{
-  "revised_text": "リライト後の文章",
-  "reasoning": "変更の意図",
-  "tone": "適用したトーン",
-  "alternatives": ["追加案1", "追加案2"]
+  "candidates": [
+    {{
+      "title": "簡潔なラベル（例：読みやすさ重視）",
+      "revised_text": "リライト案",
+      "reasoning": "変更の意図や編集方針",
+      "tone": "採用したトーン（任意）",
+      "strengths": ["改善のポイント"],
+      "warnings": ["留意点"]
+    }}
+  ],
+  "evaluation_notes": "候補全体に関するメモ（任意）"
 }}
+
+候補が1つしか適切でない場合は1つのみで構いません。
 '''
 
         result = NoteAIService._call_json_chat(system_prompt, user_prompt, temperature=0.65)
-        revised_text_raw = result.get("revised_text")
-        revised_text = revised_text_raw if isinstance(revised_text_raw, str) else ""
-        revised_text = revised_text.strip()
-        reasoning_raw = result.get("reasoning")
-        reasoning = reasoning_raw if isinstance(reasoning_raw, str) else None
-        tone_raw = result.get("tone")
-        tone_applied = tone_raw if isinstance(tone_raw, str) and tone_raw else style_hint
-        alternatives_raw = result.get("alternatives")
-        alternatives = (
-            [item for item in alternatives_raw if isinstance(item, str)]
-            if isinstance(alternatives_raw, list)
-            else None
+
+        raw_candidates: List[Dict[str, Any]] = []
+        if isinstance(result.get("candidates"), list):
+            raw_candidates = [item for item in result["candidates"] if isinstance(item, dict)]
+        else:
+            single_text = result.get("revised_text")
+            if isinstance(single_text, str) and single_text.strip():
+                raw_candidates = [
+                    {
+                        "title": result.get("title") or "候補1",
+                        "revised_text": single_text,
+                        "reasoning": result.get("reasoning"),
+                        "tone": result.get("tone"),
+                        "strengths": result.get("strengths"),
+                        "warnings": result.get("warnings"),
+                    }
+                ]
+
+        candidates: List[NoteRewriteCandidate] = []
+
+        for index, payload in enumerate(raw_candidates[:3]):
+            revised = payload.get("revised_text") or payload.get("text") or ""
+            if not isinstance(revised, str):
+                continue
+            revised_text = revised.strip()
+            if not revised_text:
+                continue
+
+            title_raw = payload.get("title")
+            title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else f"候補{index + 1}"
+            reasoning_raw = payload.get("reasoning") or payload.get("analysis")
+            reasoning = reasoning_raw.strip() if isinstance(reasoning_raw, str) and reasoning_raw.strip() else None
+            tone_raw = payload.get("tone") or payload.get("tone_applied")
+            tone_applied = tone_raw.strip() if isinstance(tone_raw, str) and tone_raw.strip() else style_hint
+
+            strengths_raw = payload.get("strengths")
+            strengths = [str(item).strip() for item in strengths_raw if isinstance(item, str) and item.strip()] if isinstance(strengths_raw, list) else []
+            warnings_raw = payload.get("warnings")
+            warnings = [str(item).strip() for item in warnings_raw if isinstance(item, str) and item.strip()] if isinstance(warnings_raw, list) else []
+
+            metrics = NoteAIService._build_metrics(original_text, revised_text)
+
+            if metrics.length_ratio < 0.8:
+                warnings.append("文章量が原文の80%未満です。")
+            elif metrics.length_ratio > 1.25:
+                warnings.append("文章量が原文の125%を超えています。")
+
+            if metrics.paragraph_count < original_stats["paragraph_count"]:
+                warnings.append("段落数が原文より減少しています。")
+
+            if original_stats["bullet_count"] > 0 and metrics.bullet_count != original_stats["bullet_count"]:
+                warnings.append("箇条書きの項目数が原文と一致していません。")
+
+            if revised_text == original_text:
+                warnings.append("原文と内容がほとんど変わっていません。")
+
+            if not strengths:
+                if metrics.paragraph_count == original_stats["paragraph_count"]:
+                    strengths.append("段落構造を維持しています。")
+                strengths.append("読みやすさと一貫性を意識した調整です。")
+
+            compliance = NoteAIService._evaluate_compliance(revised_text)
+            for reason in compliance.reasons:
+                if reason not in warnings:
+                    warnings.append(reason)
+
+            strengths = list(dict.fromkeys(strengths))
+            warnings = list(dict.fromkeys(warnings))
+
+            score = NoteAIService._score_candidate(original_text, metrics, original_stats, warnings)
+            if compliance.status == "block":
+                score = min(score, 10)
+            elif compliance.status == "caution":
+                score = max(0, score - 20)
+
+            candidate = NoteRewriteCandidate(
+                id=str(uuid4()),
+                title=title,
+                revised_text=revised_text,
+                reasoning=reasoning,
+                tone_applied=tone_applied,
+                score=score,
+                metrics=metrics,
+                strengths=strengths,
+                warnings=warnings,
+                compliance=compliance,
+            )
+            candidates.append(candidate)
+
+        original_metrics = NoteAIService._build_metrics(original_text, original_text)
+        original_candidate = NoteRewriteCandidate(
+            id=str(uuid4()),
+            title="原文を維持",
+            revised_text=original_text,
+            reasoning="変更を適用しない場合はこちらを選択してください。",
+            tone_applied=context.tone or "原文",
+            score=NoteAIService._score_candidate(original_text, original_metrics, original_stats, ["原文と同一です。"]),
+            metrics=original_metrics,
+            strengths=["内容をそのまま維持します。"],
+            warnings=["原文と同一です。"],
+            compliance=NoteRewriteCompliance(),
         )
 
-        if not revised_text:
-            revised_text = original_text
-            fallback_note = "AIの提案が空だったため原文を維持しました。"
-            reasoning = fallback_note if reasoning is None else f"{reasoning}\n{fallback_note}"
+        if all(candidate.revised_text != original_text for candidate in candidates):
+            candidates.append(original_candidate)
 
-        if len(revised_text) < max(20, int(original_length * 0.7)):
-            fallback_note = "AIの提案が原文より短すぎたため原文を維持しました。"
-            revised_text = original_text
-            reasoning = fallback_note if reasoning is None else f"{reasoning}\n{fallback_note}"
+        if not candidates:
+            candidates.append(original_candidate)
 
-        if original_line_count > 1:
-            original_paragraphs = [line for line in original_text.splitlines() if line.strip()]
-            revised_paragraphs = [line for line in revised_text.splitlines() if line.strip()]
-            if len(revised_paragraphs) < original_line_count:
-                fallback_note = "AIの提案が段落構造を維持できなかったため原文を維持しました。"
-                revised_text = original_text
-                reasoning = fallback_note if reasoning is None else f"{reasoning}\n{fallback_note}"
+        seen_texts: Dict[str, NoteRewriteCandidate] = {}
+        for candidate in candidates:
+            key = candidate.revised_text
+            existing = seen_texts.get(key)
+            if existing is None:
+                seen_texts[key] = candidate
+                continue
+            existing_compliance = existing.compliance.status if existing.compliance else "pass"
+            candidate_compliance = candidate.compliance.status if candidate.compliance else "pass"
+            if existing_compliance == "block" and candidate_compliance != "block":
+                seen_texts[key] = candidate
+                continue
+            if candidate.score > existing.score:
+                seen_texts[key] = candidate
+
+        unique_candidates = list(seen_texts.values())
+        unique_candidates.sort(key=lambda item: item.score, reverse=True)
+        viable_candidates = [item for item in unique_candidates if not item.compliance or item.compliance.allow_application]
+        preferred_candidates = viable_candidates or unique_candidates
+        recommended_candidate = preferred_candidates[0]
+        recommended_candidate_id = recommended_candidate.id
+
+        evaluation_notes = result.get("evaluation_notes")
+        if not isinstance(evaluation_notes, str) or not evaluation_notes.strip():
+            aggregated_warnings: List[str] = []
+            for candidate in unique_candidates:
+                aggregated_warnings.extend(candidate.warnings)
+            if aggregated_warnings:
+                unique_warning_texts = sorted(set(aggregated_warnings))
+                evaluation_notes = "注意点: " + " / ".join(unique_warning_texts[:3])
+            else:
+                evaluation_notes = None
+
+        alerts: List[str] = []
+        for candidate in unique_candidates:
+            compliance = candidate.compliance
+            if not compliance:
+                continue
+            if compliance.status in {"caution", "block"}:
+                alerts.extend(compliance.reasons or candidate.warnings)
+        alerts = list(dict.fromkeys(alerts))
+
+        score_threshold = recommended_candidate.score >= 75
+        compliance_status = recommended_candidate.compliance.status if recommended_candidate.compliance else "pass"
+        compliance_threshold = compliance_status != "block"
+        alerts_threshold = len(alerts) == 0
+        thresholds = {
+            "score_minimum": score_threshold,
+            "compliance_pass": compliance_threshold,
+            "no_alerts": alerts_threshold,
+        }
+        ready_for_release = all(thresholds.values()) and compliance_status != "caution"
+
+        quality = NoteRewriteQuality(
+            scoring_version="2025-11-phase6",
+            evaluated_at=datetime.now(timezone.utc),
+            global_score=recommended_candidate.score,
+            summary=evaluation_notes or "AI候補の評価が完了しました。",
+            alerts=alerts[:5],
+            thresholds=thresholds,
+            ready_for_release=ready_for_release,
+        )
+
+        LOGGER.info(
+            "note_ai_rewrite_quality: %s",
+            json.dumps(
+                {
+                    "block_id": target.id,
+                    "recommended_candidate_id": recommended_candidate_id,
+                    "score": recommended_candidate.score,
+                    "thresholds": thresholds,
+                    "ready_for_release": ready_for_release,
+                    "alerts": alerts[:5],
+                    "experiment": experiment.dict(),
+                },
+                ensure_ascii=False,
+            ),
+        )
 
         return NoteRewriteResponse(
             block_id=target.id,
             original_text=original_text,
-            revised_text=revised_text,
-            reasoning=reasoning,
-            tone_applied=tone_applied,
-            alternatives=alternatives,
+            candidates=unique_candidates,
+            recommended_candidate_id=recommended_candidate_id,
+            evaluation_notes=evaluation_notes,
+            quality=quality,
+            experiment=experiment,
         )
+
+    @staticmethod
+    def record_rewrite_feedback(request: NoteRewriteFeedbackRequest) -> None:
+        NoteAIService._ensure_enabled()
+        payload = request.dict()
+        payload["received_at"] = datetime.now(timezone.utc).isoformat()
+        LOGGER.info("note_ai_rewrite_feedback: %s", json.dumps(payload, ensure_ascii=False))
+
+    @staticmethod
+    def assign_rewrite_experiment(
+        request: NoteRewriteRequest,
+        user_id: Optional[str] = None,
+    ) -> NoteRewriteExperiment:
+        return NoteAIService._assign_rewrite_experiment(request, request.context, user_id=user_id)
+
+    @staticmethod
+    def assign_rewrite_experiment_by_seed(
+        seed: Optional[str] = None,
+        note_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> NoteRewriteExperiment:
+        pseudo_request = NoteRewriteRequest(
+            context=NoteAIContext(
+                title=note_id or "",
+                excerpt=None,
+                categories=[],
+                tone=None,
+                audience=None,
+                language="ja",
+                blocks=[],
+            ),
+            target_block_id=seed or "seed-default",
+        )
+        return NoteAIService._assign_rewrite_experiment(pseudo_request, pseudo_request.context, user_id=user_id)
 
     @staticmethod
     async def proofread(request: NoteProofreadRequest) -> NoteProofreadResponse:

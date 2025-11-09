@@ -13,6 +13,10 @@ from app.models.ai import (
     NoteStructureResponse,
     NoteReviewRequest,
     NoteReviewResponse,
+    NoteRewriteFeedbackRequest,
+    NoteRewriteFeedbackResponse,
+    ExperimentAssignmentRequest,
+    ExperimentAssignmentResponse,
 )
 from app.services.ai_service import AIService, NoteAIService
 from app.routes.auth import get_current_user
@@ -82,6 +86,40 @@ async def rewrite_note_block(
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"NOTEリライトに失敗しました: {exc}")
+
+
+@router.post("/notes/rewrite/feedback", response_model=NoteRewriteFeedbackResponse)
+async def record_rewrite_feedback(
+    request: NoteRewriteFeedbackRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _ensure_ai_ready()
+    try:
+        NoteAIService.record_rewrite_feedback(request)
+        return NoteRewriteFeedbackResponse()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"フィードバックの記録に失敗しました: {exc}")
+
+
+@router.post("/notes/rewrite/experiment", response_model=ExperimentAssignmentResponse)
+async def assign_rewrite_experiment(
+    request: ExperimentAssignmentRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _ensure_ai_ready()
+    try:
+        experiment = NoteAIService.assign_rewrite_experiment_by_seed(
+            seed=request.seed,
+            note_id=request.note_id,
+            user_id=request.user_id,
+        )
+        return ExperimentAssignmentResponse(experiment=experiment)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"実験割り当てに失敗しました: {exc}")
 
 
 @router.post("/notes/proofread", response_model=NoteProofreadResponse)

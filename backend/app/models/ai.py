@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Literal
 
@@ -138,13 +139,86 @@ class NoteRewriteRequest(BaseModel):
     style_hint: Optional[str] = None
 
 
-class NoteRewriteResponse(BaseModel):
-    block_id: str
-    original_text: str
+class NoteRewriteMetrics(BaseModel):
+    paragraph_count: int
+    sentence_count: int
+    length: int
+    length_ratio: float
+    bullet_count: int
+    reading_time_seconds: int
+
+
+class NoteRewriteExperiment(BaseModel):
+    experiment_id: str
+    variant_id: str
+    cohort_id: Optional[str] = None
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NoteRewriteQuality(BaseModel):
+    scoring_version: str
+    evaluated_at: datetime
+    global_score: int
+    summary: Optional[str] = None
+    alerts: List[str] = Field(default_factory=list)
+    thresholds: Dict[str, bool] = Field(default_factory=dict)
+    ready_for_release: bool = False
+
+
+class NoteRewriteCompliance(BaseModel):
+    status: Literal["pass", "caution", "block"] = "pass"
+    categories: List[str] = Field(default_factory=list)
+    reasons: List[str] = Field(default_factory=list)
+    allow_application: bool = True
+
+
+class NoteRewriteCandidate(BaseModel):
+    id: str
+    title: str
     revised_text: str
     reasoning: Optional[str] = None
     tone_applied: Optional[str] = None
-    alternatives: Optional[List[str]] = None
+    score: int
+    metrics: NoteRewriteMetrics
+    strengths: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    compliance: Optional[NoteRewriteCompliance] = None
+
+
+class NoteRewriteResponse(BaseModel):
+    block_id: str
+    original_text: str
+    candidates: List[NoteRewriteCandidate]
+    recommended_candidate_id: str
+    evaluation_notes: Optional[str] = None
+    quality: Optional[NoteRewriteQuality] = None
+    experiment: Optional[NoteRewriteExperiment] = None
+
+
+class NoteRewriteFeedbackRequest(BaseModel):
+    block_id: str
+    candidate_id: str
+    rating: Literal["positive", "neutral", "negative"]
+    issues: List[str] = Field(default_factory=list)
+    comment: Optional[str] = None
+    applied: bool = True
+    duration_seconds: Optional[int] = None
+    experiment_id: Optional[str] = None
+    variant_id: Optional[str] = None
+
+
+class NoteRewriteFeedbackResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+
+
+class ExperimentAssignmentRequest(BaseModel):
+    user_id: Optional[str] = None
+    note_id: Optional[str] = None
+    seed: Optional[str] = None
+
+
+class ExperimentAssignmentResponse(BaseModel):
+    experiment: NoteRewriteExperiment
 
 
 class NoteProofreadRequest(BaseModel):
