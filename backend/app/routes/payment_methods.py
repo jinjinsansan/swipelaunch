@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
-import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -20,8 +19,6 @@ from app.models.payment_method import (
 from app.services.one_lat import one_lat_client
 from app.utils.auth import decode_access_token
 from app.utils.payment_methods import load_payment_method_or_404, map_payment_method_summary
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/payment-methods", tags=["payment_methods"])
 security = HTTPBearer()
@@ -71,39 +68,6 @@ def _ensure_user_email(supabase: Client, user_id: str) -> Dict[str, Any]:
 def _map_to_pydantic(row: Dict[str, Any]) -> PaymentMethodSummary:
     mapped = map_payment_method_summary(row)
     return PaymentMethodSummary(**mapped)
-
-
-def _extract_payment_method(data: Any) -> Optional[Dict[str, Any]]:
-    if isinstance(data, dict):
-        candidate = data.get("payment_method") or data.get("paymentMethod")
-        if isinstance(candidate, dict):
-            return candidate
-
-        for key in (
-            "payments",
-            "payment_orders",
-            "paymentOrders",
-            "charges",
-            "transactions",
-            "results",
-            "items",
-        ):
-            value = data.get(key)
-            if isinstance(value, list):
-                for item in value:
-                    extracted = _extract_payment_method(item)
-                    if extracted:
-                        return extracted
-            elif isinstance(value, dict):
-                extracted = _extract_payment_method(value)
-                if extracted:
-                    return extracted
-    elif isinstance(data, list):
-        for entry in data:
-            extracted = _extract_payment_method(entry)
-            if extracted:
-                return extracted
-    return None
 
 
 @router.get("", response_model=PaymentMethodListResponse)
@@ -191,33 +155,9 @@ async def confirm_one_lat_payment_method(
     if preference.get("external_id") != payload.external_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="支払い方法登録リクエストと照合できません")
 
-    customer_info = preference.get("customer") or {}
     method_info = preference.get("payment_method") or (preference.get("payer") or {}).get("payment_method")
-
-    # ONE.latのレスポンス仕様変更・遅延に備えて多段で取得を試みる
-    if not isinstance(method_info, dict):
-        method_info = _extract_payment_method(preference)
-
-    payment_order_id: Optional[str] = None
-    if isinstance(preference.get("payment_order_id"), str):
-        payment_order_id = preference.get("payment_order_id")
-    elif isinstance(preference.get("payment_order"), dict):
-        payment_order_id = preference["payment_order"].get("id")
-        customer_info = preference["payment_order"].get("customer") or customer_info
-        if not isinstance(method_info, dict):
-            method_info = _extract_payment_method(preference["payment_order"])
-    elif isinstance(preference.get("metadata"), dict):
-        payment_order_id = preference["metadata"].get("payment_order_id") or preference["metadata"].get("paymentOrderId")
-
-    if not isinstance(method_info, dict) and payment_order_id:
-        try:
-            order_payload = await one_lat_client.get_payment_order(payment_order_id)
-            customer_info = (order_payload.get("customer") or customer_info) if isinstance(order_payload, dict) else customer_info
-            method_info = _extract_payment_method(order_payload)
-        except Exception as exc:
-            logger.warning("Failed to fetch payment order for payment method setup", extra={"payment_order_id": payment_order_id, "error": str(exc)})
-
-    if not isinstance(method_info, dict):
+    customer_info = preference.get("customer") or {}
+    if not method_info:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="支払い方法が確定していません")
 
     customer_id = (
