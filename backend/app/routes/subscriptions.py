@@ -33,6 +33,7 @@ from app.services.purchase_notifications import (
     send_seller_purchase_notification,
 )
 from app.utils.auth import decode_access_token
+from app.utils.payment_methods import load_payment_method_or_404
 
 
 logger = logging.getLogger(__name__)
@@ -348,6 +349,14 @@ async def create_subscription_checkout(
 
     user = user_response.data
 
+    saved_method = None
+    if payload.payment_method_record_id:
+        saved_method = load_payment_method_or_404(
+            supabase,
+            user_id=user_id,
+            record_id=payload.payment_method_record_id,
+        )
+
     external_id = f"subscription_{plan.key}_{user_id}_{uuid.uuid4().hex[:8]}"
 
     success_params = {
@@ -379,6 +388,20 @@ async def create_subscription_checkout(
         },
     )
 
+    metadata = dict(payload.metadata or {})
+    if salon_id:
+        metadata.setdefault("salon_id", salon_id)
+    if saved_method:
+        metadata.setdefault("saved_payment_method_id", saved_method.get("payment_method_id"))
+        metadata.setdefault("payment_method_record_id", saved_method.get("id"))
+
+    checkout_kwargs = {}
+    if saved_method:
+        checkout_kwargs.update({
+            "customer_id": saved_method.get("one_lat_customer_id"),
+            "default_payment_method_id": saved_method.get("payment_method_id"),
+        })
+
     checkout_data = await one_lat_client.create_checkout_preference(
         amount=plan.usd_amount,
         currency="USD",
@@ -392,11 +415,9 @@ async def create_subscription_checkout(
         preference_type="SUBSCRIPTION",
         payment_link_id=plan.subscription_plan_id,
         expiration_minutes=30,
+        metadata=metadata,
+        **checkout_kwargs,
     )
-
-    metadata = dict(payload.metadata or {})
-    if salon_id:
-        metadata.setdefault("salon_id", salon_id)
 
     session_record = {
         "user_id": user_id,
@@ -413,6 +434,7 @@ async def create_subscription_checkout(
         "error_url": error_url,
         "salon_id": salon_id,
         "metadata": metadata,
+        "payment_method_record_id": saved_method.get("id") if saved_method else None,
     }
 
     supabase.table("one_lat_subscription_sessions").insert(session_record).execute()

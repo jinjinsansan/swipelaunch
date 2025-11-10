@@ -5,6 +5,10 @@ from datetime import datetime
 # ポイント購入リクエスト
 class PointPurchaseRequest(BaseModel):
     amount: int = Field(..., ge=100, description="購入するポイント数（最低100ポイント）")
+    payment_method_record_id: Optional[str] = Field(
+        default=None,
+        description="保存済みの円決済用支払い方法レコードID"
+    )
 
 # ポイント購入レスポンス
 class PointPurchaseResponse(BaseModel):

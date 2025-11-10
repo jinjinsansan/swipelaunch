@@ -19,6 +19,7 @@ from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
 from app.services.platform_settings import get_platform_settings
 from app.services.jpyc_service import JPYCService, jpyc_to_wei
+from app.utils.payment_methods import load_payment_method_or_404
 import uuid
 import logging
 
@@ -89,6 +90,14 @@ async def purchase_points_one_lat(
         
         user = user_response.data
         
+        saved_method = None
+        if data.payment_method_record_id:
+            saved_method = load_payment_method_or_404(
+                supabase,
+                user_id=user_id,
+                record_id=data.payment_method_record_id,
+            )
+
         # 金額計算（手動設定の為替レート＋スプレッドを使用）
         amount_usd = round(data.amount / _get_effective_exchange_rate(), 2)
         
@@ -101,6 +110,13 @@ async def purchase_points_one_lat(
         success_url = f"{frontend_url}/points/purchase/success"
         error_url = f"{frontend_url}/points/purchase/error"
         
+        kwargs = {}
+        if saved_method:
+            kwargs.update({
+                "customer_id": saved_method.get("one_lat_customer_id"),
+                "default_payment_method_id": saved_method.get("payment_method_id"),
+            })
+
         # Checkout Preference作成
         checkout_data = await one_lat_client.create_checkout_preference(
             amount=amount_usd,
@@ -111,7 +127,8 @@ async def purchase_points_one_lat(
             success_url=success_url,
             error_url=error_url,
             payer_email=user["email"],
-            payer_name=user["username"]
+            payer_name=user["username"],
+            **kwargs,
         )
         
         # トランザクション記録（PENDING状態で保存）
@@ -123,7 +140,8 @@ async def purchase_points_one_lat(
             "currency": "USD",
             "status": "PENDING",
             "title": f"Point Purchase - {data.amount} points",
-            "points_amount": data.amount  # ポイント数を保存
+            "points_amount": data.amount,
+            "payment_method_record_id": saved_method.get("id") if saved_method else None,
         }
         
         supabase.table("one_lat_transactions").insert(transaction_data).execute()

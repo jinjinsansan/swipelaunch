@@ -87,7 +87,7 @@ async def line_webhook(
                     if event.replyToken:
                         await LINEService.send_reply_message(
                             event.replyToken,
-                            "🎉 D-swipeに友達追加ありがとうございます！\n\n【ポイント受け取り方法】\n1. D-swipeにログイン: https://d-swipe.com/line/bonus\n2. 表示される連携コードをコピー\n3. このLINEトークに連携コードを送信\n4. 300ポイント自動付与！🎁"
+                            "🎉 D-swipeに友達追加ありがとうございます！\n\n【ポイント受け取り方法】\n1. D-swipeにログイン: https://d-swipe.com/line/bonus?openExternalBrowser=1\n2. 表示される連携コードをコピー\n3. このLINEトークに連携コードを送信\n4. 300ポイント自動付与！🎁"
                         )
             
             # メッセージイベント（トークンによる連携）
@@ -162,7 +162,7 @@ async def line_webhook(
                         if event.replyToken:
                             await LINEService.send_reply_message(
                                 event.replyToken,
-                                "❌ 無効な連携コードです。\n\n【確認事項】\n• D-swipeにログインしていますか？\n• 連携コードを正確にコピーしましたか？\n• 連携コードの有効期限（24時間）は切れていませんか？\n\nhttps://d-swipe.com/line/bonus で新しいコードを取得してください。"
+                            "❌ 無効な連携コードです。\n\n【確認事項】\n• D-swipeにログインしていますか？\n• 連携コードを正確にコピーしましたか？\n• 連携コードの有効期限（24時間）は切れていませんか？\n\nhttps://d-swipe.com/line/bonus?openExternalBrowser=1 で新しいコードを取得してください。"
                             )
             
             # アンフォローイベント

@@ -62,6 +62,7 @@ from app.routes import (
     media,
     notes,
     operator_messages,
+    payment_methods,
     payouts,
     points,
     products,
@@ -87,6 +88,7 @@ app.include_router(media.router, prefix="/api")
 app.include_router(public.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(products.router, prefix="/api")
+app.include_router(payment_methods.router, prefix="/api")
 app.include_router(points.router, prefix="/api")
 app.include_router(purchase_history.router, prefix="/api")
 app.include_router(sales_history.router, prefix="/api")
