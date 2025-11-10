@@ -79,23 +79,6 @@ def _extract_payment_method(data: Any) -> Optional[Dict[str, Any]]:
         if isinstance(candidate, dict):
             return candidate
 
-        for list_key in (
-            "payment_methods",
-            "paymentMethods",
-            "payer_payment_methods",
-            "payerPaymentMethods",
-        ):
-            list_value = data.get(list_key)
-            if isinstance(list_value, list):
-                for item in list_value:
-                    extracted = _extract_payment_method(item)
-                    if extracted:
-                        return extracted
-            elif isinstance(list_value, dict):
-                extracted = _extract_payment_method(list_value)
-                if extracted:
-                    return extracted
-
         for key in (
             "payments",
             "payment_orders",
@@ -237,51 +220,20 @@ async def confirm_one_lat_payment_method(
     if not isinstance(method_info, dict):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="支払い方法が確定していません")
 
-    if isinstance(method_info.get("payment_method"), dict):
-        method_info = method_info["payment_method"]
-
     customer_id = (
         method_info.get("customer_id")
-        or (method_info.get("customer") or {}).get("id")
         or customer_info.get("id")
         or (preference.get("metadata") or {}).get("customer_id")
     )
-    payment_method_id = (
-        method_info.get("id")
-        or method_info.get("payment_method_id")
-        or (method_info.get("card") or {}).get("id")
-        or (method_info.get("payment_method") or {}).get("id")
-    )
+    payment_method_id = method_info.get("id") or method_info.get("payment_method_id")
     if not customer_id or not payment_method_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="支払い方法を特定できません")
 
-    brand = (
-        method_info.get("brand")
-        or method_info.get("card_brand")
-        or (method_info.get("card") or {}).get("brand")
-        or (method_info.get("card") or {}).get("card_brand")
-    )
-    last4 = (
-        method_info.get("last4")
-        or method_info.get("card_last4")
-        or (method_info.get("card") or {}).get("last4")
-        or (method_info.get("card") or {}).get("last_four_digits")
-    )
-    exp_month = (
-        method_info.get("exp_month")
-        or method_info.get("card_exp_month")
-        or (method_info.get("card") or {}).get("exp_month")
-    )
-    exp_year = (
-        method_info.get("exp_year")
-        or method_info.get("card_exp_year")
-        or (method_info.get("card") or {}).get("exp_year")
-    )
-    brand_label = (
-        method_info.get("brand_label")
-        or method_info.get("display_name")
-        or (method_info.get("card") or {}).get("display_name")
-    )
+    brand = method_info.get("brand") or method_info.get("card_brand")
+    last4 = method_info.get("last4") or method_info.get("card_last4")
+    exp_month = method_info.get("exp_month") or method_info.get("card_exp_month")
+    exp_year = method_info.get("exp_year") or method_info.get("card_exp_year")
+    brand_label = method_info.get("brand_label") or method_info.get("display_name")
 
     metadata = {
         "source_checkout_preference_id": payload.checkout_preference_id,
