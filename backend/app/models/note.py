@@ -33,6 +33,7 @@ class NoteCreateRequest(BaseModel):
     categories: List[str] = Field(default_factory=list, description="カテゴリー一覧")
     salon_ids: List[str] = Field(default_factory=list, description="無料閲覧を許可するサロンID一覧")
     visibility: NoteVisibility = Field("private", description="公開範囲 (public/limited/private)")
+    requires_login: bool = Field(False, description="公開時にログインを必須にするか")
 
     @validator("content_blocks")
     def validate_blocks(cls, value: List[NoteBlock]) -> List[NoteBlock]:
@@ -116,6 +117,7 @@ class NoteUpdateRequest(BaseModel):
     categories: Optional[List[str]] = Field(None, description="カテゴリー一覧")
     salon_ids: Optional[List[str]] = Field(None, description="無料閲覧を許可するサロンID一覧")
     visibility: Optional[NoteVisibility] = Field(None, description="公開範囲 (public/limited/private)")
+    requires_login: Optional[bool] = Field(None, description="公開時にログインを必須にするか")
 
     @validator("price_points")
     def validate_price(cls, value: Optional[int]) -> Optional[int]:
@@ -196,6 +198,7 @@ class NoteSummaryResponse(BaseModel):
     visibility: NoteVisibility = "private"
     share_url: Optional[str] = None
     share_token_rotated_at: Optional[datetime] = None
+    requires_login: bool = False
 
     class Config:
         from_attributes = True
@@ -234,6 +237,7 @@ class PublicNoteSummary(BaseModel):
     official_share_tweet_id: Optional[str] = None
     official_share_tweet_url: Optional[str] = None
     official_share_x_username: Optional[str] = None
+    requires_login: bool = False
 
 
 class PublicNoteListResponse(BaseModel):
@@ -268,6 +272,7 @@ class PublicNoteDetailResponse(BaseModel):
     official_share_tweet_url: Optional[str] = None
     official_share_x_username: Optional[str] = None
     salon_access_ids: List[str] = Field(default_factory=list)
+    requires_login: bool = False
 
 
 class NotePurchaseResponse(BaseModel):

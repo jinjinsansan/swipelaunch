@@ -206,6 +206,7 @@ def map_note_summary(record: Dict[str, Any], *, locale: Optional[str] = None) ->
         visibility=visibility,
         share_url=_build_share_url(share_token, locale),
         share_token_rotated_at=record.get("share_token_rotated_at"),
+        requires_login=bool(record.get("requires_login", False)),
     )
 
 
@@ -382,6 +383,8 @@ async def create_note(
         share_token = _generate_share_token()
         share_token_rotated_at = datetime.utcnow().isoformat()
 
+    requires_login = bool(data.requires_login) if visibility == "public" else False
+
     note_data = {
         "author_id": user_id,
         "title": data.title,
@@ -401,6 +404,7 @@ async def create_note(
         "visibility": visibility,
         "share_token": share_token,
         "share_token_rotated_at": share_token_rotated_at,
+        "requires_login": requires_login,
     }
 
     response = supabase.table("notes").insert(note_data).execute()
@@ -710,7 +714,7 @@ async def list_public_notes(
         supabase
         .table("notes")
         .select(
-            "id,title,slug,cover_image_url,excerpt,is_paid,price_points,price_jpy,allow_point_purchase,allow_jpy_purchase,tax_rate,tax_inclusive,published_at,categories,allow_share_unlock,official_share_tweet_id,official_share_tweet_url,official_share_x_username,is_featured,users(username)",
+            "id,title,slug,cover_image_url,excerpt,is_paid,price_points,price_jpy,allow_point_purchase,allow_jpy_purchase,tax_rate,tax_inclusive,published_at,categories,allow_share_unlock,official_share_tweet_id,official_share_tweet_url,official_share_x_username,is_featured,requires_login,users(username)",
             count="exact"
         )
         .eq("status", "published")
@@ -758,6 +762,7 @@ async def list_public_notes(
                 official_share_tweet_url=record.get("official_share_tweet_url"),
                 official_share_x_username=record.get("official_share_x_username"),
                 is_featured=bool(record.get("is_featured", False)),
+                requires_login=bool(record.get("requires_login", False)),
             )
         )
 
@@ -792,9 +797,12 @@ async def get_public_note(
     note = response.data
     user = note.get("users") or {}
     salon_ids = _fetch_note_salon_ids(supabase, note["id"])
+    requires_login = bool(note.get("requires_login", False))
 
     has_access = False
-    if not note.get("is_paid"):
+    if requires_login and not user_id:
+        has_access = False
+    elif not note.get("is_paid"):
         has_access = True
     elif user_id:
         if note.get("author_id") == user_id:
@@ -806,10 +814,13 @@ async def get_public_note(
 
     content_blocks = note.get("content_blocks") or []
     visible_blocks: List[Any] = []
-    for block in content_blocks:
-        access = block.get("access", "public")
-        if access != "paid" or has_access:
-            visible_blocks.append(block)
+    if requires_login and not user_id:
+        visible_blocks = []
+    else:
+        for block in content_blocks:
+            access = block.get("access", "public")
+            if access != "paid" or has_access:
+                visible_blocks.append(block)
 
     visible_blocks = augment_link_blocks(visible_blocks)
 
@@ -838,6 +849,7 @@ async def get_public_note(
         official_share_tweet_url=note.get("official_share_tweet_url"),
         official_share_x_username=note.get("official_share_x_username"),
         salon_access_ids=salon_ids,
+        requires_login=requires_login,
     )
 
 
@@ -870,6 +882,7 @@ async def get_note_via_share_token(
 
     user = note.get("users") or {}
     salon_ids = _fetch_note_salon_ids(supabase, note["id"])
+    requires_login = bool(note.get("requires_login", False)) if (note.get("visibility") == "public") else False
 
     has_access = False
     if not note.get("is_paid"):
@@ -916,6 +929,7 @@ async def get_note_via_share_token(
         official_share_tweet_url=note.get("official_share_tweet_url"),
         official_share_x_username=note.get("official_share_x_username"),
         salon_access_ids=salon_ids,
+        requires_login=requires_login,
     )
 
 
@@ -974,6 +988,10 @@ async def update_note(
     if current_visibility not in {"public", "limited", "private"}:
         current_visibility = "private"
 
+    requested_requires_login = bool(note.get("requires_login", False))
+    if data.requires_login is not None:
+        requested_requires_login = data.requires_login
+
     if data.visibility is not None:
         new_visibility = data.visibility
         if new_visibility not in {"public", "limited", "private"}:
@@ -990,6 +1008,9 @@ async def update_note(
     if current_visibility == "limited" and not note.get("share_token") and "share_token" not in update_data:
         update_data["share_token"] = _generate_share_token()
         update_data["share_token_rotated_at"] = datetime.utcnow().isoformat()
+
+    effective_requires_login = bool(requested_requires_login) if current_visibility == "public" else False
+    update_data["requires_login"] = effective_requires_login
 
     if data.title and data.title != note.get("title"):
         update_data["title"] = data.title
