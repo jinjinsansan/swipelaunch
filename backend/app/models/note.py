@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from typing import List, Optional, Literal, Any, Dict
 from datetime import datetime
-from pydantic import BaseModel, Field, validator, model_validator, root_validator
+from pydantic import BaseModel, Field, validator, root_validator
 
 
 # Visibility options for notes
 NoteVisibility = Literal["public", "limited", "private"]
-NoteEditorType = Literal["classic", "note"]
 
 
 class NoteBlock(BaseModel):
@@ -24,8 +23,6 @@ class NoteCreateRequest(BaseModel):
     cover_image_url: Optional[str] = Field(None, description="カバー画像URL")
     excerpt: Optional[str] = Field(None, description="一覧表示用の概要")
     content_blocks: List[NoteBlock] = Field(default_factory=list)
-    rich_content: Optional[Dict[str, Any]] = Field(None, description="NOTE風エディタのコンテンツ(JSONContent)")
-    editor_type: NoteEditorType = Field("classic", description="利用するエディタ種別(classic/note)")
     is_paid: bool = Field(False, description="有料記事フラグ")
     allow_point_purchase: bool = Field(True, description="ポイントでの購入を許可するか")
     price_points: Optional[int] = Field(None, ge=0, description="有料記事の価格（ポイント）")
@@ -38,19 +35,11 @@ class NoteCreateRequest(BaseModel):
     visibility: NoteVisibility = Field("private", description="公開範囲 (public/limited/private)")
     requires_login: bool = Field(False, description="公開時にログインを必須にするか")
 
-    @model_validator(mode="after")
-    def ensure_editor_payload(cls, model: "NoteCreateRequest") -> "NoteCreateRequest":
-        editor_type = model.editor_type if model.editor_type in {"classic", "note"} else "classic"
-        if editor_type == "classic":
-            if not model.content_blocks:
-                raise ValueError("content_blocks は少なくとも1件必要です")
-            model.rich_content = None
-        else:
-            if not isinstance(model.rich_content, dict) or not model.rich_content.get("type"):
-                raise ValueError("rich_content は NOTE風エディタで必須です")
-            model.content_blocks = model.content_blocks or []
-        model.editor_type = editor_type
-        return model
+    @validator("content_blocks")
+    def validate_blocks(cls, value: List[NoteBlock]) -> List[NoteBlock]:
+        if not value:
+            raise ValueError("content_blocks は少なくとも1件必要です")
+        return value
 
     @validator("price_points", always=True)
     def validate_price(cls, value: Optional[int], values: dict) -> Optional[int]:
@@ -118,7 +107,6 @@ class NoteUpdateRequest(BaseModel):
     cover_image_url: Optional[str] = None
     excerpt: Optional[str] = None
     content_blocks: Optional[List[NoteBlock]] = None
-    rich_content: Optional[Dict[str, Any]] = None
     is_paid: Optional[bool] = None
     price_points: Optional[int] = Field(None, ge=0)
     price_jpy: Optional[int] = Field(None, ge=0)
@@ -189,7 +177,6 @@ class NoteSummaryResponse(BaseModel):
     slug: str
     cover_image_url: Optional[str] = None
     excerpt: Optional[str] = None
-    editor_type: NoteEditorType = "classic"
     is_paid: bool
     price_points: int
     price_jpy: Optional[int] = None
@@ -219,7 +206,6 @@ class NoteSummaryResponse(BaseModel):
 
 class NoteDetailResponse(NoteSummaryResponse):
     content_blocks: List[Any] = Field(default_factory=list)
-    rich_content: Optional[Dict[str, Any]] = None
     salon_access_ids: List[str] = Field(default_factory=list)
 
 
@@ -236,7 +222,6 @@ class PublicNoteSummary(BaseModel):
     slug: str
     cover_image_url: Optional[str] = None
     excerpt: Optional[str] = None
-    editor_type: NoteEditorType = "classic"
     is_paid: bool
     price_points: int
     price_jpy: Optional[int] = None
@@ -270,7 +255,6 @@ class PublicNoteDetailResponse(BaseModel):
     author_username: Optional[str] = None
     cover_image_url: Optional[str] = None
     excerpt: Optional[str] = None
-    editor_type: NoteEditorType = "classic"
     is_paid: bool
     price_points: int
     price_jpy: Optional[int] = None
@@ -280,7 +264,6 @@ class PublicNoteDetailResponse(BaseModel):
     tax_inclusive: bool
     has_access: bool
     content_blocks: List[Any] = Field(default_factory=list)
-    rich_content: Optional[Dict[str, Any]] = None
     published_at: Optional[datetime] = None
     is_featured: bool = False
     categories: List[str] = Field(default_factory=list)

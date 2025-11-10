@@ -259,7 +259,6 @@ class AdminUserNoteSchema(BaseModel):
     slug: str
     is_paid: bool
     price_points: int
-    editor_type: str = "classic"
     created_at: str
     updated_at: str
     published_at: Optional[str] = None
@@ -462,7 +461,6 @@ class NoteModerationItemSchema(BaseModel):
     is_paid: bool
     allow_point_purchase: bool
     allow_jpy_purchase: bool
-    editor_type: str = "classic"
     total_purchases: int
     total_shares: int
     suspicious_shares: int
@@ -485,7 +483,6 @@ class NoteModerationListResponse(BaseModel):
 class NoteModerationDetailSchema(NoteModerationItemSchema):
     excerpt: Optional[str] = None
     content_blocks: Any
-    rich_content: Optional[Dict[str, Any]] = None
     official_share_tweet_url: Optional[str] = None
     official_share_x_username: Optional[str] = None
 
@@ -985,7 +982,7 @@ async def get_admin_user_detail(
         notes_response = (
             supabase
             .table("notes")
-            .select("id,title,slug,status,is_paid,price_points,editor_type,created_at,updated_at,published_at,categories")
+            .select("id,title,slug,status,is_paid,price_points,created_at,updated_at,published_at,categories")
             .eq("author_id", user_id)
             .order("updated_at", desc=True)
             .execute()
@@ -1015,7 +1012,6 @@ async def get_admin_user_detail(
                 slug=note.get("slug", ""),
                 is_paid=bool(note.get("is_paid", False)),
                 price_points=int(note.get("price_points") or 0),
-                editor_type=str(note.get("editor_type") or "classic"),
                 created_at=note.get("created_at", now_utc_iso()),
                 updated_at=note.get("updated_at", now_utc_iso()),
                 published_at=note.get("published_at"),
@@ -1252,7 +1248,7 @@ async def list_notes_for_moderation(
         supabase = get_supabase()
         select_fields = (
             "id,author_id,title,status,is_paid,price_points,price_jpy,allow_point_purchase,"
-            "allow_jpy_purchase,editor_type,created_at,updated_at,published_at,categories"
+            "allow_jpy_purchase,created_at,updated_at,published_at,categories"
         )
         query = supabase.table("notes").select(select_fields, count="exact")
         if status:
@@ -1365,7 +1361,6 @@ async def list_notes_for_moderation(
                 is_paid=bool(note.get("is_paid", False)),
                 allow_point_purchase=bool(note.get("allow_point_purchase", True)),
                 allow_jpy_purchase=bool(note.get("allow_jpy_purchase", False)),
-                editor_type=str(note.get("editor_type") or "classic"),
                 total_purchases=total_purchases,
                 total_shares=total_shares,
                 suspicious_shares=suspicious_shares,
@@ -1406,8 +1401,7 @@ async def get_note_moderation_detail(
             .table("notes")
             .select(
                 "id,author_id,title,status,is_paid,price_points,price_jpy,allow_point_purchase,allow_jpy_purchase,"
-                "editor_type,created_at,updated_at,published_at,categories,excerpt,content_blocks,rich_content,"
-                "official_share_tweet_url,official_share_x_username"
+                "created_at,updated_at,published_at,categories,excerpt,content_blocks,official_share_tweet_url,official_share_x_username"
             )
             .eq("id", note_id)
             .single()
@@ -1488,7 +1482,6 @@ async def get_note_moderation_detail(
             is_paid=bool(note.get("is_paid", False)),
             allow_point_purchase=bool(note.get("allow_point_purchase", True)),
             allow_jpy_purchase=bool(note.get("allow_jpy_purchase", False)),
-                editor_type=str(note.get("editor_type") or "classic"),
             total_purchases=total_purchases,
             total_shares=total_shares,
             suspicious_shares=suspicious_shares,
@@ -1502,7 +1495,6 @@ async def get_note_moderation_detail(
             excerpt=note.get("excerpt"),
             content_blocks=note.get("content_blocks") or [],
             official_share_tweet_url=note.get("official_share_tweet_url"),
-            rich_content=note.get("rich_content") if isinstance(note.get("rich_content"), dict) else None,
             official_share_x_username=note.get("official_share_x_username"),
         )
     except HTTPException:

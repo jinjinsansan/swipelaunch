@@ -37,7 +37,7 @@ from app.services.purchase_notifications import (
     send_purchase_notification,
     send_seller_purchase_notification,
 )
-from app.services.note_content import augment_link_blocks, filter_rich_content
+from app.services.note_content import augment_link_blocks
 from app.utils.locale import normalize_locale, locale_path_prefix, DEFAULT_LOCALE
 
 
@@ -174,38 +174,10 @@ def generate_unique_slug(supabase: Client, base_slug: str, exclude_note_id: Opti
         suffix += 1
 
 
-def _normalize_editor_type(value: Optional[Any]) -> str:
-    if isinstance(value, str) and value in {"classic", "note"}:
-        return value
-    return "classic"
-
-
-def _build_visible_rich_content(
-    note: Dict[str, Any],
-    *,
-    has_access: bool,
-    requires_login: bool,
-    user_id: Optional[str],
-) -> Optional[Dict[str, Any]]:
-    editor_type = _normalize_editor_type(note.get("editor_type"))
-    if editor_type != "note":
-        return None
-
-    raw_rich = note.get("rich_content")
-    if not isinstance(raw_rich, dict):
-        return None
-
-    if requires_login and not user_id:
-        return {"type": raw_rich.get("type", "doc"), "content": []}
-
-    return filter_rich_content(raw_rich, include_paid=has_access)
-
-
 def map_note_summary(record: Dict[str, Any], *, locale: Optional[str] = None) -> NoteSummaryResponse:
     visibility = record.get("visibility") or ("public" if record.get("status") == "published" else "private")
     visibility = visibility if visibility in {"public", "limited", "private"} else "private"
     share_token = record.get("share_token") if visibility == "limited" else None
-    editor_type = _normalize_editor_type(record.get("editor_type"))
     return NoteSummaryResponse(
         id=record["id"],
         author_id=record["author_id"],
@@ -213,7 +185,6 @@ def map_note_summary(record: Dict[str, Any], *, locale: Optional[str] = None) ->
         slug=record.get("slug", ""),
         cover_image_url=record.get("cover_image_url"),
         excerpt=record.get("excerpt"),
-        editor_type=editor_type,
         is_paid=bool(record.get("is_paid")),
         price_points=int(record.get("price_points") or 0),
         price_jpy=int(record.get("price_jpy")) if record.get("price_jpy") is not None else None,
@@ -241,14 +212,10 @@ def map_note_summary(record: Dict[str, Any], *, locale: Optional[str] = None) ->
 
 def map_note_detail(record: Dict[str, Any], salon_ids: Optional[List[str]] = None, *, locale: Optional[str] = None) -> NoteDetailResponse:
     summary = map_note_summary(record, locale=locale)
-    raw_blocks = record.get("content_blocks") or []
-    content_blocks = augment_link_blocks(raw_blocks) if summary.editor_type == "classic" else list(raw_blocks)
-    raw_rich = record.get("rich_content")
-    rich_content = raw_rich if isinstance(raw_rich, dict) else None
+    content_blocks = augment_link_blocks(record.get("content_blocks") or [])
     return NoteDetailResponse(
         **summary.dict(),
         content_blocks=content_blocks,
-        rich_content=rich_content,
         salon_access_ids=salon_ids or [],
     )
 
@@ -418,9 +385,6 @@ async def create_note(
 
     requires_login = bool(data.requires_login) if visibility == "public" else False
 
-    editor_type = data.editor_type if data.editor_type in {"classic", "note"} else "classic"
-    rich_content = data.rich_content if editor_type == "note" else None
-
     note_data = {
         "author_id": user_id,
         "title": data.title,
@@ -428,8 +392,6 @@ async def create_note(
         "cover_image_url": data.cover_image_url,
         "excerpt": data.excerpt,
         "content_blocks": [block.model_dump() for block in data.content_blocks],
-        "rich_content": rich_content,
-        "editor_type": editor_type,
         "is_paid": is_paid_flag,
         "price_points": price_points,
         "price_jpy": price_jpy,
@@ -752,7 +714,7 @@ async def list_public_notes(
         supabase
         .table("notes")
         .select(
-            "id,title,slug,cover_image_url,excerpt,editor_type,is_paid,price_points,price_jpy,allow_point_purchase,allow_jpy_purchase,tax_rate,tax_inclusive,published_at,categories,allow_share_unlock,official_share_tweet_id,official_share_tweet_url,official_share_x_username,is_featured,requires_login,users(username)",
+            "id,title,slug,cover_image_url,excerpt,is_paid,price_points,price_jpy,allow_point_purchase,allow_jpy_purchase,tax_rate,tax_inclusive,published_at,categories,allow_share_unlock,official_share_tweet_id,official_share_tweet_url,official_share_x_username,is_featured,requires_login,users(username)",
             count="exact"
         )
         .eq("status", "published")
@@ -785,7 +747,6 @@ async def list_public_notes(
                 slug=record.get("slug", ""),
                 cover_image_url=record.get("cover_image_url"),
                 excerpt=record.get("excerpt"),
-                editor_type=_normalize_editor_type(record.get("editor_type")),
                 is_paid=bool(record.get("is_paid")),
                 price_points=int(record.get("price_points") or 0),
                 price_jpy=int(record.get("price_jpy")) if record.get("price_jpy") is not None else None,
@@ -837,7 +798,6 @@ async def get_public_note(
     user = note.get("users") or {}
     salon_ids = _fetch_note_salon_ids(supabase, note["id"])
     requires_login = bool(note.get("requires_login", False))
-    editor_type = _normalize_editor_type(note.get("editor_type"))
 
     has_access = False
     if requires_login and not user_id:
@@ -854,24 +814,15 @@ async def get_public_note(
 
     content_blocks = note.get("content_blocks") or []
     visible_blocks: List[Any] = []
-    if editor_type == "classic":
-        if requires_login and not user_id:
-            visible_blocks = []
-        else:
-            for block in content_blocks:
-                access = block.get("access", "public")
-                if access != "paid" or has_access:
-                    visible_blocks.append(block)
-        visible_blocks = augment_link_blocks(visible_blocks)
-    else:
+    if requires_login and not user_id:
         visible_blocks = []
+    else:
+        for block in content_blocks:
+            access = block.get("access", "public")
+            if access != "paid" or has_access:
+                visible_blocks.append(block)
 
-    visible_rich = _build_visible_rich_content(
-        note,
-        has_access=has_access,
-        requires_login=requires_login,
-        user_id=user_id,
-    )
+    visible_blocks = augment_link_blocks(visible_blocks)
 
     return PublicNoteDetailResponse(
         id=note["id"],
@@ -881,7 +832,6 @@ async def get_public_note(
         author_username=user.get("username"),
         cover_image_url=note.get("cover_image_url"),
         excerpt=note.get("excerpt"),
-        editor_type=editor_type,
         is_paid=bool(note.get("is_paid")),
         price_points=int(note.get("price_points") or 0),
         price_jpy=int(note.get("price_jpy")) if note.get("price_jpy") is not None else None,
@@ -891,7 +841,6 @@ async def get_public_note(
         tax_inclusive=bool(note.get("tax_inclusive", True)),
         has_access=has_access,
         content_blocks=visible_blocks,
-        rich_content=visible_rich,
         published_at=note.get("published_at"),
         is_featured=bool(note.get("is_featured", False)),
         categories=list(note.get("categories") or []),
@@ -934,7 +883,6 @@ async def get_note_via_share_token(
     user = note.get("users") or {}
     salon_ids = _fetch_note_salon_ids(supabase, note["id"])
     requires_login = bool(note.get("requires_login", False)) if (note.get("visibility") == "public") else False
-    editor_type = _normalize_editor_type(note.get("editor_type"))
 
     has_access = False
     if not note.get("is_paid"):
@@ -947,21 +895,14 @@ async def get_note_via_share_token(
             if not has_access:
                 has_access = _user_has_active_salon_access(supabase, user_id, salon_ids)
 
+    content_blocks = note.get("content_blocks") or []
     visible_blocks: List[Any] = []
-    if editor_type == "classic":
-        content_blocks = note.get("content_blocks") or []
-        for block in content_blocks:
-            access = block.get("access", "public")
-            if access != "paid" or has_access:
-                visible_blocks.append(block)
-        visible_blocks = augment_link_blocks(visible_blocks)
+    for block in content_blocks:
+        access = block.get("access", "public")
+        if access != "paid" or has_access:
+            visible_blocks.append(block)
 
-    visible_rich = _build_visible_rich_content(
-        note,
-        has_access=has_access,
-        requires_login=requires_login,
-        user_id=user_id,
-    )
+    visible_blocks = augment_link_blocks(visible_blocks)
 
     return PublicNoteDetailResponse(
         id=note["id"],
@@ -971,7 +912,6 @@ async def get_note_via_share_token(
         author_username=user.get("username"),
         cover_image_url=note.get("cover_image_url"),
         excerpt=note.get("excerpt"),
-        editor_type=editor_type,
         is_paid=bool(note.get("is_paid")),
         price_points=int(note.get("price_points") or 0),
         price_jpy=int(note.get("price_jpy")) if note.get("price_jpy") is not None else None,
@@ -981,7 +921,6 @@ async def get_note_via_share_token(
         tax_inclusive=bool(note.get("tax_inclusive", True)),
         has_access=has_access,
         content_blocks=visible_blocks,
-        rich_content=visible_rich,
         published_at=note.get("published_at"),
         is_featured=bool(note.get("is_featured", False)),
         categories=list(note.get("categories") or []),
@@ -1044,7 +983,6 @@ async def update_note(
     ensure_note_access(note, user_id)
 
     update_data: Dict[str, Any] = {"updated_at": datetime.utcnow().isoformat()}
-    editor_type = _normalize_editor_type(note.get("editor_type"))
 
     current_visibility = note.get("visibility") or "private"
     if current_visibility not in {"public", "limited", "private"}:
@@ -1087,18 +1025,9 @@ async def update_note(
         update_data["excerpt"] = data.excerpt
 
     if data.content_blocks is not None:
-        if editor_type != "classic":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="NOTE風エディタの記事は rich_content を更新してください")
         if not data.content_blocks:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="content_blocks は空にできません")
         update_data["content_blocks"] = [block.model_dump() for block in data.content_blocks]
-
-    if data.rich_content is not None:
-        if editor_type != "note":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="クラシックエディタの記事では rich_content は使用できません")
-        if not isinstance(data.rich_content, dict) or not data.rich_content.get("type"):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="rich_content の形式が不正です")
-        update_data["rich_content"] = data.rich_content
 
     target_is_paid = bool(note.get("is_paid"))
     if data.is_paid is not None:
