@@ -50,10 +50,6 @@ class SubscriptionCheckoutRequest(BaseModel):
         default=None,
         description="Additional metadata to persist with the subscription",
     )
-    payment_method_record_id: Optional[str] = Field(
-        default=None,
-        description="Saved payment method record to use for checkout",
-    )
 
 
 class SubscriptionCheckoutResponse(BaseModel):
@@ -78,7 +74,6 @@ class UserSubscriptionResponse(BaseModel):
     seller_username: Optional[str] = None
     salon_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
-    payment_method_record_id: Optional[str] = None
     cancelable: bool = True
     created_at: datetime
     updated_at: datetime

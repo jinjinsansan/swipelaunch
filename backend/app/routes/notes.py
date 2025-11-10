@@ -37,7 +37,6 @@ from app.services.purchase_notifications import (
     send_purchase_notification,
     send_seller_purchase_notification,
 )
-from app.utils.payment_methods import load_payment_method_or_404
 from app.services.note_content import augment_link_blocks
 from app.utils.locale import normalize_locale, locale_path_prefix, DEFAULT_LOCALE
 
@@ -1454,7 +1453,6 @@ def _user_has_purchased(supabase: Client, note_id: str, user_id: str) -> bool:
 async def purchase_note(
     note_id: str,
     payment_method: Literal["points", "yen"] = Query("points"),
-    payment_method_record_id: Optional[str] = Query(None, alias="payment_method_record_id"),
     locale: Optional[str] = Query(None, min_length=2, max_length=5),
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
@@ -1591,22 +1589,7 @@ async def purchase_note(
     success_url = f"{frontend_url}{success_path}?external_id={external_id}"
     error_url = f"{frontend_url}{error_path}?external_id={external_id}"
 
-    saved_method = None
-    if payment_method_record_id:
-        saved_method = load_payment_method_or_404(
-            supabase,
-            user_id=user_id,
-            record_id=payment_method_record_id,
-        )
-
     try:
-        extra_kwargs = {}
-        if saved_method:
-            extra_kwargs.update({
-                "customer_id": saved_method.get("one_lat_customer_id"),
-                "default_payment_method_id": saved_method.get("payment_method_id"),
-            })
-
         checkout_data = await one_lat_client.create_checkout_preference(
             amount=amount_usd,
             currency="USD",
@@ -1617,11 +1600,6 @@ async def purchase_note(
             error_url=error_url,
             payer_email=user_record.get("email"),
             payer_name=user_record.get("username"),
-            metadata={
-                "note_id": note_id,
-                "saved_payment_method_id": saved_method.get("payment_method_id") if saved_method else None,
-            },
-            **extra_kwargs,
         )
     except Exception as exc:  # pragma: no cover - external dependency
         logger.exception(
@@ -1657,7 +1635,6 @@ async def purchase_note(
         "external_id": external_id,
         "checkout_preference_id": checkout_data.get("id"),
         "metadata": metadata,
-        "payment_method_record_id": saved_method.get("id") if saved_method else None,
     }
 
     try:

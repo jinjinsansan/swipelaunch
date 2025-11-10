@@ -76,10 +76,6 @@ class ProductListResponse(BaseModel):
 class ProductPurchaseRequest(BaseModel):
     quantity: int = Field(default=1, ge=1, description="購入数量")
     payment_method: Literal["points", "yen"] = Field("points", description="決済手段")
-    payment_method_record_id: Optional[str] = Field(
-        default=None,
-        description="保存済みの円決済用支払い方法レコードID"
-    )
 
 # 商品購入レスポンス
 class ProductPurchaseResponse(BaseModel):

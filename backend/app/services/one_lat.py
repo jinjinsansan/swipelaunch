@@ -44,9 +44,6 @@ class OneLatClient:
         expiration_minutes: int = 15,
         preference_type: str = "PAYMENT",
         payment_link_id: Optional[str] = None,
-        customer_id: Optional[str] = None,
-        default_payment_method_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Checkout Preferenceを作成
@@ -103,14 +100,6 @@ class OneLatClient:
             if payer_phone:
                 payer_data["phone_number"] = payer_phone
             payload["payer"] = payer_data
-
-        if customer_id:
-            payload["customer"] = {"id": customer_id}
-            if default_payment_method_id:
-                payload["customer"]["default_payment_method_id"] = default_payment_method_id
-
-        if metadata:
-            payload["metadata"] = metadata
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -131,26 +120,6 @@ class OneLatClient:
             raise Exception(f"ONE.lat API Error: {e.response.text}")
         except Exception as e:
             logger.error(f"❌ Failed to create checkout preference: {str(e)}")
-            raise
-
-    async def get_checkout_preference(self, preference_id: str) -> Dict[str, Any]:
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/v1/checkout_preferences/{preference_id}",
-                    headers=self._get_headers(),
-                )
-
-                response.raise_for_status()
-                data = response.json()
-                logger.info("✅ Checkout Preference retrieved: %s", preference_id)
-                return data
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ ONE.lat API Error: {e.response.status_code} - {e.response.text}")
-            raise Exception(f"ONE.lat API Error: {e.response.text}")
-        except Exception as e:
-            logger.error(f"❌ Failed to retrieve checkout preference: {str(e)}")
             raise
     
     async def get_payment_order(self, payment_order_id: str) -> Dict[str, Any]:

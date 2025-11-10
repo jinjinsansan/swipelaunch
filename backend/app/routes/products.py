@@ -25,7 +25,6 @@ from app.services.purchase_notifications import (
     send_seller_purchase_notification,
 )
 from app.utils.auth import decode_access_token
-from app.utils.payment_methods import load_payment_method_or_404
 
 router = APIRouter(prefix="/products", tags=["products"])
 security = HTTPBearer(auto_error=False)
@@ -971,14 +970,6 @@ async def purchase_product(
                 thanks_lp_slug=thanks_lp_slug
             )
 
-        saved_method = None
-        if payment_method == "yen" and data.payment_method_record_id:
-            saved_method = load_payment_method_or_404(
-                supabase,
-                user_id=user["id"],
-                record_id=data.payment_method_record_id,
-            )
-
         if payment_method != "yen":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1008,13 +999,6 @@ async def purchase_product(
         success_url = f"{frontend_url}/orders/complete?external_id={external_id}"
         error_url = f"{frontend_url}/orders/error?external_id={external_id}"
 
-        checkout_kwargs = {}
-        if saved_method:
-            checkout_kwargs.update({
-                "customer_id": saved_method.get("one_lat_customer_id"),
-                "default_payment_method_id": saved_method.get("payment_method_id"),
-            })
-
         checkout_data = await one_lat_client.create_checkout_preference(
             amount=amount_usd,
             currency="USD",
@@ -1024,13 +1008,7 @@ async def purchase_product(
             success_url=success_url,
             error_url=error_url,
             payer_email=user.get("email"),
-            payer_name=user.get("username"),
-            metadata={
-                "product_id": product_id,
-                "saved_payment_method_id": saved_method.get("payment_method_id") if saved_method else None,
-                "payment_method_record_id": saved_method.get("id") if saved_method else None,
-            },
-            **checkout_kwargs,
+            payer_name=user.get("username")
         )
 
         metadata = {
@@ -1039,8 +1017,6 @@ async def purchase_product(
             "thanks_lp_id": product.get("thanks_lp_id"),
             "redirect_url": product.get("redirect_url"),
             "lp_id": product.get("lp_id"),
-            "payment_method_record_id": saved_method.get("id") if saved_method else None,
-            "saved_payment_method_id": saved_method.get("payment_method_id") if saved_method else None,
         }
 
         order_payload = {
@@ -1056,7 +1032,6 @@ async def purchase_product(
             "external_id": external_id,
             "checkout_preference_id": checkout_data.get("id"),
             "metadata": metadata,
-            "payment_method_record_id": saved_method.get("id") if saved_method else None,
         }
 
         order_response = supabase.table("payment_orders").insert(order_payload).execute()

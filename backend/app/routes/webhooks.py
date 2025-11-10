@@ -631,11 +631,6 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
     now = datetime.now(timezone.utc)
 
     session_metadata = _ensure_metadata_dict(session.get("metadata")) if session else {}
-    session_payment_method_record_id: Optional[str] = None
-    if isinstance(session, dict):
-        session_payment_method_record_id = session.get("payment_method_record_id")
-    if not session_payment_method_record_id and isinstance(session_metadata, dict):
-        session_payment_method_record_id = session_metadata.get("payment_method_record_id")
     billing_method = session_metadata.get("billing_method") if isinstance(session_metadata, dict) else None
     billing_method_normalized = str(billing_method).lower() if billing_method is not None else ""
 
@@ -652,8 +647,6 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
             "status": status or event_type,
             "metadata": session_metadata,
         }
-        if session_payment_method_record_id:
-            session_payload["payment_method_record_id"] = session_payment_method_record_id
         insert_response = (
             supabase.table("one_lat_subscription_sessions").insert(session_payload).execute()
         )
@@ -676,8 +669,6 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
         session_update["salon_id"] = salon_id
     if session_metadata:
         session_update["metadata"] = session_metadata
-    if session_payment_method_record_id:
-        session_update["payment_method_record_id"] = session_payment_method_record_id
     supabase.table("one_lat_subscription_sessions").update(session_update).eq(
         "id", session.get("id")
     ).execute()
@@ -725,8 +716,6 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
     }
     if salon_id:
         subscription_update["salon_id"] = salon_id
-    if session_payment_method_record_id:
-        subscription_update["payment_method_record_id"] = session_payment_method_record_id
 
     if subscription:
         supabase.table("user_subscriptions").update(subscription_update).eq(
@@ -752,8 +741,6 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
         }
         if salon_id:
             subscription_payload["salon_id"] = salon_id
-        if session_payment_method_record_id:
-            subscription_payload["payment_method_record_id"] = session_payment_method_record_id
         insert_subscription = (
             supabase.table("user_subscriptions").insert(subscription_payload).execute()
         )
