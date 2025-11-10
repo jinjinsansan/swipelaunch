@@ -114,6 +114,7 @@ def test_map_note_summary_builds_share_url(monkeypatch):
         "author_id": "user-1",
         "title": "Sample",
         "slug": "sample",
+        "editor_type": "classic",
         "content_blocks": [],
         "is_paid": False,
         "price_points": 0,
@@ -141,6 +142,7 @@ def test_rotate_share_token_requires_limited_visibility(monkeypatch):
         "visibility": "public",
         "share_token": None,
         "status": "draft",
+        "editor_type": "classic",
         "content_blocks": [],
         "is_paid": False,
         "price_points": 0,
@@ -169,6 +171,7 @@ def test_rotate_share_token_generates_new_value(monkeypatch):
         "visibility": "limited",
         "share_token": "old-token",
         "status": "draft",
+        "editor_type": "classic",
         "content_blocks": [],
         "is_paid": False,
         "price_points": 0,
@@ -204,6 +207,7 @@ def test_get_note_via_share_token_returns_note(monkeypatch):
         "visibility": "limited",
         "share_token": "good-token",
         "status": "published",
+        "editor_type": "classic",
         "content_blocks": [],
         "is_paid": False,
         "price_points": 0,
@@ -237,6 +241,7 @@ def test_get_note_via_share_token_rejects_non_limited(monkeypatch):
         "visibility": "public",
         "share_token": "public-token",
         "status": "published",
+        "editor_type": "classic",
         "content_blocks": [],
         "is_paid": False,
         "price_points": 0,
@@ -256,3 +261,58 @@ def test_get_note_via_share_token_rejects_non_limited(monkeypatch):
     response = client.get("/api/notes/share/public-token")
 
     assert response.status_code == 404
+
+
+def test_get_public_note_filters_paid_rich_content(monkeypatch):
+    note = {
+        "id": "note-1",
+        "author_id": "user-1",
+        "title": "Rich note",
+        "slug": "rich-note",
+        "visibility": "public",
+        "status": "published",
+        "editor_type": "note",
+        "is_paid": True,
+        "price_points": 100,
+        "allow_point_purchase": True,
+        "allow_jpy_purchase": False,
+        "tax_inclusive": True,
+        "requires_login": False,
+        "content_blocks": [],
+        "rich_content": {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "free"}],
+                    "attrs": {"access": "public"},
+                },
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "paid"}],
+                    "attrs": {"access": "paid"},
+                },
+            ],
+        },
+        "categories": [],
+        "allow_share_unlock": False,
+        "tax_rate": 10.0,
+    }
+
+    fake_supabase = FakeSupabase(note)
+    monkeypatch.setattr(notes, "get_supabase", lambda: fake_supabase)
+    monkeypatch.setattr(notes, "_fetch_note_salon_ids", lambda *_args: [])
+    monkeypatch.setattr(notes, "_user_has_purchased", lambda *_args: False)
+    monkeypatch.setattr(notes, "_user_has_active_salon_access", lambda *_args: False)
+
+    response = client.get("/api/notes/public/rich-note")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["editor_type"] == "note"
+    rich = body.get("rich_content") or {}
+    assert rich.get("type") == "doc"
+    contents = rich.get("content") or []
+    assert len(contents) == 1
+    assert contents[0].get("attrs", {}).get("access") == "public"
+    assert contents[0].get("content", [])[0].get("text") == "free"
