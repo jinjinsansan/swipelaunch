@@ -18,7 +18,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _get_frontend_base() -> str:
+def _frontend_base() -> str:
     return settings.frontend_url.rstrip("/") if settings.frontend_url else "https://d-swipe.com"
 
 
@@ -27,9 +27,24 @@ def _creator_display_name(creator: Optional[Dict[str, Any]]) -> str:
         return "クリエイター"
     for key in ("display_name", "username", "name"):
         value = creator.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
     return "クリエイター"
+
+
+def _is_email_opt_in(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized in {"true", "t", "1", "yes", "y"}
+    if isinstance(value, (int, float)):
+        return value != 0
+    return bool(value)
 
 
 def _collect_followers(client: Client, creator_id: str) -> Tuple[List[Dict[str, object]], List[str], List[str]]:
@@ -39,17 +54,19 @@ def _collect_followers(client: Client, creator_id: str) -> Tuple[List[Dict[str, 
 
     follower_ids: List[str] = []
     email_opt_in_ids: List[str] = []
+
     for row in followers:
         follower_id = row.get("follower_id")
-        if isinstance(follower_id, str):
-            follower_ids.append(follower_id)
-            if row.get("notify_email", True):
-                email_opt_in_ids.append(follower_id)
+        if not isinstance(follower_id, str):
+            continue
+        follower_ids.append(follower_id)
+        if _is_email_opt_in(row.get("notify_email")):
+            email_opt_in_ids.append(follower_id)
 
     return followers, follower_ids, email_opt_in_ids
 
 
-def _dispatch_followers_notification(
+def _send_follow_notification(
     client: Client,
     *,
     creator_id: str,
@@ -57,7 +74,7 @@ def _dispatch_followers_notification(
     email_opt_in_ids: List[str],
     subject: str,
     body_text: str,
-    body_html: str,
+    body_html: Optional[str],
     category: str,
     metadata: Dict[str, Any],
     related_note_id: Optional[str] = None,
@@ -90,13 +107,13 @@ def _dispatch_followers_notification(
         payload["related_product_id"] = related_product_id
 
     message_insert = client.table("operator_messages").insert(payload).execute()
-    if not message_insert.data:
+    if not getattr(message_insert, "data", None):
         logger.warning("Failed to insert operator message for category %s", category)
         return
 
     message_row = message_insert.data[0]
-    message_id = message_row.get("id")
-    if not message_id:
+    message_id = message_row.get("id") if isinstance(message_row, dict) else None
+    if not isinstance(message_id, str):
         return
 
     client.table("operator_message_segments").insert(
@@ -125,23 +142,27 @@ def _dispatch_followers_notification(
 
     recipients: List[MailgunRecipient] = []
     email_to_user: Dict[str, str] = {}
+
     for contact in contacts:
         email = contact.get("email")
-        if not isinstance(email, str) or not email.strip():
+        if not isinstance(email, str):
             continue
-        normalized_email = email.strip().lower()
-        email_to_user[normalized_email] = contact.get("id")
+        normalized = email.strip().lower()
+        if not normalized:
+            continue
+        user_id = contact.get("id")
+        if isinstance(user_id, str):
+            email_to_user[normalized] = user_id
         name = contact.get("display_name") or contact.get("username") or None
-        recipients.append(MailgunRecipient(email=normalized_email, name=name))
+        recipients.append(MailgunRecipient(email=normalized, name=name))
 
     if not recipients:
         return
 
-    if settings.mailgun_default_from_email:
-        sender_email = settings.mailgun_default_from_email
-    elif settings.mailgun_domain:
+    sender_email = settings.mailgun_default_from_email
+    if not sender_email and settings.mailgun_domain:
         sender_email = f"no-reply@{settings.mailgun_domain}"
-    else:
+    if not sender_email:
         sender_email = "no-reply@d-swipe.com"
 
     sender_name = settings.mailgun_default_from_name or "D-swipe 運営"
@@ -161,7 +182,11 @@ def _dispatch_followers_notification(
         return
 
     accepted_lower = {email.lower() for email in accepted}
-    accepted_user_ids = [uid for email, uid in email_to_user.items() if email in accepted_lower and isinstance(uid, str)]
+    accepted_user_ids = [
+        user_id
+        for email, user_id in email_to_user.items()
+        if email in accepted_lower and isinstance(user_id, str)
+    ]
     if not accepted_user_ids:
         return
 
@@ -175,12 +200,12 @@ def _format_note_price(note: Dict[str, object]) -> str:
     if note.get("allow_point_purchase") and note.get("price_points"):
         try:
             parts.append(f"{int(note.get('price_points')):,} pt")
-        except Exception:  # pragma: no cover - defensive
+        except Exception:
             parts.append("ポイント決済")
     if note.get("allow_jpy_purchase") and note.get("price_jpy"):
         try:
             parts.append(f"¥{int(note.get('price_jpy')):,}")
-        except Exception:  # pragma: no cover
+        except Exception:
             parts.append("日本円決済")
     if parts:
         return " / ".join(parts)
@@ -204,7 +229,7 @@ def _build_note_bodies(display_name: str, note_title: str, note_excerpt: Optiona
     lines.append("－－－－－－－－－－－－")
     lines.append("このメールは D-swipe 運営から自動送信されています。")
 
-    text_body = "\n".join(lines)
+    text_body = "\\n".join(lines)
 
     html_parts = [
         f"<p>{intro}</p>",
@@ -225,7 +250,7 @@ def _build_note_bodies(display_name: str, note_title: str, note_excerpt: Optiona
 def handle_note_published(client: Client, note_row: Dict[str, object]) -> None:
     try:
         _handle_note_published(client, note_row)
-    except Exception:  # pragma: no cover - defensive logging
+    except Exception:
         logger.exception("Failed to notify followers for note %s", note_row.get("id"))
 
 
@@ -254,20 +279,16 @@ def _handle_note_published(client: Client, note_row: Dict[str, object]) -> None:
         return
 
     creator = fetch_creator(client, creator_id)
-    if not creator:
-        logger.info("Creator %s not found when sending note notification", creator_id)
-        return
-
     display_name = _creator_display_name(creator)
     note_title = str(note_row.get("title") or "新着SWipeコラム")
     note_excerpt = note_row.get("excerpt") if isinstance(note_row.get("excerpt"), str) else None
-    note_url = f"{_get_frontend_base()}/notes/{slug}"
+    note_url = f"{_frontend_base()}/notes/{slug}"
     price_text = _format_note_price(note_row)
 
     body_payload = _build_note_bodies(display_name, note_title, note_excerpt, note_url, price_text)
     subject = _build_note_subject(display_name, note_title)
 
-    _dispatch_followers_notification(
+    _send_follow_notification(
         client,
         creator_id=creator_id,
         follower_ids=follower_ids,
@@ -290,12 +311,12 @@ def _format_product_price(product: Dict[str, object]) -> Optional[str]:
     if product.get("allow_point_purchase") and product.get("price_in_points"):
         try:
             parts.append(f"{int(product.get('price_in_points')):,} pt")
-        except Exception:  # pragma: no cover
+        except Exception:
             parts.append("ポイント決済")
     if product.get("allow_jpy_purchase") and product.get("price_jpy"):
         try:
             parts.append(f"¥{int(product.get('price_jpy')):,}")
-        except Exception:  # pragma: no cover
+        except Exception:
             parts.append("日本円決済")
     if not parts:
         return None
@@ -340,7 +361,7 @@ def _build_lp_bodies(
     lines.append("－－－－－－－－－－－－")
     lines.append("このメールは D-swipe 運営から自動送信されています。")
 
-    text_body = "\n".join(lines)
+    text_body = "\\n".join(lines)
 
     html_parts = [f"<p>{intro}</p>"]
     if product_title and product_title != lp_title:
@@ -405,7 +426,7 @@ def handle_lp_product_listed(
 ) -> None:
     try:
         _handle_lp_product_listed(client, product_row, previous_row)
-    except Exception:  # pragma: no cover - defensive logging
+    except Exception:
         logger.exception(
             "Failed to notify followers for LP listing of product %s",
             product_row.get("id"),
@@ -427,18 +448,16 @@ def _handle_lp_product_listed(
         return
 
     lp_id = product_row.get("lp_id")
+    if not isinstance(lp_id, str):
+        return
+
     lp_data = _fetch_lp(client, lp_id, cache)
     if not lp_data or str(lp_data.get("status", "")).lower() != "published":
         return
 
     if previous_row and previous_row.get("lp_id") == lp_id:
         if _product_is_alllp_ready(previous_row, client, cache):
-            # Already listed before; no new notification needed
             return
-
-    followers, follower_ids, email_opt_in_ids = _collect_followers(client, creator_id)
-    if not follower_ids:
-        return
 
     existing = (
         client
@@ -453,12 +472,15 @@ def _handle_lp_product_listed(
     if existing.data:
         return
 
+    followers, follower_ids, email_opt_in_ids = _collect_followers(client, creator_id)
+    if not follower_ids:
+        return
+
     creator = fetch_creator(client, creator_id)
     display_name = _creator_display_name(creator)
 
-    frontend_base = _get_frontend_base()
     slug = lp_data.get("slug") if isinstance(lp_data, dict) else None
-    lp_url = f"{frontend_base}/view/{slug}" if isinstance(slug, str) and slug else f"{frontend_base}/products/{product_id}"
+    lp_url = f"{_frontend_base()}/view/{slug}" if isinstance(slug, str) and slug else f"{_frontend_base()}/products/{product_id}"
 
     lp_title = str(lp_data.get("title") or product_row.get("title") or "新着LP")
     product_title = product_row.get("title") if isinstance(product_row.get("title"), str) else None
@@ -468,7 +490,7 @@ def _handle_lp_product_listed(
     body_payload = _build_lp_bodies(display_name, lp_title, product_title, description, lp_url, price_text)
     subject = _build_lp_subject(display_name, lp_title)
 
-    _dispatch_followers_notification(
+    _send_follow_notification(
         client,
         creator_id=creator_id,
         follower_ids=follower_ids,
@@ -494,7 +516,7 @@ def _format_salon_price(salon: Dict[str, object]) -> Optional[str]:
     if salon.get("allow_jpy_subscription") and isinstance(monthly_price, (int, float)):
         try:
             parts.append(f"¥{int(monthly_price):,}/月")
-        except Exception:  # pragma: no cover
+        except Exception:
             parts.append("日本円決済")
     if salon.get("allow_point_subscription") and salon.get("subscription_plan_id"):
         parts.append("ポイント決済対応")
@@ -529,7 +551,7 @@ def _build_salon_bodies(
     lines.append("－－－－－－－－－－－－")
     lines.append("このメールは D-swipe 運営から自動送信されています。")
 
-    text_body = "\n".join(lines)
+    text_body = "\\n".join(lines)
 
     html_parts = [f"<p>{intro}</p>"]
     if price_text:
@@ -553,7 +575,7 @@ def handle_salon_published(
 ) -> None:
     try:
         _handle_salon_published(client, salon_row, previous_row)
-    except Exception:  # pragma: no cover - defensive logging
+    except Exception:
         logger.exception("Failed to notify followers for salon %s", salon_row.get("id"))
 
 
@@ -572,7 +594,6 @@ def _handle_salon_published(
         return
 
     if previous_row is not None and bool(previous_row.get("is_active", False)):
-        # Already active before; skip
         return
 
     followers, follower_ids, email_opt_in_ids = _collect_followers(client, creator_id)
@@ -584,12 +605,12 @@ def _handle_salon_published(
     salon_title = str(salon_row.get("title") or "オンラインサロン")
     description = salon_row.get("description") if isinstance(salon_row.get("description"), str) else None
     price_text = _format_salon_price(salon_row)
-    salon_url = f"{_get_frontend_base()}/salons/{salon_id}/public"
+    salon_url = f"{_frontend_base()}/salons/{salon_id}/public"
 
     body_payload = _build_salon_bodies(display_name, salon_title, description, salon_url, price_text)
     subject = _build_salon_subject(display_name, salon_title)
 
-    _dispatch_followers_notification(
+    _send_follow_notification(
         client,
         creator_id=creator_id,
         follower_ids=follower_ids,
