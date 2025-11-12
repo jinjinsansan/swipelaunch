@@ -1426,8 +1426,29 @@ async def publish_note(
     note = existing.data
     ensure_note_access(note, user_id)
 
-    if note.get("is_paid") and (note.get("price_points") is None or note.get("price_points") <= 0):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="有料記事の価格を設定してください")
+    if note.get("is_paid"):
+        allow_point_purchase = bool(note.get("allow_point_purchase", True))
+        allow_jpy_purchase = bool(note.get("allow_jpy_purchase", False))
+        has_point_price = note.get("price_points") is not None and note.get("price_points") > 0
+        has_jpy_price = note.get("price_jpy") is not None and note.get("price_jpy") > 0
+
+        if not allow_point_purchase and not allow_jpy_purchase:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="有料記事には決済手段を1つ以上有効にしてください",
+            )
+        if allow_point_purchase and not has_point_price:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="ポイント決済を有効にする場合は price_points を設定してください",
+            )
+        if allow_jpy_purchase and not has_jpy_price:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="日本円決済を有効にする場合は price_jpy を設定してください",
+            )
+        if not has_point_price and not has_jpy_price:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="有料記事の価格を設定してください")
 
     base_slug = normalize_slug(note.get("title", ""))
     slug = generate_unique_slug(supabase, base_slug, exclude_note_id=note_id)
