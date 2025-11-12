@@ -167,7 +167,7 @@ def _send_follow_notification(
 
     sender_name = settings.mailgun_default_from_name or "D-swipe 運営"
 
-    accepted = mailgun.send_bulk_email_async(
+    accepted = mailgun.send_bulk_email(
         subject=subject,
         text=body_text,
         html=body_html,
@@ -177,8 +177,8 @@ def _send_follow_notification(
         reply_to=settings.mailgun_default_reply_to,
     )
 
-    if not accepted and recipients:
-        accepted = mailgun.send_bulk_email(
+    if not accepted:
+        accepted = mailgun.send_bulk_email_async(
             subject=subject,
             text=body_text,
             html=body_html,
