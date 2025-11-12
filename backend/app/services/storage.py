@@ -5,6 +5,18 @@ from app.config import settings
 import uuid
 from typing import Optional
 
+
+def _has_r2_configuration() -> bool:
+    return all(
+        [
+            bool(settings.cloudflare_r2_account_id),
+            bool(settings.cloudflare_r2_access_key),
+            bool(settings.cloudflare_r2_secret_key),
+            bool(settings.cloudflare_r2_bucket_name),
+            bool(settings.cloudflare_r2_public_url),
+        ]
+    )
+
 class CloudflareR2Storage:
     """Cloudflare R2ストレージサービス"""
     
@@ -119,5 +131,16 @@ class CloudflareR2Storage:
         except ClientError:
             return False
 
+class DummyStorage:
+    def upload_file(self, *args, **kwargs):
+        raise RuntimeError("Cloudflare R2 storage is not configured")
+
+    def delete_file(self, *args, **kwargs):
+        raise RuntimeError("Cloudflare R2 storage is not configured")
+
+    def file_exists(self, *args, **kwargs):
+        raise RuntimeError("Cloudflare R2 storage is not configured")
+
+
 # シングルトンインスタンス
-storage = CloudflareR2Storage()
+storage = CloudflareR2Storage() if _has_r2_configuration() else DummyStorage()
