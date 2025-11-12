@@ -57,6 +57,7 @@ from app.routes import (
     auth,
     admin_payouts,
     account_share,
+    payments,
     line,
     lp,
     media,
@@ -95,6 +96,7 @@ app.include_router(admin.router, prefix="/api")
 app.include_router(admin_messages.router, prefix="/api")
 app.include_router(admin_payouts.router, prefix="/api")
 app.include_router(account_share.router, prefix="/api")
+app.include_router(payments.router, prefix="/api")
 app.include_router(line.router, prefix="/api")
 app.include_router(announcements.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")

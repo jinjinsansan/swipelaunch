@@ -32,6 +32,7 @@ from app.models.note import (
 )
 from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
+from app.services.billing_profiles import load_billing_profile, build_payer_details
 from app.services.platform_settings import get_platform_settings
 from app.services.purchase_notifications import (
     send_purchase_notification,
@@ -1657,6 +1658,9 @@ async def purchase_note(
     success_url = f"{frontend_url}{success_path}?external_id={external_id}"
     error_url = f"{frontend_url}{error_path}?external_id={external_id}"
 
+    billing_profile = load_billing_profile(supabase, user_id)
+    payer_details = build_payer_details(user_record, billing_profile)
+
     try:
         checkout_data = await one_lat_client.create_checkout_preference(
             amount=amount_usd,
@@ -1666,8 +1670,10 @@ async def purchase_note(
             webhook_url=webhook_url,
             success_url=success_url,
             error_url=error_url,
-            payer_email=user_record.get("email"),
-            payer_name=user_record.get("username"),
+            payer_email=payer_details.get("email"),
+            payer_name=payer_details.get("first_name"),
+            payer_last_name=payer_details.get("last_name"),
+            payer_phone=payer_details.get("phone_number"),
         )
     except Exception as exc:  # pragma: no cover - external dependency
         logger.exception(

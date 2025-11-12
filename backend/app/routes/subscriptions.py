@@ -28,6 +28,7 @@ from app.models.subscriptions import (
     UserSubscriptionResponse,
 )
 from app.services.one_lat import one_lat_client
+from app.services.billing_profiles import load_billing_profile, build_payer_details
 from app.services.purchase_notifications import (
     send_purchase_notification,
     send_seller_purchase_notification,
@@ -379,6 +380,9 @@ async def create_subscription_checkout(
         },
     )
 
+    billing_profile = load_billing_profile(supabase, user_id)
+    payer_details = build_payer_details(user, billing_profile)
+
     checkout_data = await one_lat_client.create_checkout_preference(
         amount=plan.usd_amount,
         currency="USD",
@@ -387,8 +391,10 @@ async def create_subscription_checkout(
         webhook_url=webhook_url,
         success_url=success_url,
         error_url=error_url,
-        payer_email=user.get("email"),
-        payer_name=user.get("username"),
+        payer_email=payer_details.get("email"),
+        payer_name=payer_details.get("first_name"),
+        payer_last_name=payer_details.get("last_name"),
+        payer_phone=payer_details.get("phone_number"),
         preference_type="SUBSCRIPTION",
         payment_link_id=plan.subscription_plan_id,
         expiration_minutes=30,

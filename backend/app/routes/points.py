@@ -17,6 +17,7 @@ from datetime import datetime
 
 from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
+from app.services.billing_profiles import load_billing_profile, build_payer_details
 from app.services.platform_settings import get_platform_settings
 from app.services.jpyc_service import JPYCService, jpyc_to_wei
 import uuid
@@ -102,6 +103,9 @@ async def purchase_points_one_lat(
         error_url = f"{frontend_url}/points/purchase/error"
         
         # Checkout Preference作成
+        billing_profile = load_billing_profile(supabase, user_id)
+        payer_details = build_payer_details(user, billing_profile)
+
         checkout_data = await one_lat_client.create_checkout_preference(
             amount=amount_usd,
             currency="USD",
@@ -110,8 +114,10 @@ async def purchase_points_one_lat(
             webhook_url=webhook_url,
             success_url=success_url,
             error_url=error_url,
-            payer_email=user["email"],
-            payer_name=user["username"]
+            payer_email=payer_details.get("email"),
+            payer_name=payer_details.get("first_name"),
+            payer_last_name=payer_details.get("last_name"),
+            payer_phone=payer_details.get("phone_number"),
         )
         
         # トランザクション記録（PENDING状態で保存）
