@@ -177,6 +177,17 @@ def _send_follow_notification(
         reply_to=settings.mailgun_default_reply_to,
     )
 
+    if not accepted and recipients:
+        accepted = mailgun.send_bulk_email(
+            subject=subject,
+            text=body_text,
+            html=body_html,
+            recipients=recipients,
+            sender_email=sender_email,
+            sender_name=sender_name,
+            reply_to=settings.mailgun_default_reply_to,
+        )
+
     if not accepted:
         logger.info("Mailgun did not accept any recipients for category %s", category)
         return
