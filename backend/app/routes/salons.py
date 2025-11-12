@@ -20,6 +20,7 @@ from app.models.salons import (
     SalonUpdateRequest,
 )
 from app.utils.auth import decode_access_token
+from app.services import note_notifications
 
 
 logger = logging.getLogger(__name__)
@@ -99,8 +100,11 @@ async def create_salon(
     response = supabase.table("salons").insert(salon_data).execute()
     if not response.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="サロンの作成に失敗しました")
+    created_row = response.data[0]
 
-    return _map_salon(response.data[0], member_count=0)
+    note_notifications.handle_salon_published(supabase, created_row)
+
+    return _map_salon(created_row, member_count=0)
 
 
 @router.get("", response_model=SalonListResponse)
@@ -285,6 +289,9 @@ async def update_salon(
         .execute()
     )
     member_count = getattr(member_count_resp, "count", 0) or 0
+
+    if updated:
+        note_notifications.handle_salon_published(supabase, updated, previous_row=current)
 
 
 

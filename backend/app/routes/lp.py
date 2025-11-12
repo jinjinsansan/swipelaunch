@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from supabase import create_client, Client
 from app.config import settings
+from app.services import note_notifications
 from app.models.landing_page import (
     LPCreateRequest,
     LPUpdateRequest,
@@ -483,7 +484,26 @@ async def publish_lp(
         
         # 公開
         response = supabase.table("landing_pages").update({"status": "published"}).eq("id", lp_id).execute()
-        
+
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="LP公開に失敗しました"
+            )
+
+        products_resp = (
+            supabase
+            .table("products")
+            .select("*")
+            .eq("lp_id", lp_id)
+            .eq("is_available", True)
+            .execute()
+        )
+        for product in products_resp.data or []:
+            if product is None:
+                continue
+            note_notifications.handle_lp_product_listed(supabase, product)
+
         return LPResponse(**response.data[0])
         
     except HTTPException:

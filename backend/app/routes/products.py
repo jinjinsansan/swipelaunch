@@ -18,6 +18,7 @@ import json
 import uuid
 from datetime import datetime
 
+from app.services import note_notifications
 from app.services.one_lat import one_lat_client
 from app.services.billing_profiles import load_billing_profile, build_payer_details
 from app.services.platform_settings import get_platform_settings
@@ -241,6 +242,8 @@ async def create_product(
             except Exception as exc:
                 logger = logging.getLogger(__name__)
                 logger.warning("Failed to register salon product linkage", extra={"error": str(exc)})
+
+        note_notifications.handle_lp_product_listed(supabase, product_row)
 
         return ProductResponse(**product_row)
         
@@ -780,6 +783,8 @@ async def update_product(
                 supabase.table("salon_products").insert(payload).execute()
         else:
             supabase.table("salon_products").delete().eq("product_id", product_id).execute()
+
+        note_notifications.handle_lp_product_listed(supabase, updated_product, previous_row=current_product)
 
         return ProductResponse(**updated_product)
         
