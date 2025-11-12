@@ -37,17 +37,17 @@ def _format_price(note: Dict[str, object]) -> str:
 
 def _build_subject(display_name: str, note_title: str) -> str:
     base_name = display_name or "クリエイター"
-    return f"【D-swipe】{base_name}さんの新着ノート: {note_title}"
+    return f"【D-swipe】{base_name}さんの新着SWipeコラム: {note_title}"
 
 
 def _build_bodies(display_name: str, note_title: str, note_excerpt: Optional[str], note_url: str, price_text: str) -> Dict[str, str]:
-    intro = f"{display_name}さんが新しいノート『{note_title}』を公開しました。"
+    intro = f"{display_name}さんが新しいSWipeコラム『{note_title}』を公開しました。"
     lines = [intro, f"価格: {price_text}"]
     if note_excerpt:
         lines.append("")
         lines.append(note_excerpt)
     lines.append("")
-    lines.append(f"ノートを読む: {note_url}")
+    lines.append(f"コラムを読む: {note_url}")
     lines.append("")
     lines.append("－－－－－－－－－－－－")
     lines.append("このメールは D-swipe 運営から自動送信されています。")
@@ -60,7 +60,7 @@ def _build_bodies(display_name: str, note_title: str, note_excerpt: Optional[str
     ]
     if note_excerpt:
         html_parts.append(f"<p>{note_excerpt}</p>")
-    html_parts.append(f'<p><a href="{note_url}" target="_blank" rel="noopener noreferrer">ノートを読む</a></p>')
+    html_parts.append(f'<p><a href="{note_url}" target="_blank" rel="noopener noreferrer">コラムを読む</a></p>')
     html_parts.append("<hr />")
     html_parts.append("<p>このメールは D-swipe 運営から自動送信されています。</p>")
 
