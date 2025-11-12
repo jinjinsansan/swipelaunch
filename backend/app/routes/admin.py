@@ -216,6 +216,10 @@ class AdminUserSummarySchema(BaseModel):
     published_note_count: int = 0
     latest_note_title: Optional[str] = None
     latest_note_updated_at: Optional[str] = None
+    billing_full_name: Optional[str] = None
+    billing_email: Optional[str] = None
+    billing_phone_number: Optional[str] = None
+    billing_updated_at: Optional[str] = None
 
 
 class AdminUserListResponse(BaseModel):
@@ -676,6 +680,23 @@ def build_admin_user_summaries(
     if total is None or not user_ids_filter:
         total = len(users_raw)
     user_ids = [user.get("id") for user in users_raw if user.get("id")]
+    billing_map: Dict[str, Dict[str, Any]] = {}
+    if user_ids:
+        try:
+            billing_response = (
+                supabase
+                .table("billing_profiles")
+                .select("user_id, full_name, email, phone_number, updated_at")
+                .in_("user_id", user_ids)
+                .execute()
+            )
+            billing_rows, _ = handle_supabase_response(billing_response, "billing profile lookup", raise_on_error=False)
+            for row in billing_rows:
+                user_id = row.get("user_id")
+                if user_id:
+                    billing_map[user_id] = row
+        except Exception as exc:
+            logger.warning("Failed to fetch billing profiles for admin summaries: %s", exc)
     if not user_ids:
         summaries = [
             AdminUserSummarySchema(
@@ -691,6 +712,10 @@ def build_admin_user_summaries(
                 line_connected=False,
                 line_display_name=None,
                 line_bonus_awarded=False,
+                billing_full_name=billing_map.get(user.get("id"), {}).get("full_name"),
+                billing_email=billing_map.get(user.get("id"), {}).get("email"),
+                billing_phone_number=billing_map.get(user.get("id"), {}).get("phone_number"),
+                billing_updated_at=billing_map.get(user.get("id"), {}).get("updated_at"),
             )
             for user in users_raw
         ]
@@ -830,6 +855,7 @@ def build_admin_user_summaries(
         })
         line_info = line_connections.get(user_id, {})
         latest_note_dt = note_latest_dt.get(user_id)
+        billing_info = billing_map.get(user_id, {})
         summaries.append(
             AdminUserSummarySchema(
                 id=user_id,
@@ -854,6 +880,10 @@ def build_admin_user_summaries(
                 published_note_count=published_note_counts.get(user_id, 0),
                 latest_note_title=note_latest_title.get(user_id),
                 latest_note_updated_at=latest_note_dt.isoformat() if latest_note_dt else None,
+                billing_full_name=billing_info.get("full_name"),
+                billing_email=billing_info.get("email"),
+                billing_phone_number=billing_info.get("phone_number"),
+                billing_updated_at=billing_info.get("updated_at"),
             )
         )
     return summaries, total
