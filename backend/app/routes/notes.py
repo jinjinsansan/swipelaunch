@@ -38,6 +38,7 @@ from app.services.purchase_notifications import (
     send_purchase_notification,
     send_seller_purchase_notification,
 )
+from app.services import note_notifications
 from app.services.note_content import augment_link_blocks, filter_rich_content
 from app.utils.locale import normalize_locale, locale_path_prefix, DEFAULT_LOCALE
 
@@ -1467,6 +1468,8 @@ async def publish_note(
     response = supabase.table("notes").update(update_data).eq("id", note_id).execute()
     if not response.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="ノートの公開に失敗しました")
+
+    note_notifications.handle_note_published(supabase, response.data[0])
     salon_ids = _fetch_note_salon_ids(supabase, note_id)
 
     return map_note_detail(response.data[0], salon_ids=salon_ids)

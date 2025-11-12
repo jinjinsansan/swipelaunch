@@ -1,6 +1,7 @@
 import os
 import sys
 from types import SimpleNamespace
+from typing import Dict
 
 from fastapi import FastAPI
 from fastapi.security import HTTPAuthorizationCredentials
@@ -134,6 +135,13 @@ def test_publish_paid_note_with_only_jpy(monkeypatch):
     monkeypatch.setattr(notes, "generate_unique_slug", lambda *_args, **_kwargs: "paid-note")
     monkeypatch.setattr(notes, "_fetch_note_salon_ids", lambda *_args, **_kwargs: [])
 
+    notification_calls: Dict[str, int] = {}
+
+    def _capture_notification(_client, note):
+        notification_calls[note.get("id")] = notification_calls.get(note.get("id"), 0) + 1
+
+    monkeypatch.setattr(notes.note_notifications, "handle_note_published", _capture_notification)
+
     client = TestClient(app)
 
     response = client.post(f"/api/notes/{note_id}/publish")
@@ -143,3 +151,4 @@ def test_publish_paid_note_with_only_jpy(monkeypatch):
     assert payload["status"] == "published"
     assert payload["price_jpy"] == 1500
     assert payload["allow_jpy_purchase"] is True
+    assert notification_calls == {note_id: 1}

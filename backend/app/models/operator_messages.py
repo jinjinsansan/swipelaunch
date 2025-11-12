@@ -27,6 +27,10 @@ class OperatorMessageCreateRequest(BaseModel):
     email_from_name: Optional[str] = None
     email_from_address: Optional[str] = None
     email_reply_to: Optional[str] = None
+    automated: Optional[bool] = None
+    related_note_id: Optional[str] = None
+    related_creator_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class OperatorMessageUpdateRequest(BaseModel):
@@ -42,6 +46,10 @@ class OperatorMessageUpdateRequest(BaseModel):
     email_from_name: Optional[str] = None
     email_from_address: Optional[str] = None
     email_reply_to: Optional[str] = None
+    automated: Optional[bool] = None
+    related_note_id: Optional[str] = None
+    related_creator_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class OperatorMessageResponse(BaseModel):
@@ -64,6 +72,10 @@ class OperatorMessageResponse(BaseModel):
     email_from_name: Optional[str] = None
     email_from_address: Optional[str] = None
     email_reply_to: Optional[str] = None
+    automated: bool = False
+    related_note_id: Optional[str] = None
+    related_creator_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class OperatorMessageListResponse(BaseModel):

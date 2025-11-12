@@ -157,6 +157,10 @@ def _map_message(row: Dict[str, Any], *, segments: Optional[List[Dict[str, Any]]
         email_from_name=_normalize_str(row.get("email_from_name")) or settings.mailgun_default_from_name,
         email_from_address=_normalize_str(row.get("email_from_address")) or settings.mailgun_default_from_email,
         email_reply_to=_normalize_str(row.get("email_reply_to")) or settings.mailgun_default_reply_to,
+        automated=bool(row.get("automated", False)),
+        related_note_id=row.get("related_note_id"),
+        related_creator_id=row.get("related_creator_id"),
+        metadata=row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
     )
 
 
@@ -347,6 +351,15 @@ def create_message(payload: OperatorMessageCreateRequest, *, actor_id: Optional[
         "email_reply_to": email_reply_to,
     }
 
+    if payload.automated is not None:
+        insert_data["automated"] = payload.automated
+    if payload.related_note_id is not None:
+        insert_data["related_note_id"] = payload.related_note_id
+    if payload.related_creator_id is not None:
+        insert_data["related_creator_id"] = payload.related_creator_id
+    if payload.metadata is not None:
+        insert_data["metadata"] = payload.metadata
+
     response = client.table("operator_messages").insert(insert_data).execute()
     if not response.data:
         raise RuntimeError("Failed to insert operator message")
@@ -410,6 +423,14 @@ def update_message(message_id: str, payload: OperatorMessageUpdateRequest, *, ac
         update_fields["email_from_address"] = _normalize_str(payload.email_from_address) or settings.mailgun_default_from_email
     if payload.email_reply_to is not None:
         update_fields["email_reply_to"] = _normalize_str(payload.email_reply_to) or settings.mailgun_default_reply_to
+    if payload.automated is not None:
+        update_fields["automated"] = payload.automated
+    if payload.related_note_id is not None:
+        update_fields["related_note_id"] = payload.related_note_id
+    if payload.related_creator_id is not None:
+        update_fields["related_creator_id"] = payload.related_creator_id
+    if payload.metadata is not None:
+        update_fields["metadata"] = payload.metadata
     update_fields["updated_at"] = _utcnow().isoformat()
 
     if update_fields:
