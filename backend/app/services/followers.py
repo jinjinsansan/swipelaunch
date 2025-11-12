@@ -17,7 +17,7 @@ def fetch_creator(client: Client, creator_id: str) -> Optional[Dict[str, object]
     resp = (
         client
         .table("users")
-        .select("id, username, display_name")
+        .select("id, username")
         .eq("id", creator_id)
         .single()
         .execute()
