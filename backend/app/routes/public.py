@@ -97,7 +97,9 @@ class CTAClickRequest(BaseModel):
 
 
 class PublicUserProfileResponse(BaseModel):
+    id: str
     username: str
+    display_name: Optional[str] = None
     bio: Optional[str] = None
     sns_url: Optional[str] = None
     line_url: Optional[str] = None
@@ -466,7 +468,7 @@ async def get_public_user_profile(username: str):
         user_response = (
             supabase
             .table("users")
-            .select("username, bio, sns_url, line_url, profile_image_url")
+            .select("id, username, display_name, bio, sns_url, line_url, profile_image_url")
             .eq("username", username)
             .single()
             .execute()
