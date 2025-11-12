@@ -58,6 +58,10 @@ class FakeQuery:
         self.criteria[column] = value
         return self
 
+    def delete(self):
+        self.operation = "delete"
+        return self
+
     def maybe_single(self):
         self.expect_single = True
         return self
@@ -108,6 +112,22 @@ class FakeQuery:
                 rows = [dict(payload)]
             storage.extend(rows)
             return SimpleNamespace(data=rows)
+
+        if self.operation == "delete":
+            storage = self.parent.storage.get(self.table, [])
+            if not storage:
+                return SimpleNamespace(data=None)
+            remaining = []
+            for row in storage:
+                match = True
+                for key, value in self.criteria.items():
+                    if row.get(key) != value:
+                        match = False
+                        break
+                if not match:
+                    remaining.append(row)
+            self.parent.storage[self.table] = remaining
+            return SimpleNamespace(data=None)
 
         raise AssertionError("Unsupported operation")
 
@@ -174,6 +194,31 @@ def test_upsert_and_get_billing_profile(monkeypatch):
     get_payload = get_response.json()
     assert get_payload["profile"]["city"] == "渋谷区"
     assert get_payload["profile"]["prefecture"] == "東京都"
+
+
+def test_delete_billing_profile(monkeypatch):
+    supabase = FakeSupabase()
+    supabase.seed("billing_profiles", [
+        {
+            "user_id": "user-123",
+            "full_name": "削除対象",
+            "email": "delete@example.com",
+            "phone_number": "0000",
+            "updated_at": "2025-01-01T00:00:00Z",
+            "created_at": "2025-01-01T00:00:00Z",
+        }
+    ])
+    _install_supabase(monkeypatch, supabase)
+    client = TestClient(app)
+
+    response = client.delete("/api/payments/billing-profile")
+
+    assert response.status_code == 204
+    assert supabase.storage["billing_profiles"] == []
+
+    get_response = client.get("/api/payments/billing-profile")
+    assert get_response.status_code == 200
+    assert get_response.json()["profile"] is None
 
 
 def test_quick_checkout_requires_profile(monkeypatch):

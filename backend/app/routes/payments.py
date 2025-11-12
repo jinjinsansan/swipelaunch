@@ -14,7 +14,7 @@ from app.services.one_lat import one_lat_client
 from app.services.platform_settings import get_platform_settings
 from app.utils.locale import locale_path_prefix, normalize_locale
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from supabase import Client, create_client
 
@@ -157,6 +157,21 @@ async def upsert_billing_profile(
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="請求先情報の保存に失敗しました")
 
     return _map_record(row, user_id)
+
+
+@router.delete("/billing-profile", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_billing_profile(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    user_id = get_current_user_id(credentials)
+    supabase = get_supabase()
+
+    try:
+        supabase.table("billing_profiles").delete().eq("user_id", user_id).execute()
+    except Exception as exc:  # pragma: no cover - Supabase error propagation
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="請求先情報の削除に失敗しました") from exc
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 async def _prepare_note_checkout(
