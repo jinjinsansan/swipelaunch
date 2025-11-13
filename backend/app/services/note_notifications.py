@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -244,28 +245,66 @@ def _build_note_subject(display_name: str, note_title: str) -> str:
 
 
 def _build_note_bodies(display_name: str, note_title: str, note_excerpt: Optional[str], note_url: str, price_text: str) -> Dict[str, str]:
-    intro = f"{display_name}さんが新しいSWipeコラム『{note_title}』を公開しました。"
-    lines = [intro, f"価格: {price_text}"]
-    if note_excerpt:
-        lines.append("")
-        lines.append(note_excerpt)
-    lines.append("")
-    lines.append(f"コラムを読む: {note_url}")
-    lines.append("")
-    lines.append("－－－－－－－－－－－－")
-    lines.append("このメールは D-swipe 運営から自動送信されています。")
+    sanitized_excerpt = note_excerpt.strip() if isinstance(note_excerpt, str) else None
 
-    text_body = "\n".join(lines)
+    text_lines = [
+        f"🎉 {display_name}さんの新着SWipeコラムのお知らせ",
+        "",
+        f"タイトル: {note_title}",
+        f"価格: {price_text}",
+    ]
+    if sanitized_excerpt:
+        text_lines.extend([
+            "",
+            "概要:",
+            sanitized_excerpt,
+        ])
+    text_lines.extend([
+        "",
+        f"コラムを読む ▶ {note_url}",
+        "",
+        "通知設定の変更: フォロー設定からメール通知をOFFにできます。",
+        "",
+        "－－－－－－－－－－－－",
+        "このメールは D-swipe 運営から自動送信されています。",
+    ])
+
+    text_body = "\n".join(text_lines)
+
+    escaped_display_name = html.escape(display_name)
+    escaped_title = html.escape(note_title)
+    escaped_price = html.escape(price_text)
+    escaped_excerpt = (
+        html.escape(sanitized_excerpt).replace("\n", "<br />")
+        if sanitized_excerpt
+        else None
+    )
 
     html_parts = [
-        f"<p>{intro}</p>",
-        f"<p><strong>価格:</strong> {price_text}</p>",
+        "<div style=\"font-family:'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic', sans-serif; line-height:1.7; color:#1f2937;\">",
+        f"<p style=\"margin:0 0 16px; font-size:16px;\">🎉 <strong>{escaped_display_name}</strong>さんが新しいSWipeコラムを公開しました。</p>",
+        f"<h2 style=\"margin:0 0 16px; font-size:20px; color:#0f172a;\">{escaped_title}</h2>",
+        "<ul style=\"margin:0 0 16px 20px; padding:0; list-style:disc; color:#1f2937;\">",
+        f"<li><strong>価格:</strong> {escaped_price}</li>",
+        "</ul>",
     ]
-    if note_excerpt:
-        html_parts.append(f"<p>{note_excerpt}</p>")
-    html_parts.append(f'<p><a href="{note_url}" target="_blank" rel="noopener noreferrer">コラムを読む</a></p>')
-    html_parts.append("<hr />")
-    html_parts.append("<p>このメールは D-swipe 運営から自動送信されています。</p>")
+    if escaped_excerpt:
+        html_parts.append(
+            f"<p style=\"margin:0 0 16px; color:#374151;\"><strong>概要</strong><br />{escaped_excerpt}</p>"
+        )
+    html_parts.append(
+        f"<p style=\"margin:0 0 24px;\"><a href=\"{note_url}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"display:inline-block; padding:12px 20px; background-color:#2563eb; color:#ffffff; text-decoration:none; border-radius:9999px; font-weight:600;\">コラムを読む</a></p>"
+    )
+    html_parts.append(
+        "<p style=\"margin:0 0 16px; font-size:12px; color:#64748b;\">通知設定はフォロー設定からいつでも変更できます。</p>"
+    )
+    html_parts.append(
+        "<hr style=\"margin:24px 0; border:none; border-top:1px solid #e2e8f0;\" />"
+    )
+    html_parts.append(
+        "<p style=\"margin:0; font-size:12px; color:#94a3b8;\">このメールは D-swipe 運営から自動送信されています。</p>"
+    )
+    html_parts.append("</div>")
 
     return {
         "text": text_body,
