@@ -113,6 +113,14 @@ def deliver_bulk_email_sync(
     if not recipients:
         return []
 
+    if not is_configured():
+        logger.error("Mailgun is not configured (API key or domain missing); cannot send email")
+        return []
+
+    if not subject or not sender_email:
+        logger.error("Mailgun send skipped due to missing subject or sender email")
+        return []
+
     base_url = settings.mailgun_base_url.rstrip("/")
     endpoint = f"{base_url}/{settings.mailgun_domain}/messages"
     auth = ("api", settings.mailgun_api_key)

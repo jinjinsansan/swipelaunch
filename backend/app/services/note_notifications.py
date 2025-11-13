@@ -167,6 +167,13 @@ def _send_follow_notification(
 
     sender_name = settings.mailgun_default_from_name or "D-swipe 運営"
 
+    logger.info(
+        "Attempting to send follower notification: category=%s, recipients=%d, mailgun_configured=%s",
+        category,
+        len(recipients),
+        mailgun.is_configured(),
+    )
+
     accepted = mailgun.send_bulk_email(
         subject=subject,
         text=body_text,
@@ -177,7 +184,10 @@ def _send_follow_notification(
         reply_to=settings.mailgun_default_reply_to,
     )
 
+    logger.info("send_bulk_email (sync) result: accepted=%d recipients", len(accepted) if accepted else 0)
+
     if not accepted:
+        logger.info("Falling back to send_bulk_email_async")
         accepted = mailgun.send_bulk_email_async(
             subject=subject,
             text=body_text,
@@ -187,9 +197,14 @@ def _send_follow_notification(
             sender_name=sender_name,
             reply_to=settings.mailgun_default_reply_to,
         )
+        logger.info("send_bulk_email_async result: accepted=%d recipients", len(accepted) if accepted else 0)
 
     if not accepted:
-        logger.info("Mailgun did not accept any recipients for category %s", category)
+        logger.warning(
+            "Mailgun did not accept any recipients for category %s (requested: %d recipients)",
+            category,
+            len(recipients),
+        )
         return
 
     accepted_lower = {email.lower() for email in accepted}
