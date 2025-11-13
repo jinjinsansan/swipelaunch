@@ -255,7 +255,7 @@ def _build_note_bodies(display_name: str, note_title: str, note_excerpt: Optiona
     lines.append("－－－－－－－－－－－－")
     lines.append("このメールは D-swipe 運営から自動送信されています。")
 
-    text_body = "\\n".join(lines)
+    text_body = "\n".join(lines)
 
     html_parts = [
         f"<p>{intro}</p>",
@@ -387,7 +387,7 @@ def _build_lp_bodies(
     lines.append("－－－－－－－－－－－－")
     lines.append("このメールは D-swipe 運営から自動送信されています。")
 
-    text_body = "\\n".join(lines)
+    text_body = "\n".join(lines)
 
     html_parts = [f"<p>{intro}</p>"]
     if product_title and product_title != lp_title:
@@ -577,7 +577,7 @@ def _build_salon_bodies(
     lines.append("－－－－－－－－－－－－")
     lines.append("このメールは D-swipe 運営から自動送信されています。")
 
-    text_body = "\\n".join(lines)
+    text_body = "\n".join(lines)
 
     html_parts = [f"<p>{intro}</p>"]
     if price_text:
