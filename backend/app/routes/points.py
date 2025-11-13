@@ -19,6 +19,7 @@ from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
 from app.services.billing_profiles import load_billing_profile, build_payer_details
 from app.services.platform_settings import get_platform_settings
+from app.services.point_expiry import sync_user_point_balance
 from app.services.jpyc_service import JPYCService, jpyc_to_wei
 import uuid
 import logging
@@ -345,7 +346,9 @@ async def purchase_points(
                 detail="ユーザーが見つかりません"
             )
         
-        current_balance = user_response.data.get("point_balance", 0)
+        current_balance = int(user_response.data.get("point_balance", 0) or 0)
+        summary = sync_user_point_balance(supabase, user_id, current_balance=current_balance)
+        current_balance = summary["point_balance"]
         new_balance = current_balance + data.amount
         
         # ポイント残高を更新
@@ -394,22 +397,23 @@ async def get_point_balance(
     try:
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
-        
+
         # ユーザー情報取得
         user_response = supabase.table("users").select("username, point_balance, updated_at").eq("id", user_id).single().execute()
-        
+
         if not user_response.data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="ユーザーが見つかりません"
             )
-        
         user = user_response.data
-        
+        current_balance = int(user.get("point_balance", 0) or 0)
+        summary = sync_user_point_balance(supabase, user_id, current_balance=current_balance)
+        adjusted_balance = summary["point_balance"]
         return PointBalanceResponse(
             user_id=user_id,
             username=user["username"],
-            point_balance=user.get("point_balance", 0),
+            point_balance=adjusted_balance,
             last_updated=user["updated_at"]
         )
         
@@ -438,7 +442,7 @@ async def get_transactions(
     try:
         user_id = get_current_user_id(credentials)
         supabase = get_supabase()
-        
+
         # クエリ構築
         query = supabase.table("point_transactions").select("*").eq("user_id", user_id)
         

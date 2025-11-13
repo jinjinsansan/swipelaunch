@@ -22,6 +22,7 @@ from app.services import note_notifications
 from app.services.one_lat import one_lat_client
 from app.services.billing_profiles import load_billing_profile, build_payer_details
 from app.services.platform_settings import get_platform_settings
+from app.services.point_expiry import sync_user_point_balance
 from app.services.purchase_notifications import (
     send_purchase_notification,
     send_seller_purchase_notification,
@@ -107,8 +108,13 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials]) -> dic
             status_code=status.HTTP_404_NOT_FOUND,
             detail="ユーザーが見つかりません"
         )
-    
-    return user_response.data
+
+    user = user_response.data
+    current_balance = int(user.get("point_balance", 0) or 0)
+    summary = sync_user_point_balance(supabase, user_id, current_balance=current_balance)
+    user["point_balance"] = summary["point_balance"]
+
+    return user
 
 @router.post("", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
 async def create_product(
@@ -899,7 +905,9 @@ async def purchase_product(
                 )
             price_per_unit = int(product.get("price_in_points") or 0)
             total_points = price_per_unit * data.quantity
-            current_balance = int(user.get("point_balance", 0))
+            summary = sync_user_point_balance(supabase, user["id"], current_balance=int(user.get("point_balance", 0) or 0))
+            current_balance = summary["point_balance"]
+            user["point_balance"] = current_balance
             if current_balance < total_points:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,

@@ -34,6 +34,7 @@ from app.utils.auth import decode_access_token
 from app.services.one_lat import one_lat_client
 from app.services.billing_profiles import load_billing_profile, build_payer_details
 from app.services.platform_settings import get_platform_settings
+from app.services.point_expiry import sync_user_point_balance
 from app.services.purchase_notifications import (
     send_purchase_notification,
     send_seller_purchase_notification,
@@ -1568,6 +1569,9 @@ async def purchase_note(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ユーザーが見つかりません")
 
     user_record = user_response.data
+    current_balance = int(user_record.get("point_balance", 0) or 0)
+    summary = sync_user_point_balance(supabase, user_id, current_balance=current_balance)
+    user_record["point_balance"] = summary["point_balance"]
     user_locale = normalize_locale(user_record.get("preferred_locale"))
     requested_locale = normalize_locale(locale) if locale else user_locale
 
