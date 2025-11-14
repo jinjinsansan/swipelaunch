@@ -406,10 +406,43 @@ async def _prepare_subscription_checkout(
         expiration_minutes=30,
     )
 
+    salon_record: Optional[Dict[str, Any]] = None
+    if payload.salon_id:
+        salon_resp = (
+            supabase
+            .table("salons")
+            .select(
+                "id, subscription_plan_id, monthly_price_jpy, allow_jpy_subscription, introductory_offer_enabled, introductory_offer_type"
+            )
+            .eq("id", payload.salon_id)
+            .maybe_single()
+            .execute()
+        )
+        salon_record = salon_resp.data if salon_resp else None
+
     session_metadata = {k: v for k, v in payload.model_dump(exclude_none=True).items() if k not in {"item_type", "item_id", "quantity"}}
     if payload.seller_username:
         session_metadata.setdefault("seller_username", payload.seller_username)
     session_metadata.update({"quick_checkout": True})
+
+    if payload.salon_id:
+        session_metadata.setdefault("salon_id", payload.salon_id)
+        if salon_record:
+            if bool(salon_record.get("allow_jpy_subscription", False)):
+                session_metadata.setdefault("billing_method", "salon_yen")
+            price_jpy = salon_record.get("monthly_price_jpy")
+            if isinstance(price_jpy, int):
+                session_metadata.setdefault("price_jpy", price_jpy)
+            if bool(salon_record.get("introductory_offer_enabled", False)) and (
+                salon_record.get("introductory_offer_type") == "first_month_free_direct"
+            ):
+                session_metadata.setdefault(
+                    "introductory_offer",
+                    {
+                        "type": "first_month_free_direct",
+                        "trial_days": 30,
+                    },
+                )
 
     session_record = {
         "user_id": user_id,

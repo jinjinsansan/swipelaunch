@@ -404,6 +404,23 @@ async def create_subscription_checkout(
     if salon_id:
         metadata.setdefault("salon_id", salon_id)
 
+        if bool(salon_record.get("allow_jpy_subscription", False)):
+            metadata.setdefault("billing_method", "salon_yen")
+            price_jpy = salon_record.get("monthly_price_jpy")
+            if isinstance(price_jpy, int):
+                metadata.setdefault("price_jpy", price_jpy)
+
+        if bool(salon_record.get("introductory_offer_enabled", False)) and (
+            salon_record.get("introductory_offer_type") == "first_month_free_direct"
+        ):
+            metadata.setdefault(
+                "introductory_offer",
+                {
+                    "type": "first_month_free_direct",
+                    "trial_days": 30,
+                },
+            )
+
     session_record = {
         "user_id": user_id,
         "plan_key": plan.key,

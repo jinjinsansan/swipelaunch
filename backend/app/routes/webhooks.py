@@ -631,6 +631,7 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
     now = datetime.now(timezone.utc)
 
     session_metadata = _ensure_metadata_dict(session.get("metadata")) if session else {}
+    subscription_metadata = dict(session_metadata) if isinstance(session_metadata, dict) else {}
     billing_method = session_metadata.get("billing_method") if isinstance(session_metadata, dict) else None
     billing_method_normalized = str(billing_method).lower() if billing_method is not None else ""
 
@@ -667,8 +668,7 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
     }
     if salon_id:
         session_update["salon_id"] = salon_id
-    if session_metadata:
-        session_update["metadata"] = session_metadata
+    session_update["metadata"] = subscription_metadata
     supabase.table("one_lat_subscription_sessions").update(session_update).eq(
         "id", session.get("id")
     ).execute()
@@ -694,6 +694,10 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
         .execute()
     )
     subscription = subscription_response.data if subscription_response.data else None
+    if subscription and isinstance(subscription.get("metadata"), dict):
+        existing_metadata = dict(subscription.get("metadata"))
+        existing_metadata.update(subscription_metadata)
+        subscription_metadata = existing_metadata
 
     next_charge_at = _extract_datetime_value(
         recurrent_payment,
@@ -712,7 +716,7 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
         "next_charge_at": next_charge_at,
         "seller_id": session.get("seller_id"),
         "seller_username": session.get("seller_username"),
-        "metadata": session_metadata,
+        "metadata": subscription_metadata,
     }
     if salon_id:
         subscription_update["salon_id"] = salon_id
@@ -737,7 +741,7 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
             "next_charge_at": next_charge_at,
             "seller_id": session.get("seller_id"),
             "seller_username": session.get("seller_username"),
-            "metadata": session_metadata,
+            "metadata": subscription_metadata,
         }
         if salon_id:
             subscription_payload["salon_id"] = salon_id
@@ -818,16 +822,44 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
 
         membership_response = (
             supabase.table("salon_memberships")
-            .select("id")
+            .select("id, status, metadata")
             .eq("salon_id", salon_id)
             .eq("user_id", user_id)
             .single()
             .execute()
         )
 
+        membership_record = membership_response.data or {}
         previous_status: Optional[str] = None
-        if membership_response.data:
-            previous_status = str(membership_response.data.get("status", "")).upper()
+        if membership_record:
+            previous_status = str(membership_record.get("status", "")).upper()
+
+        membership_metadata: Dict[str, Any] = {}
+        if isinstance(membership_record.get("metadata"), dict):
+            membership_metadata = dict(membership_record.get("metadata"))
+
+        activated_now = (
+            event_type in success_events
+            and (previous_status is None or previous_status != "ACTIVE")
+        )
+
+        introductory_offer_metadata: Optional[Dict[str, Any]] = None
+        if isinstance(subscription_metadata.get("introductory_offer"), dict):
+            introductory_offer_metadata = dict(subscription_metadata.get("introductory_offer"))
+
+        if introductory_offer_metadata:
+            introductory_offer_metadata.setdefault("type", introductory_offer_metadata.get("type") or "first_month_free_direct")
+            if activated_now:
+                introductory_offer_metadata["status"] = "trial"
+                introductory_offer_metadata["trial_started_at"] = now.isoformat()
+                if next_charge_at:
+                    introductory_offer_metadata["trial_expires_at"] = next_charge_at
+            elif event_type in success_events:
+                introductory_offer_metadata["status"] = "active"
+                introductory_offer_metadata["converted_at"] = now.isoformat()
+
+            membership_metadata["introductory_offer"] = introductory_offer_metadata
+            subscription_metadata["introductory_offer"] = introductory_offer_metadata
 
         membership_data = {
             "salon_id": salon_id,
@@ -837,38 +869,30 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
             "subscription_session_external_id": session.get("external_id"),
             "last_event_type": event_type,
             "next_charge_at": next_charge_at,
+            "metadata": membership_metadata,
         }
 
         if event_type in success_events:
             membership_data["last_charged_at"] = now.isoformat()
-            if not membership_response.data:
+            if not membership_record:
                 membership_data["joined_at"] = now.isoformat()
         if event_type in cancel_events:
             membership_data["canceled_at"] = now.isoformat()
 
-        if membership_response.data:
+        if membership_record and membership_record.get("id"):
             supabase.table("salon_memberships").update(membership_data).eq(
-                "id", membership_response.data["id"]
+                "id", membership_record["id"]
             ).execute()
         else:
             supabase.table("salon_memberships").insert(membership_data).execute()
 
-        activated_now = (
-            event_type in success_events
-            and (previous_status is None or previous_status != "ACTIVE")
-        )
-
         if activated_now and salon_info:
             amount_jpy_value: Optional[int] = None
+            price_metadata = subscription_metadata.get("price_jpy") if isinstance(subscription_metadata, dict) else None
             if billing_method_normalized in {"salon_yen", "yen"}:
-                raw_amount = (
-                    session_metadata.get("price_jpy")
-                    if isinstance(session_metadata, dict)
-                    else None
-                )
-                if raw_amount is not None:
+                if price_metadata is not None:
                     try:
-                        amount_jpy_value = int(raw_amount)
+                        amount_jpy_value = int(price_metadata)
                     except (TypeError, ValueError):
                         amount_jpy_value = None
             points_value = None
@@ -884,6 +908,16 @@ async def handle_recurrent_payment_event(payload: Dict[str, Any], recurrent_paym
                 amount_jpy=amount_jpy_value,
                 points=points_value,
             )
+
+    subscription_update["metadata"] = subscription_metadata
+
+    if session and session.get("id"):
+        try:
+            supabase.table("one_lat_subscription_sessions").update({"metadata": subscription_metadata}).eq(
+                "id", session.get("id")
+            ).execute()
+        except Exception:
+            logger.debug("Failed to refresh subscription session metadata", exc_info=True)
 
     supabase.table("user_subscriptions").update(subscription_update).eq(
         "id", subscription_id

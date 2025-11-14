@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Literal
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -19,6 +19,11 @@ class SalonCreateRequest(BaseModel):
     allow_jpy_subscription: bool = Field(False, description="日本円サブスクを許可するか")
     tax_rate: Optional[float] = Field(10.0, ge=0, le=100)
     tax_inclusive: bool = Field(True)
+    introductory_offer_enabled: bool = Field(False, description="初月無料などのイントロオファーを有効化するか")
+    introductory_offer_type: Optional[Literal["first_month_free_direct"]] = Field(
+        None,
+        description="イントロオファーの種類 (現在は初月無料ダイレクト決済のみ)",
+    )
 
 
 class SalonUpdateRequest(BaseModel):
@@ -32,6 +37,8 @@ class SalonUpdateRequest(BaseModel):
     allow_jpy_subscription: Optional[bool] = None
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
     tax_inclusive: Optional[bool] = None
+    introductory_offer_enabled: Optional[bool] = None
+    introductory_offer_type: Optional[Literal["first_month_free_direct"]] = None
 
 
 class SalonResponse(BaseModel):
@@ -53,6 +60,8 @@ class SalonResponse(BaseModel):
     member_count: int = 0
     lp_id: Optional[str] = None
     is_featured: bool = False
+    introductory_offer_enabled: bool = False
+    introductory_offer_type: Optional[Literal["first_month_free_direct"]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -77,6 +86,8 @@ class SalonPublicListItem(BaseModel):
     allow_jpy_subscription: bool
     created_at: datetime
     is_featured: bool = False
+    introductory_offer_enabled: bool = False
+    introductory_offer_type: Optional[Literal["first_month_free_direct"]] = None
 
 
 class SalonPublicListResponse(BaseModel):
@@ -122,6 +133,8 @@ class SalonPublicResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     is_featured: bool = False
+    introductory_offer_enabled: bool = False
+    introductory_offer_type: Optional[Literal["first_month_free_direct"]] = None
 
 
 class SalonMemberResponse(BaseModel):

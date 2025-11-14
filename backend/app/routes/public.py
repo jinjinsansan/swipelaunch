@@ -241,7 +241,7 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         .select(
             "id, owner_id, title, description, thumbnail_url, subscription_plan_id, "
             "monthly_price_jpy, allow_point_subscription, allow_jpy_subscription, tax_rate, tax_inclusive, "
-            "is_active, created_at, updated_at, is_featured"
+            "is_active, created_at, updated_at, is_featured, introductory_offer_enabled, introductory_offer_type"
         )
         .eq("id", salon_id)
         .single()
@@ -257,7 +257,7 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
     owner_response = (
         supabase
         .table("users")
-        .select("id, username, profile_image_url")
+        .select("id, username, display_name, profile_image_url")
         .eq("id", salon_record.get("owner_id"))
         .single()
         .execute()
@@ -324,6 +324,8 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         created_at=salon_record.get("created_at"),
         updated_at=salon_record.get("updated_at"),
         is_featured=bool(salon_record.get("is_featured", False)),
+        introductory_offer_enabled=bool(salon_record.get("introductory_offer_enabled", False)),
+        introductory_offer_type=salon_record.get("introductory_offer_type"),
     )
 
 
@@ -343,7 +345,8 @@ async def list_public_salons(
         .table("salons")
         .select(
             "id, owner_id, title, description, thumbnail_url, subscription_plan_id, "
-            "monthly_price_jpy, allow_jpy_subscription, allow_point_subscription, tax_rate, tax_inclusive, created_at, is_featured"
+            "monthly_price_jpy, allow_jpy_subscription, allow_point_subscription, tax_rate, tax_inclusive, created_at, is_featured, "
+            "introductory_offer_enabled, introductory_offer_type"
         )
         .eq("is_active", True)
     )
@@ -392,7 +395,7 @@ async def list_public_salons(
         owners_resp = (
             supabase
             .table("users")
-            .select("id, username, profile_image_url")
+            .select("id, username, display_name, profile_image_url")
             .in_("id", list(owner_ids))
             .execute()
         )
@@ -444,6 +447,8 @@ async def list_public_salons(
                 allow_jpy_subscription=bool(row.get("allow_jpy_subscription", False)),
                 created_at=row.get("created_at"),
                 is_featured=bool(row.get("is_featured", False)),
+                introductory_offer_enabled=bool(row.get("introductory_offer_enabled", False)),
+                introductory_offer_type=row.get("introductory_offer_type"),
             )
         )
 

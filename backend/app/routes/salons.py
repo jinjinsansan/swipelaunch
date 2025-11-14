@@ -69,6 +69,8 @@ def _map_salon(record: Dict[str, Any], member_count: int = 0) -> SalonResponse:
         is_featured=bool(record.get("is_featured", False)),
         created_at=record.get("created_at"),
         updated_at=record.get("updated_at"),
+        introductory_offer_enabled=bool(record.get("introductory_offer_enabled", False)),
+        introductory_offer_type=record.get("introductory_offer_type"),
     )
 
 
@@ -82,6 +84,24 @@ async def create_salon(
 
     supabase = get_supabase_client()
 
+    allow_point_subscription = payload.allow_point_subscription
+    allow_jpy_subscription = payload.allow_jpy_subscription
+    introductory_offer_enabled = bool(payload.introductory_offer_enabled)
+    introductory_offer_type = payload.introductory_offer_type
+
+    if introductory_offer_enabled:
+        resolved_offer_type = introductory_offer_type or "first_month_free_direct"
+        if resolved_offer_type != "first_month_free_direct":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="サポートされていないイントロオファーの種類です",
+            )
+        allow_point_subscription = False
+        allow_jpy_subscription = True
+        introductory_offer_type = resolved_offer_type
+    else:
+        introductory_offer_type = None
+
     salon_data = {
         "owner_id": user["id"],
         "title": payload.title,
@@ -90,11 +110,13 @@ async def create_salon(
         "subscription_plan_id": payload.subscription_plan_id,
         "subscription_external_id": payload.subscription_external_id,
         "monthly_price_jpy": payload.monthly_price_jpy,
-        "allow_point_subscription": payload.allow_point_subscription,
-        "allow_jpy_subscription": payload.allow_jpy_subscription,
+        "allow_point_subscription": allow_point_subscription,
+        "allow_jpy_subscription": allow_jpy_subscription,
         "tax_rate": payload.tax_rate,
         "tax_inclusive": payload.tax_inclusive,
         "is_active": True,
+        "introductory_offer_enabled": introductory_offer_enabled,
+        "introductory_offer_type": introductory_offer_type,
     }
 
     response = supabase.table("salons").insert(salon_data).execute()
@@ -217,10 +239,42 @@ async def update_salon(
         update_data["is_active"] = payload.is_active
     if payload.monthly_price_jpy is not None:
         update_data["monthly_price_jpy"] = payload.monthly_price_jpy
-    if payload.allow_point_subscription is not None:
-        update_data["allow_point_subscription"] = payload.allow_point_subscription
-    if payload.allow_jpy_subscription is not None:
-        update_data["allow_jpy_subscription"] = payload.allow_jpy_subscription
+
+    if payload.introductory_offer_enabled is not None or payload.introductory_offer_type is not None:
+        new_enabled = (
+            payload.introductory_offer_enabled
+            if payload.introductory_offer_enabled is not None
+            else bool(current.get("introductory_offer_enabled", False))
+        )
+        new_type = (
+            payload.introductory_offer_type
+            if payload.introductory_offer_type is not None
+            else current.get("introductory_offer_type")
+        )
+
+        if new_enabled:
+            resolved_type = new_type or "first_month_free_direct"
+            if resolved_type != "first_month_free_direct":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="サポートされていないイントロオファーの種類です",
+                )
+            update_data["introductory_offer_enabled"] = True
+            update_data["introductory_offer_type"] = resolved_type
+            update_data["allow_point_subscription"] = False
+            update_data["allow_jpy_subscription"] = True
+        else:
+            update_data["introductory_offer_enabled"] = False
+            update_data["introductory_offer_type"] = None
+            if payload.allow_point_subscription is not None:
+                update_data["allow_point_subscription"] = payload.allow_point_subscription
+            if payload.allow_jpy_subscription is not None:
+                update_data["allow_jpy_subscription"] = payload.allow_jpy_subscription
+    else:
+        if payload.allow_point_subscription is not None:
+            update_data["allow_point_subscription"] = payload.allow_point_subscription
+        if payload.allow_jpy_subscription is not None:
+            update_data["allow_jpy_subscription"] = payload.allow_jpy_subscription
     if payload.tax_rate is not None:
         update_data["tax_rate"] = payload.tax_rate
     if payload.tax_inclusive is not None:
@@ -293,6 +347,8 @@ async def update_salon(
     if updated:
         note_notifications.handle_salon_published(supabase, updated, previous_row=current)
 
+    return _map_salon(updated, member_count=member_count)
+
 
 
 @router.delete("/{salon_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -331,7 +387,6 @@ async def delete_salon(
         logger.warning("Supabase deletion returned no payload", extra={"salon_id": salon_id})
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-    return _map_salon(updated, member_count=member_count)
 
 
 @router.get("/{salon_id}/members", response_model=SalonMemberListResponse)
