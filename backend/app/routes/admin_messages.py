@@ -45,15 +45,22 @@ def _raise_segment_error(exc: "message_service.SegmentResolutionError") -> None:
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
+# pylint: disable=too-many-arguments
 @router.get("", response_model=OperatorMessageListResponse)
 def list_messages(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     visibility: str = Query("active", description="active/hidden/archived/all"),
+    include_automated: bool = Query(False, description="自動送信メッセージも含める"),
     _admin=Depends(require_admin),
 ):
     try:
-        result = message_service.list_messages(limit=limit, offset=offset, visibility=visibility)
+        result = message_service.list_messages(
+            limit=limit,
+            offset=offset,
+            visibility=visibility,
+            include_automated=include_automated,
+        )
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不正な表示フィルターです")
     return OperatorMessageListResponse(**result)

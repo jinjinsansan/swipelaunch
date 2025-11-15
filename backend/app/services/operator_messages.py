@@ -540,7 +540,7 @@ def process_due_messages(*, client: Optional[Client] = None) -> int:
     return processed
 
 
-def list_messages(limit: int = 50, offset: int = 0, visibility: str = "active") -> Dict[str, Any]:
+def list_messages(limit: int = 50, offset: int = 0, visibility: str = "active", *, include_automated: bool = False) -> Dict[str, Any]:
     client = get_supabase()
     visibility_normalized = (visibility or "active").lower()
 
@@ -563,6 +563,9 @@ def list_messages(limit: int = 50, offset: int = 0, visibility: str = "active") 
         filtered = all_messages
     else:
         raise ValueError("invalid_visibility")
+
+    if not include_automated:
+        filtered = [row for row in filtered if not bool(row.get("automated"))]
 
     total = len(filtered)
     messages = filtered[offset: offset + limit]

@@ -349,6 +349,27 @@ def test_list_visibility_filters():
         message_service.list_messages(visibility="invalid")
 
 
+def test_list_messages_excludes_automated_by_default():
+    manual = message_service.create_message(
+        OperatorMessageCreateRequest(title="manual", body_text="body", send_now=True),
+        actor_id="admin-1",
+    )
+    automated = message_service.create_message(
+        OperatorMessageCreateRequest(title="auto", body_text="body", send_now=True, automated=True),
+        actor_id="automation",
+    )
+
+    default_list = message_service.list_messages(visibility="all")
+    ids = [msg.id for msg in default_list["data"]]
+    assert manual.id in ids
+    assert automated.id not in ids
+
+    include_auto = message_service.list_messages(visibility="all", include_automated=True)
+    ids_with_auto = [msg.id for msg in include_auto["data"]]
+    assert manual.id in ids_with_auto
+    assert automated.id in ids_with_auto
+
+
 def test_hide_toggle_message():
     payload = OperatorMessageCreateRequest(title="hide", body_text="body", send_now=True)
     message = message_service.create_message(payload, actor_id="admin-1")
