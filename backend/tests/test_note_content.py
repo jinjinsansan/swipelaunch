@@ -73,3 +73,31 @@ def test_augment_link_blocks_caches_same_url(monkeypatch):
     enriched = note_content.augment_link_blocks(blocks)
     assert len(enriched) == 2
     assert call_count["value"] == 1
+
+
+def test_augment_link_blocks_preserves_thumbnail(monkeypatch):
+    def fake_fetch(url: str) -> Dict[str, Any]:
+        return {
+            "url": url,
+            "title": "OG Title",
+            "description": "",
+            "image": "https://example.com/og.png",
+            "site_name": "Example",
+        }
+
+    monkeypatch.setattr(note_content, "fetch_ogp_metadata", fake_fetch)
+
+    blocks = [
+        {
+            "type": "link",
+            "data": {
+                "url": "https://example.com",
+                "thumbnailUrl": "https://cdn.example.com/custom.png",
+            },
+        }
+    ]
+
+    enriched = note_content.augment_link_blocks(blocks)
+    link_block = enriched[0]
+    assert link_block["data"].get("thumbnailUrl") == "https://cdn.example.com/custom.png"
+    assert link_block["data"].get("ogp", {}).get("image") == "https://example.com/og.png"
