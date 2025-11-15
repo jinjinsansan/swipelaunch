@@ -227,6 +227,17 @@ class AdminUserListResponse(BaseModel):
     total: int
 
 
+class AdminUserStatsResponse(BaseModel):
+    total_users: int
+    new_users_30d: int
+    active_users_15m: int
+    line_linked_users: int
+    seller_count: int
+    buyer_count: int
+    blocked_users: int
+    high_value_users: int
+
+
 class AdminPointTransactionSchema(BaseModel):
     id: str
     transaction_type: str
@@ -889,6 +900,77 @@ def build_admin_user_summaries(
     return summaries, total
 
 
+def _apply_user_exclusions(query):
+    for email in EXCLUDED_EMAILS:
+        query = query.neq("email", email)
+    return query
+
+
+def _count_users_with_filters(
+    supabase: Client,
+    *,
+    created_since: Optional[str] = None,
+    last_login_since: Optional[str] = None,
+    user_type: Optional[str] = None,
+    is_blocked: Optional[bool] = None,
+    min_point_balance: Optional[int] = None,
+) -> int:
+    query = supabase.table("users").select("id", count="exact")
+    query = _apply_user_exclusions(query)
+    if created_since:
+        query = query.gte("created_at", created_since)
+    if last_login_since:
+        query = query.gte("last_login_at", last_login_since)
+    if user_type:
+        query = query.eq("user_type", user_type)
+    if is_blocked is not None:
+        query = query.eq("is_blocked", is_blocked)
+    if min_point_balance is not None:
+        query = query.gte("point_balance", min_point_balance)
+    response = query.execute()
+    rows, count = handle_supabase_response(response, "user stats count", raise_on_error=False)
+    if count is not None:
+        return int(count)
+    return len(rows or [])
+
+
+def _get_excluded_user_ids(supabase: Client) -> Set[str]:
+    if not EXCLUDED_EMAILS:
+        return set()
+    response = (
+        supabase
+        .table("users")
+        .select("id")
+        .in_("email", list(EXCLUDED_EMAILS))
+        .execute()
+    )
+    rows, _ = handle_supabase_response(response, "excluded users lookup", raise_on_error=False)
+    return {row.get("id") for row in rows or [] if row.get("id")}
+
+
+def _count_line_connections(supabase: Client, excluded_user_ids: Set[str]) -> int:
+    response = (
+        supabase
+        .table("line_connections")
+        .select("user_id", count="exact")
+        .execute()
+    )
+    rows, count = handle_supabase_response(response, "line connections count", raise_on_error=False)
+    base_count = int(count) if count is not None else len(rows or [])
+    if not excluded_user_ids or base_count == 0:
+        return base_count
+    excluded_response = (
+        supabase
+        .table("line_connections")
+        .select("user_id", count="exact")
+        .in_("user_id", list(excluded_user_ids))
+        .execute()
+    )
+    excluded_rows, excluded_count = handle_supabase_response(excluded_response, "line connections excluded count", raise_on_error=False)
+    removed = int(excluded_count) if excluded_count is not None else len(excluded_rows or [])
+    return max(base_count - removed, 0)
+
+
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_admin_users(
     search: Optional[str] = Query(None, description="ユーザー名またはメールで検索"),
@@ -914,6 +996,36 @@ async def list_admin_users(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"ユーザー一覧の取得に失敗しました: {exc}",
+        )
+
+
+@router.get("/users/stats", response_model=AdminUserStatsResponse)
+async def get_admin_user_stats(admin: dict = Depends(require_admin)):
+    try:
+        supabase = get_supabase()
+        now = datetime.now(timezone.utc)
+        recent_cutoff = (now - timedelta(days=30)).isoformat()
+        active_cutoff = (now - timedelta(minutes=15)).isoformat()
+        excluded_user_ids = _get_excluded_user_ids(supabase)
+
+        stats = AdminUserStatsResponse(
+            total_users=_count_users_with_filters(supabase),
+            new_users_30d=_count_users_with_filters(supabase, created_since=recent_cutoff),
+            active_users_15m=_count_users_with_filters(supabase, last_login_since=active_cutoff),
+            seller_count=_count_users_with_filters(supabase, user_type="seller"),
+            buyer_count=_count_users_with_filters(supabase, user_type="buyer"),
+            blocked_users=_count_users_with_filters(supabase, is_blocked=True),
+            high_value_users=_count_users_with_filters(supabase, min_point_balance=10_000),
+            line_linked_users=_count_line_connections(supabase, excluded_user_ids),
+        )
+        return stats
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to load admin user stats")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"ユーザー統計の取得に失敗しました: {exc}",
         )
 
 
