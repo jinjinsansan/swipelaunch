@@ -509,7 +509,15 @@ async def update_lp(
         updated_lp.pop("share_token", None)
         
         return LPResponse(**updated_lp)
-        
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"LP更新エラー: {str(e)}"
+        )
+
 @router.post("/{lp_id}/share-token/rotate", response_model=LPResponse)
 async def rotate_lp_share_token(
     lp_id: str,
@@ -578,14 +586,6 @@ async def rotate_lp_share_token(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"共有URL再発行エラー: {str(e)}"
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"LP更新エラー: {str(e)}"
         )
 
 @router.delete("/{lp_id}", status_code=status.HTTP_204_NO_CONTENT)
