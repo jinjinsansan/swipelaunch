@@ -687,17 +687,18 @@ async def get_public_lp_via_share_token(
             .select("*, owner:users!seller_id(username, email)")
             .eq("share_token", token)
             .eq("status", "published")
-            .single()
+            .limit(1)
             .execute()
         )
 
-        if not lp_response.data:
+        records = lp_response.data or []
+        if not records:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="LPが見つかりません。URLが間違っている可能性があります。"
             )
 
-        lp_data = lp_response.data
+        lp_data = records[0]
         raw_visibility = lp_data.get("visibility")
         visibility = raw_visibility if raw_visibility in {"public", "limited", "private"} else (
             "public" if lp_data.get("status") == "published" else "private"
