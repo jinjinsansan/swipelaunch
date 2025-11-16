@@ -133,6 +133,120 @@ SALON_FILTER_PRICE_BRACKETS = {
 }
 
 
+def _build_public_lp_url(slug: str) -> str:
+    base_url = (settings.frontend_url or "").rstrip("/")
+    if not base_url:
+        return f"/view/{slug}"
+    return f"{base_url}/view/{slug}"
+
+
+def _build_share_lp_url(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    base_url = (settings.frontend_url or "").rstrip("/")
+    if not base_url:
+        return None
+    return f"{base_url}/view/share/{token}"
+
+
+def _assemble_public_lp_response(
+    supabase: Client,
+    lp_data: Dict[str, Any],
+    *,
+    track_view: bool,
+    session_id: Optional[str],
+    include_share_url: bool,
+) -> LPDetailResponse:
+    lp_id = lp_data["id"]
+
+    steps_response = (
+        supabase
+        .table("lp_steps")
+        .select("*")
+        .eq("lp_id", lp_id)
+        .order("step_order")
+        .execute()
+    )
+
+    steps: List[LPStepResponse] = []
+    for step in steps_response.data or []:
+        if not step.get("block_type"):
+            step["block_type"] = (step.get("content_data") or {}).get("block_type")
+
+        block_type = step.get("block_type")
+        image_url = step.get("image_url")
+        has_valid_block = isinstance(block_type, str) and block_type.strip() != ""
+        has_valid_image = isinstance(image_url, str) and image_url.strip() != ""
+        if has_valid_block or has_valid_image:
+            steps.append(LPStepResponse(**step))
+
+    has_sticky_cta = any(
+        isinstance(step.block_type, str) and step.block_type.strip() == "sticky-cta-1"
+        for step in steps
+    )
+    if has_sticky_cta and not lp_data.get("floating_cta"):
+        lp_data["floating_cta"] = True
+
+    ctas_response = supabase.table("lp_ctas").select("*").eq("lp_id", lp_id).execute()
+    ctas: List[CTAResponse] = [CTAResponse(**cta) for cta in ctas_response.data] if ctas_response.data else []
+
+    if track_view:
+        should_track_view = True
+        if session_id:
+            existing_view = (
+                supabase
+                .table("lp_event_logs")
+                .select("id")
+                .eq("lp_id", lp_id)
+                .eq("event_type", "view")
+                .eq("session_id", session_id)
+                .limit(1)
+                .execute()
+            )
+            if existing_view.data:
+                should_track_view = False
+
+        if should_track_view:
+            current_views = lp_data.get("total_views", 0) or 0
+            updated = (
+                supabase
+                .table("landing_pages")
+                .update({"total_views": current_views + 1})
+                .eq("id", lp_id)
+                .execute()
+            )
+            if updated.data:
+                lp_data["total_views"] = updated.data[0].get("total_views", current_views + 1)
+            else:
+                lp_data["total_views"] = current_views + 1
+
+            analytics_data = {
+                "lp_id": lp_id,
+                "event_type": "view",
+                "session_id": session_id,
+                "user_agent": None,
+                "ip_address": None,
+            }
+            supabase.table("lp_event_logs").insert(analytics_data).execute()
+
+    public_url = _build_public_lp_url(lp_data["slug"])
+    share_url = _build_share_lp_url(lp_data.get("share_token")) if include_share_url else None
+
+    payload = dict(lp_data)
+    payload.pop("share_token", None)
+    payload["share_url"] = share_url
+
+    linked_salon = _build_linked_salon_info(supabase, lp_data.get("salon_id"))
+
+    return LPDetailResponse(
+        **payload,
+        steps=steps,
+        ctas=ctas,
+        public_url=public_url,
+        linked_salon=linked_salon,
+    )
+
+
 def _resolve_public_plan(
     supabase: Client,
     subscription_plan_id: Optional[str],
@@ -512,94 +626,41 @@ async def get_public_lp(
         supabase = get_supabase()
         
         # スラッグでLP取得（公開中のみ、ユーザー情報をJOIN）
-        lp_response = supabase.table("landing_pages").select("*, owner:users!seller_id(username, email)").eq("slug", slug).eq("status", "published").single().execute()
+        lp_response = (
+            supabase
+            .table("landing_pages")
+            .select("*, owner:users!seller_id(username, email)")
+            .eq("slug", slug)
+            .eq("status", "published")
+            .single()
+            .execute()
+        )
         
         if not lp_response.data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="LPが見つかりません。まだ公開されていないか、URLが間違っています。"
             )
-        
         lp_data = lp_response.data
-        lp_id = lp_data["id"]
-        
-        # ステップ取得・フィルタリング
-        steps_response = supabase.table("lp_steps").select("*").eq("lp_id", lp_id).order("step_order").execute()
-        steps = []
-        if steps_response.data:
-            for step in steps_response.data:
-                # block_typeを正規化：content_dataから抽出を試みる
-                if not step.get("block_type"):
-                    step["block_type"] = (step.get("content_data") or {}).get("block_type")
-                
-                # ステップの有効性をチェック
-                block_type = step.get("block_type")
-                image_url = step.get("image_url")
-                
-                # 有効なblock_type: 空でない文字列
-                has_valid_block = isinstance(block_type, str) and len(block_type.strip()) > 0
-                # 有効なimage_url: 空でない文字列
-                has_valid_image = isinstance(image_url, str) and len(image_url.strip()) > 0
-                
-                # block_typeか image_urlのいずれかが有効なステップのみを追加
-                if has_valid_block or has_valid_image:
-                    steps.append(LPStepResponse(**step))
-        
-        has_sticky_cta = any(
-            isinstance(step.block_type, str) and step.block_type.strip() == "sticky-cta-1"
-            for step in steps
+
+        raw_visibility = lp_data.get("visibility")
+        visibility = raw_visibility if raw_visibility in {"public", "limited", "private"} else (
+            "public" if lp_data.get("status") == "published" else "private"
         )
-        if has_sticky_cta and not lp_data.get("floating_cta"):
-            lp_data["floating_cta"] = True
+        if visibility != "public":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません。まだ公開されていないか、URLが間違っています。"
+            )
 
-        # CTA取得
-        ctas_response = supabase.table("lp_ctas").select("*").eq("lp_id", lp_id).execute()
-        ctas = [CTAResponse(**cta) for cta in ctas_response.data] if ctas_response.data else []
+        lp_data["visibility"] = visibility
 
-        if track_view:
-            should_track_view = True
-            if session_id:
-                existing_view = (
-                    supabase
-                    .table("lp_event_logs")
-                    .select("id")
-                    .eq("lp_id", lp_id)
-                    .eq("event_type", "view")
-                    .eq("session_id", session_id)
-                    .limit(1)
-                    .execute()
-                )
-                if existing_view.data:
-                    should_track_view = False
-
-            if should_track_view:
-                current_views = lp_data.get("total_views", 0)
-                updated = supabase.table("landing_pages").update({"total_views": current_views + 1}).eq("id", lp_id).execute()
-                if updated.data:
-                    lp_data["total_views"] = updated.data[0].get("total_views", current_views + 1)
-                else:
-                    lp_data["total_views"] = current_views + 1
-
-                analytics_data = {
-                    "lp_id": lp_id,
-                    "event_type": "view",
-                    "session_id": session_id,
-                    "user_agent": None,
-                    "ip_address": None,
-                }
-                supabase.table("lp_event_logs").insert(analytics_data).execute()
-
-        # 公開URL生成
-        public_url = f"{settings.frontend_url}/{lp_data['slug']}"
-
-        linked_salon = _build_linked_salon_info(supabase, lp_data.get("salon_id"))
-        
-        return LPDetailResponse(
-            **lp_data,
-            steps=steps,
-            ctas=ctas,
-            public_url=public_url,
-            linked_salon=linked_salon
+        return _assemble_public_lp_response(
+            supabase,
+            lp_data,
+            track_view=track_view,
+            session_id=session_id,
+            include_share_url=False,
         )
         
     except HTTPException:
@@ -608,6 +669,61 @@ async def get_public_lp(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"LP取得エラー: {str(e)}"
+        )
+
+
+@router.get("/share/{token}", response_model=LPDetailResponse)
+async def get_public_lp_via_share_token(
+    token: str,
+    track_view: bool = Query(False, description="閲覧数をトラッキングし、ビューイベントを記録するか"),
+    session_id: Optional[str] = Query(None, description="ビューイベントに紐づけるセッションID"),
+):
+    try:
+        supabase = get_supabase()
+
+        lp_response = (
+            supabase
+            .table("landing_pages")
+            .select("*, owner:users!seller_id(username, email)")
+            .eq("share_token", token)
+            .eq("status", "published")
+            .single()
+            .execute()
+        )
+
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません。URLが間違っている可能性があります。"
+            )
+
+        lp_data = lp_response.data
+        raw_visibility = lp_data.get("visibility")
+        visibility = raw_visibility if raw_visibility in {"public", "limited", "private"} else (
+            "public" if lp_data.get("status") == "published" else "private"
+        )
+        if visibility != "limited":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません。URLが間違っている可能性があります。"
+            )
+
+        lp_data["visibility"] = visibility
+
+        return _assemble_public_lp_response(
+            supabase,
+            lp_data,
+            track_view=track_view,
+            session_id=session_id,
+            include_share_url=True,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"LP共有URL取得エラー: {str(e)}"
         )
 
 @router.post("/{slug}/step-view", status_code=status.HTTP_204_NO_CONTENT)

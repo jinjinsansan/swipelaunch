@@ -23,6 +23,7 @@ from app.models.landing_page import (
 from typing import Optional, List, Dict, Any
 import re
 import secrets
+from datetime import datetime
 from app.utils.auth import decode_access_token
 from app.routes.admin import ADMIN_EMAILS
 
@@ -32,6 +33,29 @@ security = HTTPBearer()
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
     return create_client(settings.supabase_url, settings.supabase_key)
+
+
+VISIBILITY_VALUES = {"public", "limited", "private"}
+
+
+def _generate_share_token() -> str:
+    return secrets.token_urlsafe(16)
+
+
+def _build_share_url(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return None
+    base_url = (settings.frontend_url or "").rstrip("/")
+    if not base_url:
+        return None
+    return f"{base_url}/view/share/{token}"
+
+
+def _build_public_url(slug: str) -> str:
+    base_url = (settings.frontend_url or "").rstrip("/")
+    if not base_url:
+        return f"/view/{slug}"
+    return f"{base_url}/view/{slug}"
 
 
 def fetch_user_admin_info(supabase: Client, user_id: str) -> Optional[Dict[str, Any]]:
@@ -202,6 +226,17 @@ async def create_lp(
         salon_id = data.salon_id or None
         ensure_owned_salon(supabase, user_id, salon_id)
         normalized_slug = normalize_slug(data.slug)
+        visibility = data.visibility or "private"
+        if visibility not in VISIBILITY_VALUES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="visibility の指定が不正です"
+            )
+        share_token: Optional[str] = None
+        share_token_rotated_at: Optional[str] = None
+        if visibility == "limited":
+            share_token = _generate_share_token()
+            share_token_rotated_at = datetime.utcnow().isoformat()
 
         existing_response = supabase.table("landing_pages").select("*").eq("slug", normalized_slug).execute()
 
@@ -223,14 +258,27 @@ async def create_lp(
                     "meta_site_name": data.meta_site_name,
                     "custom_theme_hex": data.custom_theme_hex,
                     "custom_theme_shades": data.custom_theme_shades,
+                    "visibility": visibility,
                 }
+
+                existing_visibility = existing_lp.get("visibility") or "private"
+                if visibility == "limited":
+                    if not existing_lp.get("share_token"):
+                        update_payload["share_token"] = share_token or _generate_share_token()
+                        update_payload["share_token_rotated_at"] = datetime.utcnow().isoformat()
+                elif existing_visibility == "limited":
+                    update_payload["share_token"] = None
+                    update_payload["share_token_rotated_at"] = None
+
                 updated = supabase.table("landing_pages").update(update_payload).eq("id", existing_lp["id"]).execute()
                 if not updated.data:
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail="既存LPの更新に失敗しました"
                     )
-                return LPResponse(**updated.data[0])
+                updated_lp = updated.data[0]
+                updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
+                return LPResponse(**updated_lp)
             normalized_slug = generate_unique_slug(supabase, normalized_slug)
         
         # LP作成
@@ -252,6 +300,9 @@ async def create_lp(
             "meta_site_name": data.meta_site_name,
             "custom_theme_hex": data.custom_theme_hex,
             "custom_theme_shades": data.custom_theme_shades,
+            "visibility": visibility,
+            "share_token": share_token,
+            "share_token_rotated_at": share_token_rotated_at,
         }
         
         response = supabase.table("landing_pages").insert(lp_data).execute()
@@ -262,7 +313,10 @@ async def create_lp(
                 detail="LP作成に失敗しました"
             )
         
-        return LPResponse(**response.data[0])
+        created_lp = response.data[0]
+        created_lp["share_url"] = _build_share_url(created_lp.get("share_token"))
+
+        return LPResponse(**created_lp)
         
     except HTTPException:
         raise
@@ -304,7 +358,13 @@ async def get_lps(
         query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
         response = query.execute()
         
-        lps = [LPResponse(**lp) for lp in response.data] if response.data else []
+        lps = []
+        if response.data:
+            for lp in response.data:
+                lp_with_share = dict(lp)
+                lp_with_share["share_url"] = _build_share_url(lp_with_share.get("share_token"))
+                lp_with_share.pop("share_token", None)
+                lps.append(LPResponse(**lp_with_share))
         
         return LPListResponse(
             data=lps,
@@ -358,12 +418,17 @@ async def get_lp(
         ctas = [CTAResponse(**cta) for cta in ctas_response.data] if ctas_response.data else []
         
         # 公開URL生成
-        public_url = f"{settings.frontend_url}/{lp_data['slug']}"
+        public_url = _build_public_url(lp_data["slug"])
+        share_url = _build_share_url(lp_data.get("share_token"))
+
+        lp_payload = dict(lp_data)
+        lp_payload.pop("share_token", None)
+        lp_payload["share_url"] = share_url
 
         linked_salon = build_linked_salon_info(supabase, lp_data.get("salon_id"))
         
         return LPDetailResponse(
-            **lp_data,
+            **lp_payload,
             steps=steps,
             ctas=ctas,
             public_url=public_url,
@@ -413,12 +478,108 @@ async def update_lp(
             salon_id = update_data.get("salon_id") or None
             update_data["salon_id"] = salon_id
             ensure_owned_salon(supabase, user_id, salon_id)
-        
+
+        if "visibility" in update_data:
+            new_visibility = update_data["visibility"] or "private"
+            if new_visibility not in VISIBILITY_VALUES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="visibility の指定が不正です"
+                )
+            current_visibility = lp_response.data.get("visibility") or "private"
+            if new_visibility == "limited":
+                if not lp_response.data.get("share_token"):
+                    update_data["share_token"] = _generate_share_token()
+                    update_data["share_token_rotated_at"] = datetime.utcnow().isoformat()
+            elif current_visibility == "limited":
+                update_data["share_token"] = None
+                update_data["share_token_rotated_at"] = None
+
         # 更新
         response = supabase.table("landing_pages").update(update_data).eq("id", lp_id).execute()
+
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="LP更新に失敗しました"
+            )
+
+        updated_lp = response.data[0]
+        updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
+        updated_lp.pop("share_token", None)
         
-        return LPResponse(**response.data[0])
+        return LPResponse(**updated_lp)
         
+@router.post("/{lp_id}/share-token/rotate", response_model=LPResponse)
+async def rotate_lp_share_token(
+    lp_id: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    try:
+        user_id = get_current_user_id(credentials)
+        supabase = get_supabase()
+
+        lp_response = (
+            supabase
+            .table("landing_pages")
+            .select("*")
+            .eq("id", lp_id)
+            .eq("seller_id", user_id)
+            .single()
+            .execute()
+        )
+
+        if not lp_response.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LPが見つかりません"
+            )
+
+        lp_data = lp_response.data
+        visibility = lp_data.get("visibility") or "private"
+        if visibility != "limited":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="限定公開のLPのみ共有URLを再発行できます"
+            )
+
+        new_token = _generate_share_token()
+        now_iso = datetime.utcnow().isoformat()
+
+        update_payload = {
+            "share_token": new_token,
+            "share_token_rotated_at": now_iso,
+            "updated_at": now_iso,
+        }
+
+        response = (
+            supabase
+            .table("landing_pages")
+            .update(update_payload)
+            .eq("id", lp_id)
+            .execute()
+        )
+
+        if not response.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="共有URLの再発行に失敗しました"
+            )
+
+        updated_lp = response.data[0]
+        updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
+        updated_lp.pop("share_token", None)
+
+        return LPResponse(**updated_lp)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"共有URL再発行エラー: {str(e)}"
+        )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -504,7 +665,11 @@ async def publish_lp(
                 continue
             note_notifications.handle_lp_product_listed(supabase, product)
 
-        return LPResponse(**response.data[0])
+        updated_lp = response.data[0]
+        updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
+        updated_lp.pop("share_token", None)
+
+        return LPResponse(**updated_lp)
         
     except HTTPException:
         raise
@@ -560,7 +725,11 @@ async def unpublish_lp(
             .execute()
         )
 
-        return LPResponse(**response.data[0])
+        updated_lp = response.data[0]
+        updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
+        updated_lp.pop("share_token", None)
+
+        return LPResponse(**updated_lp)
 
     except HTTPException:
         raise
@@ -621,6 +790,9 @@ async def duplicate_lp(
             "custom_theme_shades": original_lp.get("custom_theme_shades"),
             "total_views": 0,
             "total_cta_clicks": 0,
+            "visibility": "private",
+            "share_token": None,
+            "share_token_rotated_at": None,
         }
 
         insert_response = supabase.table("landing_pages").insert(new_lp_data).execute()
@@ -713,12 +885,17 @@ async def duplicate_lp(
 
         cta_models = [CTAResponse(**cta) for cta in ctas_for_response]
 
-        public_url = f"{settings.frontend_url}/{latest_lp.get('slug', new_slug)}"
+        public_url = _build_public_url(latest_lp.get("slug", new_slug))
+        share_url = _build_share_url(latest_lp.get("share_token"))
+
+        latest_lp_payload = dict(latest_lp)
+        latest_lp_payload.pop("share_token", None)
+        latest_lp_payload["share_url"] = share_url
 
         linked_salon = build_linked_salon_info(supabase, latest_lp.get("salon_id"))
 
         return LPDetailResponse(
-            **latest_lp,
+            **latest_lp_payload,
             steps=steps_models,
             ctas=cta_models,
             public_url=public_url,

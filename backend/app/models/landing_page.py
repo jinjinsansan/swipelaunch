@@ -19,6 +19,9 @@ class LPCreateRequest(BaseModel):
     meta_site_name: Optional[str] = Field(None, description="OGPサイト名")
     custom_theme_hex: Optional[str] = Field(None, description="カスタムテーマのベースカラー（HEX）")
     custom_theme_shades: Optional[dict] = Field(None, description="カスタムテーマの11段階シェード")
+    visibility: Optional[Literal["public", "limited", "private"]] = Field(
+        None, description="公開範囲（未指定時は private）"
+    )
 
 # LP更新リクエスト
 class LPUpdateRequest(BaseModel):
@@ -26,6 +29,7 @@ class LPUpdateRequest(BaseModel):
     swipe_direction: Optional[Literal["vertical", "horizontal"]] = None
     is_fullscreen: Optional[bool] = None
     status: Optional[Literal["draft", "published", "archived"]] = None
+    visibility: Optional[Literal["public", "limited", "private"]] = None
     product_id: Optional[str] = None
     salon_id: Optional[str] = None
     show_swipe_hint: Optional[bool] = None
@@ -95,6 +99,7 @@ class LPResponse(BaseModel):
     title: str
     slug: str
     status: str
+    visibility: str
     swipe_direction: str
     is_fullscreen: bool
     show_swipe_hint: bool = False
@@ -113,6 +118,8 @@ class LPResponse(BaseModel):
     owner: Optional[OwnerInfo] = None  # seller情報（JOINで取得）
     created_at: datetime
     updated_at: datetime
+    share_url: Optional[str] = None
+    share_token_rotated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
@@ -124,6 +131,7 @@ class LPDetailResponse(BaseModel):
     title: str
     slug: str
     status: str
+    visibility: str
     swipe_direction: str
     is_fullscreen: bool
     show_swipe_hint: bool = False
@@ -146,6 +154,8 @@ class LPDetailResponse(BaseModel):
     updated_at: datetime
     public_url: str
     linked_salon: Optional[LinkedSalonInfo] = None
+    share_url: Optional[str] = None
+    share_token_rotated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
