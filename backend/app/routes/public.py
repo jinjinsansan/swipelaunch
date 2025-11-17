@@ -15,7 +15,7 @@ from app.models.required_actions import (
     RequiredActionsStatusResponse
 )
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Set
 from datetime import datetime
 
 from app.constants.subscription_plans import SUBSCRIPTION_PLANS, get_subscription_plan, get_subscription_plan_by_id
@@ -31,22 +31,28 @@ from app.services.platform_settings import get_platform_settings
 
 router = APIRouter(prefix="/public", tags=["public"])
 
-CACHE_TTL_SECONDS = 15.0
+logger = logging.getLogger(__name__)
+
+CACHE_TTL_SECONDS = 60.0
+CACHE_MAX_STALE_SECONDS = 300.0
 MAX_CACHE_ENTRIES = 256
 _lp_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_refresh_in_progress: Set[str] = set()
 _cache_lock = threading.Lock()
 
 
-def _get_cached_lp_payload(key: str) -> Optional[Dict[str, Any]]:
+def _get_cached_lp_payload(key: str) -> Tuple[Optional[Dict[str, Any]], bool]:
     with _cache_lock:
         entry = _lp_cache.get(key)
         if not entry:
-            return None
+            return None, False
         timestamp, payload = entry
-        if time.time() - timestamp > CACHE_TTL_SECONDS:
+        age = time.time() - timestamp
+        if age > CACHE_MAX_STALE_SECONDS:
             _lp_cache.pop(key, None)
-            return None
-        return deepcopy(payload)
+            return None, False
+        is_stale = age > CACHE_TTL_SECONDS
+        return deepcopy(payload), is_stale
 
 
 def _store_cached_lp_payload(key: str, payload: Dict[str, Any]) -> None:
@@ -64,6 +70,19 @@ def _store_cached_lp_payload(key: str, payload: Dict[str, Any]) -> None:
 def _invalidate_cached_lp(key: str) -> None:
     with _cache_lock:
         _lp_cache.pop(key, None)
+
+
+def _mark_refresh_start(key: str) -> bool:
+    with _cache_lock:
+        if key in _refresh_in_progress:
+            return False
+        _refresh_in_progress.add(key)
+        return True
+
+
+def _mark_refresh_end(key: str) -> None:
+    with _cache_lock:
+        _refresh_in_progress.discard(key)
 
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
@@ -341,7 +360,35 @@ def _record_lp_view_async(lp_id: str, session_id: Optional[str]) -> None:
         supabase.table("lp_event_logs").insert(analytics_data).execute()
 
     except Exception:
-        logging.getLogger(__name__).exception("Failed to record LP view asynchronously")
+        logger.exception("Failed to record LP view asynchronously (lp_id=%s)", lp_id)
+
+
+def _refresh_cached_lp_by_slug(cache_key: str, slug: str) -> None:
+    if not _mark_refresh_start(cache_key):
+        return
+    try:
+        response = _fetch_lp_by_slug(slug)
+        _store_cached_lp_payload(cache_key, response.model_dump())
+    except HTTPException:
+        _invalidate_cached_lp(cache_key)
+    except Exception:
+        logger.exception("Failed to refresh cached LP payload for slug=%s", slug)
+    finally:
+        _mark_refresh_end(cache_key)
+
+
+def _refresh_cached_lp_by_share_token(cache_key: str, token: str) -> None:
+    if not _mark_refresh_start(cache_key):
+        return
+    try:
+        response = _fetch_lp_by_share_token(token)
+        _store_cached_lp_payload(cache_key, response.model_dump())
+    except HTTPException:
+        _invalidate_cached_lp(cache_key)
+    except Exception:
+        logger.exception("Failed to refresh cached LP payload for share token=%s", token)
+    finally:
+        _mark_refresh_end(cache_key)
 
 
 def _resolve_public_plan(
@@ -438,6 +485,89 @@ def _resolve_public_plan(
         allow_jpy_subscription=allow_jpy_subscription,
         tax_rate=tax_rate,
         tax_inclusive=tax_inclusive,
+    )
+
+
+def _fetch_lp_by_slug(slug: str) -> LPDetailResponse:
+    supabase = get_supabase()
+
+    lp_response = (
+        supabase
+        .table("landing_pages")
+        .select("*, owner:users!seller_id(username, email)")
+        .eq("slug", slug)
+        .eq("status", "published")
+        .single()
+        .execute()
+    )
+
+    if not lp_response.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="LPが見つかりません。まだ公開されていないか、URLが間違っています。"
+        )
+
+    lp_data = lp_response.data
+    raw_visibility = lp_data.get("visibility")
+    visibility = raw_visibility if raw_visibility in {"public", "limited", "private"} else (
+        "public" if lp_data.get("status") == "published" else "private"
+    )
+    if visibility != "public":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="LPが見つかりません。まだ公開されていないか、URLが間違っています。"
+        )
+
+    lp_data["visibility"] = visibility
+
+    return _assemble_public_lp_response(
+        supabase,
+        lp_data,
+        track_view=False,
+        session_id=None,
+        include_share_url=False,
+    )
+
+
+def _fetch_lp_by_share_token(token: str) -> LPDetailResponse:
+    supabase = get_supabase()
+
+    lp_response = (
+        supabase
+        .table("landing_pages")
+        .select("*, owner:users!seller_id(username, email)")
+        .eq("share_token", token)
+        .eq("status", "published")
+        .limit(1)
+        .execute()
+    )
+
+    records = lp_response.data or []
+    if not records:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="LPが見つかりません。URLが間違っている可能性があります。"
+        )
+
+    lp_data = records[0]
+    raw_visibility = lp_data.get("visibility")
+    visibility = raw_visibility if raw_visibility in {"public", "limited", "private"} else (
+        "public" if lp_data.get("status") == "published" else "private"
+    )
+    if visibility != "limited":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="LPが見つかりません。URLが間違っている可能性があります。"
+        )
+
+    lp_data["visibility"] = visibility
+
+    return _assemble_public_lp_response(
+        supabase,
+        lp_data,
+        track_view=False,
+        session_id=None,
+        include_share_url=True,
     )
 
 
@@ -708,9 +838,9 @@ async def get_public_user_profile(username: str):
 @router.get("/{slug}", response_model=LPDetailResponse)
 async def get_public_lp(
     slug: str,
+    background_tasks: BackgroundTasks,
     track_view: bool = Query(False, description="閲覧数をトラッキングし、ビューイベントを記録するか"),
     session_id: Optional[str] = Query(None, description="ビューイベントに紐づけるセッションID"),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     公開LP取得（認証不要）
@@ -722,52 +852,15 @@ async def get_public_lp(
     """
     try:
         cache_key = f"slug:{slug}"
-        cached_payload = _get_cached_lp_payload(cache_key)
+        cached_payload, is_stale = _get_cached_lp_payload(cache_key)
         if cached_payload:
-            response = LPDetailResponse(**cached_payload)
-            if track_view:
-                background_tasks.add_task(_record_lp_view_async, response.id, session_id)
-            return response
+            if is_stale:
+                background_tasks.add_task(_refresh_cached_lp_by_slug, cache_key, slug)
+            if track_view and cached_payload.get("id"):
+                background_tasks.add_task(_record_lp_view_async, cached_payload["id"], session_id)
+            return LPDetailResponse(**cached_payload)
 
-        supabase = get_supabase()
-
-        # スラッグでLP取得（公開中のみ、ユーザー情報をJOIN）
-        lp_response = (
-            supabase
-            .table("landing_pages")
-            .select("*, owner:users!seller_id(username, email)")
-            .eq("slug", slug)
-            .eq("status", "published")
-            .single()
-            .execute()
-        )
-        
-        if not lp_response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="LPが見つかりません。まだ公開されていないか、URLが間違っています。"
-            )
-        lp_data = lp_response.data
-
-        raw_visibility = lp_data.get("visibility")
-        visibility = raw_visibility if raw_visibility in {"public", "limited", "private"} else (
-            "public" if lp_data.get("status") == "published" else "private"
-        )
-        if visibility != "public":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="LPが見つかりません。まだ公開されていないか、URLが間違っています。"
-            )
-
-        lp_data["visibility"] = visibility
-
-        response = _assemble_public_lp_response(
-            supabase,
-            lp_data,
-            track_view=False,
-            session_id=session_id,
-            include_share_url=False,
-        )
+        response = _fetch_lp_by_slug(slug)
         _store_cached_lp_payload(cache_key, response.model_dump())
 
         if track_view:
@@ -787,58 +880,21 @@ async def get_public_lp(
 @router.get("/share/{token}", response_model=LPDetailResponse)
 async def get_public_lp_via_share_token(
     token: str,
+    background_tasks: BackgroundTasks,
     track_view: bool = Query(False, description="閲覧数をトラッキングし、ビューイベントを記録するか"),
     session_id: Optional[str] = Query(None, description="ビューイベントに紐づけるセッションID"),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     try:
         cache_key = f"share:{token}"
-        cached_payload = _get_cached_lp_payload(cache_key)
+        cached_payload, is_stale = _get_cached_lp_payload(cache_key)
         if cached_payload:
-            response = LPDetailResponse(**cached_payload)
-            if track_view:
-                background_tasks.add_task(_record_lp_view_async, response.id, session_id)
-            return response
+            if is_stale:
+                background_tasks.add_task(_refresh_cached_lp_by_share_token, cache_key, token)
+            if track_view and cached_payload.get("id"):
+                background_tasks.add_task(_record_lp_view_async, cached_payload["id"], session_id)
+            return LPDetailResponse(**cached_payload)
 
-        supabase = get_supabase()
-
-        lp_response = (
-            supabase
-            .table("landing_pages")
-            .select("*, owner:users!seller_id(username, email)")
-            .eq("share_token", token)
-            .eq("status", "published")
-            .limit(1)
-            .execute()
-        )
-
-        records = lp_response.data or []
-        if not records:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="LPが見つかりません。URLが間違っている可能性があります。"
-            )
-
-        lp_data = records[0]
-        raw_visibility = lp_data.get("visibility")
-        visibility = raw_visibility if raw_visibility in {"public", "limited", "private"} else (
-            "public" if lp_data.get("status") == "published" else "private"
-        )
-        if visibility != "limited":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="LPが見つかりません。URLが間違っている可能性があります。"
-            )
-
-        lp_data["visibility"] = visibility
-
-        response = _assemble_public_lp_response(
-            supabase,
-            lp_data,
-            track_view=False,
-            session_id=session_id,
-            include_share_url=True,
-        )
+        response = _fetch_lp_by_share_token(token)
         _store_cached_lp_payload(cache_key, response.model_dump())
 
         if track_view:
