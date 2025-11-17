@@ -55,9 +55,23 @@ logger = logging.getLogger(__name__)
 NOTE_CACHE_TTL_SECONDS = 60.0
 NOTE_CACHE_MAX_STALE_SECONDS = 300.0
 NOTE_CACHE_MAX_ENTRIES = 512
+NOTE_TIMING_LOG_THRESHOLD_SECONDS = 0.5
 _note_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _note_refresh_in_progress: Set[str] = set()
 _note_cache_lock = threading.Lock()
+
+
+def _log_note_timing(stage: str, start_time: float, extra: Optional[Dict[str, Any]] = None) -> float:
+    duration = time.perf_counter() - start_time
+    if duration >= NOTE_TIMING_LOG_THRESHOLD_SECONDS:
+        payload = {
+            "stage": stage,
+            "duration_ms": round(duration * 1000, 2),
+        }
+        if extra:
+            payload.update(extra)
+        logger.info("🕒 note timing", extra=payload)
+    return duration
 
 
 def _make_note_cache_key(kind: str, identifier: str, user_id: Optional[str], locale: str) -> str:
@@ -215,6 +229,7 @@ def _fetch_public_note_detail(
     locale: str,
 ) -> PublicNoteDetailResponse:
     supabase = get_supabase()
+    query_start = time.perf_counter()
     response = (
         supabase
         .table("notes")
@@ -225,18 +240,22 @@ def _fetch_public_note_detail(
         .maybe_single()
         .execute()
     )
+    _log_note_timing("fetch_public_note_record", query_start, {"slug": slug})
 
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
 
     note = response.data
     requires_login = bool(note.get("requires_login", False))
-    return _assemble_public_note_detail(
+    assemble_start = time.perf_counter()
+    detail = _assemble_public_note_detail(
         supabase,
         note,
         user_id=user_id,
         requires_login=requires_login,
     )
+    _log_note_timing("assemble_public_note_detail", assemble_start, {"slug": slug})
+    return detail
 
 
 def _fetch_share_note_detail(
@@ -246,6 +265,7 @@ def _fetch_share_note_detail(
     locale: str,
 ) -> PublicNoteDetailResponse:
     supabase = get_supabase()
+    query_start = time.perf_counter()
     response = (
         supabase
         .table("notes")
@@ -255,6 +275,7 @@ def _fetch_share_note_detail(
         .maybe_single()
         .execute()
     )
+    _log_note_timing("fetch_note_via_share_token", query_start, {"token": token})
 
     if not response.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
@@ -264,12 +285,15 @@ def _fetch_share_note_detail(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
 
     requires_login = bool(note.get("requires_login", False)) if note.get("visibility") == "public" else False
-    return _assemble_public_note_detail(
+    assemble_start = time.perf_counter()
+    detail = _assemble_public_note_detail(
         supabase,
         note,
         user_id=user_id,
         requires_login=requires_login,
     )
+    _log_note_timing("assemble_share_note_detail", assemble_start, {"token": token})
+    return detail
 
 
 def _refresh_cached_note_by_slug(cache_key: str, slug: str, user_id: Optional[str], locale: str) -> None:
@@ -492,6 +516,7 @@ def ensure_note_access(note: Dict[str, Any], user_id: str) -> None:
 
 
 def _fetch_note_salon_ids(supabase: Client, note_id: str) -> List[str]:
+    start_time = time.perf_counter()
     response = (
         supabase
         .table("note_salon_access")
@@ -500,6 +525,7 @@ def _fetch_note_salon_ids(supabase: Client, note_id: str) -> List[str]:
         .eq("allow_free_access", True)
         .execute()
     )
+    _log_note_timing("fetch_note_salon_ids", start_time, {"note_id": note_id})
     return [row.get("salon_id") for row in response.data or [] if row.get("salon_id")]
 
 
@@ -537,6 +563,7 @@ def _sync_note_salon_access(supabase: Client, note_id: str, owner_id: str, salon
 def _user_has_active_salon_access(supabase: Client, user_id: str, salon_ids: List[str]) -> bool:
     if not salon_ids:
         return False
+    start_time = time.perf_counter()
     response = (
         supabase
         .table("salon_memberships")
@@ -545,6 +572,7 @@ def _user_has_active_salon_access(supabase: Client, user_id: str, salon_ids: Lis
         .in_("salon_id", salon_ids)
         .execute()
     )
+    _log_note_timing("check_active_salon_access", start_time, {"user_id": user_id, "salon_count": len(salon_ids)})
     for row in response.data or []:
         status_value = str(row.get("status", "")).upper()
         if status_value == "ACTIVE":
@@ -1045,6 +1073,7 @@ async def get_public_note(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     locale: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
+    overall_start = time.perf_counter()
     user_id = get_optional_user_id(credentials)
     normalized_locale = normalize_locale(locale)
 
@@ -1072,6 +1101,11 @@ async def get_public_note(
                 )
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Failed to schedule note cache refresh", extra={"slug": slug, "user_id": user_id})
+        _log_note_timing(
+            "public_note_cache_hit",
+            overall_start,
+            {"slug": slug, "user_id": user_id, "is_stale": is_stale},
+        )
         return PublicNoteDetailResponse(**cached_payload)
 
     response = _fetch_public_note_detail(slug, user_id=user_id, locale=normalized_locale)
@@ -1081,6 +1115,8 @@ async def get_public_note(
             _store_cached_note_payload(cache_key, response.model_dump())
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Failed to store note cache", extra={"slug": slug, "user_id": user_id})
+
+    _log_note_timing("public_note_cache_miss", overall_start, {"slug": slug, "user_id": user_id})
 
     return response
 
@@ -1092,6 +1128,7 @@ async def get_note_via_share_token(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     locale: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
+    overall_start = time.perf_counter()
     user_id = get_optional_user_id(credentials)
     normalized_locale = normalize_locale(locale)
 
@@ -1119,6 +1156,11 @@ async def get_note_via_share_token(
                 )
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Failed to schedule share note cache refresh", extra={"token": token, "user_id": user_id})
+        _log_note_timing(
+            "share_note_cache_hit",
+            overall_start,
+            {"token": token, "user_id": user_id, "is_stale": is_stale},
+        )
         return PublicNoteDetailResponse(**cached_payload)
 
     response = _fetch_share_note_detail(token, user_id=user_id, locale=normalized_locale)
@@ -1128,6 +1170,8 @@ async def get_note_via_share_token(
             _store_cached_note_payload(cache_key, response.model_dump())
         except Exception:  # pragma: no cover - defensive logging
             logger.exception("Failed to store share note cache", extra={"token": token, "user_id": user_id})
+
+    _log_note_timing("share_note_cache_miss", overall_start, {"token": token, "user_id": user_id})
 
     return response
 
@@ -1657,6 +1701,7 @@ async def unpublish_note(
 
 
 def _user_has_purchased(supabase: Client, note_id: str, user_id: str) -> bool:
+    start_time = time.perf_counter()
     purchase_response = (
         supabase
         .table("note_purchases")
@@ -1666,6 +1711,7 @@ def _user_has_purchased(supabase: Client, note_id: str, user_id: str) -> bool:
         .limit(1)
         .execute()
     )
+    _log_note_timing("check_note_purchase", start_time, {"note_id": note_id, "user_id": user_id})
     
     if not purchase_response.data:
         return False
