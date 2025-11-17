@@ -19,6 +19,7 @@ class LPCreateRequest(BaseModel):
     meta_site_name: Optional[str] = Field(None, description="OGPサイト名")
     custom_theme_hex: Optional[str] = Field(None, description="カスタムテーマのベースカラー（HEX）")
     custom_theme_shades: Optional[dict] = Field(None, description="カスタムテーマの11段階シェード")
+    footer_cta_config: Optional[Dict[str, Any]] = Field(None, description="フッターCTA設定 (JSON)")
     visibility: Optional[Literal["public", "limited", "private"]] = Field(
         None, description="公開範囲（未指定時は private）"
     )
@@ -41,6 +42,7 @@ class LPUpdateRequest(BaseModel):
     meta_site_name: Optional[str] = None
     custom_theme_hex: Optional[str] = None
     custom_theme_shades: Optional[dict] = None
+    footer_cta_config: Optional[Dict[str, Any]] = None
 
 # LPステップモデル
 class LPStepResponse(BaseModel):
@@ -115,6 +117,7 @@ class LPResponse(BaseModel):
     meta_site_name: Optional[str] = None
     custom_theme_hex: Optional[str] = None
     custom_theme_shades: Optional[dict] = None
+    footer_cta_config: Optional[Dict[str, Any]] = None
     owner: Optional[OwnerInfo] = None  # seller情報（JOINで取得）
     created_at: datetime
     updated_at: datetime
@@ -147,6 +150,7 @@ class LPDetailResponse(BaseModel):
     meta_site_name: Optional[str] = None
     custom_theme_hex: Optional[str] = None
     custom_theme_shades: Optional[dict] = None
+    footer_cta_config: Optional[Dict[str, Any]] = None
     owner: Optional[OwnerInfo] = None  # seller情報（JOINで取得）
     steps: List[LPStepResponse] = []
     ctas: List[CTAResponse] = []

@@ -36,6 +36,38 @@ def get_supabase() -> Client:
 
 
 VISIBILITY_VALUES = {"public", "limited", "private"}
+FOOTER_CTA_ALLOWED_KEYS = {
+    "title",
+    "subtitle",
+    "buttonLabel",
+    "buttonUrl",
+    "backgroundColor",
+    "textColor",
+    "buttonBackgroundColor",
+    "buttonTextColor",
+}
+
+
+def _normalize_footer_cta_config(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    normalized: Dict[str, Any] = {}
+
+    for key in FOOTER_CTA_ALLOWED_KEYS:
+        if key not in raw:
+            continue
+        value = raw.get(key)
+        if isinstance(value, str):
+            trimmed = value.strip()
+            if trimmed:
+                normalized[key] = trimmed
+        elif value is not None:
+            normalized[key] = value
+
+    return normalized or None
 
 
 def _generate_share_token() -> str:
@@ -243,6 +275,7 @@ async def create_lp(
         if existing_response.data:
             existing_lp = existing_response.data[0]
             if existing_lp.get("seller_id") == user_id:
+                footer_cta_config = _normalize_footer_cta_config(data.footer_cta_config)
                 update_payload = {
                     "title": data.title,
                     "swipe_direction": data.swipe_direction,
@@ -250,6 +283,7 @@ async def create_lp(
                     "show_swipe_hint": data.show_swipe_hint,
                     "fullscreen_media": data.fullscreen_media,
                     "floating_cta": data.floating_cta,
+                    "footer_cta_config": footer_cta_config,
                     "product_id": data.product_id,
                     "salon_id": salon_id,
                     "meta_title": data.meta_title,
@@ -282,6 +316,8 @@ async def create_lp(
             normalized_slug = generate_unique_slug(supabase, normalized_slug)
         
         # LP作成
+        footer_cta_config = _normalize_footer_cta_config(data.footer_cta_config)
+
         lp_data = {
             "seller_id": user_id,
             "title": data.title,
@@ -294,6 +330,7 @@ async def create_lp(
             "show_swipe_hint": data.show_swipe_hint,
             "fullscreen_media": data.fullscreen_media,
             "floating_cta": data.floating_cta,
+            "footer_cta_config": footer_cta_config,
             "meta_title": data.meta_title,
             "meta_description": data.meta_description,
             "meta_image_url": data.meta_image_url,
@@ -473,6 +510,12 @@ async def update_lp(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="更新するデータがありません"
             )
+
+        if "footer_cta_config" in update_data:
+            normalized_footer = _normalize_footer_cta_config(update_data.get("footer_cta_config"))
+            update_data["footer_cta_config"] = normalized_footer
+            if normalized_footer is None:
+                update_data.setdefault("floating_cta", False)
 
         if "salon_id" in update_data:
             salon_id = update_data.get("salon_id") or None
@@ -770,6 +813,8 @@ async def duplicate_lp(
             new_title = new_title[:255]
 
         # 新しいLPレコードを作成
+        footer_cta_clone = _normalize_footer_cta_config(original_lp.get("footer_cta_config"))
+
         new_lp_data = {
             "seller_id": user_id,
             "title": new_title,
@@ -781,7 +826,8 @@ async def duplicate_lp(
             "salon_id": None,
             "show_swipe_hint": original_lp.get("show_swipe_hint", False),
             "fullscreen_media": original_lp.get("fullscreen_media", False),
-            "floating_cta": original_lp.get("floating_cta", False),
+            "floating_cta": bool(original_lp.get("floating_cta")) or bool(footer_cta_clone),
+            "footer_cta_config": footer_cta_clone,
             "meta_title": original_lp.get("meta_title"),
             "meta_description": original_lp.get("meta_description"),
             "meta_image_url": original_lp.get("meta_image_url"),

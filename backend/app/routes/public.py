@@ -187,6 +187,16 @@ def _assemble_public_lp_response(
     if has_sticky_cta and not lp_data.get("floating_cta"):
         lp_data["floating_cta"] = True
 
+    footer_cta_config = lp_data.get("footer_cta_config")
+    if footer_cta_config:
+        # Supabase may return None for empty JSON; normalize to dict or None
+        if isinstance(footer_cta_config, dict) and footer_cta_config:
+            lp_data["footer_cta_config"] = footer_cta_config
+            if not lp_data.get("floating_cta"):
+                lp_data["floating_cta"] = True
+        else:
+            lp_data["footer_cta_config"] = None
+
     ctas_response = supabase.table("lp_ctas").select("*").eq("lp_id", lp_id).execute()
     ctas: List[CTAResponse] = [CTAResponse(**cta) for cta in ctas_response.data] if ctas_response.data else []
 
