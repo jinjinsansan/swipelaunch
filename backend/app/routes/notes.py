@@ -4,12 +4,15 @@ import json
 import logging
 import re
 import secrets
+import threading
+import time
 import uuid
 from collections import Counter, defaultdict
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any, Literal, Set
+from typing import Optional, List, Dict, Any, Literal, Set, Tuple
 
-from fastapi import APIRouter, HTTPException, status, Depends, Query, Request
+from fastapi import APIRouter, HTTPException, status, Depends, Query, Request, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from supabase import create_client, Client
 from postgrest.exceptions import APIError
@@ -48,6 +51,64 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 security = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
+
+NOTE_CACHE_TTL_SECONDS = 60.0
+NOTE_CACHE_MAX_STALE_SECONDS = 300.0
+NOTE_CACHE_MAX_ENTRIES = 512
+_note_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_note_refresh_in_progress: Set[str] = set()
+_note_cache_lock = threading.Lock()
+
+
+def _make_note_cache_key(kind: str, identifier: str, user_id: Optional[str], locale: str) -> str:
+    user_part = user_id or "anon"
+    locale_part = locale or DEFAULT_LOCALE
+    return f"{kind}:{identifier}:user:{user_part}:locale:{locale_part}"
+
+
+def _get_cached_note_payload(key: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+    with _note_cache_lock:
+        entry = _note_cache.get(key)
+        if not entry:
+            return None, False
+        timestamp, payload = entry
+        age = time.time() - timestamp
+        if age > NOTE_CACHE_MAX_STALE_SECONDS:
+            _note_cache.pop(key, None)
+            return None, False
+        is_stale = age > NOTE_CACHE_TTL_SECONDS
+        return deepcopy(payload), is_stale
+
+
+def _store_cached_note_payload(key: str, payload: Dict[str, Any]) -> None:
+    cloned = deepcopy(payload)
+    with _note_cache_lock:
+        if len(_note_cache) >= NOTE_CACHE_MAX_ENTRIES:
+            try:
+                oldest_key = min(_note_cache.items(), key=lambda item: item[1][0])[0]
+                _note_cache.pop(oldest_key, None)
+            except ValueError:
+                pass
+        _note_cache[key] = (time.time(), cloned)
+
+
+def _invalidate_cached_note_payload(key: str) -> None:
+    with _note_cache_lock:
+        _note_cache.pop(key, None)
+
+
+def _mark_note_refresh_start(key: str) -> bool:
+    with _note_cache_lock:
+        if key in _note_refresh_in_progress:
+            return False
+        _note_refresh_in_progress.add(key)
+        return True
+
+
+def _mark_note_refresh_end(key: str) -> None:
+    with _note_cache_lock:
+        _note_refresh_in_progress.discard(key)
+
 def _ensure_metadata_dict(raw: Optional[Any]) -> Dict[str, Any]:
     if isinstance(raw, dict):
         return dict(raw)
@@ -71,6 +132,172 @@ def _get_effective_exchange_rate() -> float:
 def _convert_jpy_to_usd(amount_jpy: float) -> float:
     rate = _get_effective_exchange_rate()
     return round(amount_jpy / rate, 2)
+
+
+def _assemble_public_note_detail(
+    supabase: Client,
+    note: Dict[str, Any],
+    *,
+    user_id: Optional[str],
+    requires_login: bool,
+) -> PublicNoteDetailResponse:
+    user = note.get("users") or {}
+    salon_ids = _fetch_note_salon_ids(supabase, note["id"])
+    editor_type = _normalize_editor_type(note.get("editor_type"))
+
+    has_access = False
+    if requires_login and not user_id:
+        has_access = False
+    elif not note.get("is_paid"):
+        has_access = True
+    elif user_id:
+        if note.get("author_id") == user_id:
+            has_access = True
+        else:
+            has_access = _user_has_purchased(supabase, note["id"], user_id)
+            if not has_access:
+                has_access = _user_has_active_salon_access(supabase, user_id, salon_ids)
+
+    content_blocks = note.get("content_blocks") or []
+    visible_blocks: List[Any] = []
+    if editor_type == "classic":
+        if requires_login and not user_id:
+            visible_blocks = []
+        else:
+            for block in content_blocks:
+                access = block.get("access", "public")
+                if access != "paid" or has_access:
+                    visible_blocks.append(block)
+        visible_blocks = augment_link_blocks(visible_blocks)
+
+    visible_rich = _build_visible_rich_content(
+        note,
+        has_access=has_access,
+        requires_login=requires_login,
+        user_id=user_id,
+    )
+
+    return PublicNoteDetailResponse(
+        id=note["id"],
+        title=note.get("title", ""),
+        slug=note.get("slug", ""),
+        author_id=note.get("author_id"),
+        author_username=user.get("username"),
+        cover_image_url=note.get("cover_image_url"),
+        excerpt=note.get("excerpt"),
+        editor_type=editor_type,
+        is_paid=bool(note.get("is_paid")),
+        price_points=int(note.get("price_points") or 0),
+        price_jpy=int(note.get("price_jpy")) if note.get("price_jpy") is not None else None,
+        allow_point_purchase=bool(note.get("allow_point_purchase", True)),
+        allow_jpy_purchase=bool(note.get("allow_jpy_purchase", False)),
+        tax_rate=_coerce_float(note.get("tax_rate")),
+        tax_inclusive=bool(note.get("tax_inclusive", True)),
+        has_access=has_access,
+        content_blocks=visible_blocks,
+        rich_content=visible_rich,
+        published_at=note.get("published_at"),
+        is_featured=bool(note.get("is_featured", False)),
+        categories=list(note.get("categories") or []),
+        allow_share_unlock=bool(note.get("allow_share_unlock", False)),
+        official_share_tweet_id=note.get("official_share_tweet_id"),
+        official_share_tweet_url=note.get("official_share_tweet_url"),
+        official_share_x_username=note.get("official_share_x_username"),
+        salon_access_ids=salon_ids,
+        requires_login=requires_login,
+    )
+
+
+def _fetch_public_note_detail(
+    slug: str,
+    *,
+    user_id: Optional[str],
+    locale: str,
+) -> PublicNoteDetailResponse:
+    supabase = get_supabase()
+    response = (
+        supabase
+        .table("notes")
+        .select("*, users(username)")
+        .eq("slug", slug)
+        .eq("status", "published")
+        .eq("visibility", "public")
+        .single()
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
+
+    note = response.data
+    requires_login = bool(note.get("requires_login", False))
+    return _assemble_public_note_detail(
+        supabase,
+        note,
+        user_id=user_id,
+        requires_login=requires_login,
+    )
+
+
+def _fetch_share_note_detail(
+    token: str,
+    *,
+    user_id: Optional[str],
+    locale: str,
+) -> PublicNoteDetailResponse:
+    supabase = get_supabase()
+    response = (
+        supabase
+        .table("notes")
+        .select("*, users(username)")
+        .eq("share_token", token)
+        .eq("status", "published")
+        .single()
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
+
+    note = response.data
+    if (note.get("visibility") or "private") != "limited":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
+
+    requires_login = bool(note.get("requires_login", False)) if note.get("visibility") == "public" else False
+    return _assemble_public_note_detail(
+        supabase,
+        note,
+        user_id=user_id,
+        requires_login=requires_login,
+    )
+
+
+def _refresh_cached_note_by_slug(cache_key: str, slug: str, user_id: Optional[str], locale: str) -> None:
+    if not _mark_note_refresh_start(cache_key):
+        return
+    try:
+        response = _fetch_public_note_detail(slug, user_id=user_id, locale=locale)
+        _store_cached_note_payload(cache_key, response.model_dump())
+    except HTTPException:
+        _invalidate_cached_note_payload(cache_key)
+    except Exception:
+        logger.exception("Failed to refresh cached public note detail", extra={"slug": slug})
+    finally:
+        _mark_note_refresh_end(cache_key)
+
+
+def _refresh_cached_note_by_share_token(cache_key: str, token: str, user_id: Optional[str], locale: str) -> None:
+    if not _mark_note_refresh_start(cache_key):
+        return
+    try:
+        response = _fetch_share_note_detail(token, user_id=user_id, locale=locale)
+        _store_cached_note_payload(cache_key, response.model_dump())
+    except HTTPException:
+        _invalidate_cached_note_payload(cache_key)
+    except Exception:
+        logger.exception("Failed to refresh cached share note detail", extra={"token": token})
+    finally:
+        _mark_note_refresh_end(cache_key)
 
 
 def _generate_share_token() -> str:
@@ -814,184 +1041,55 @@ async def list_public_notes(
 @router.get("/public/{slug}", response_model=PublicNoteDetailResponse)
 async def get_public_note(
     slug: str,
+    background_tasks: BackgroundTasks,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     locale: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
-    supabase = get_supabase()
     user_id = get_optional_user_id(credentials)
-    _ = normalize_locale(locale)
+    normalized_locale = normalize_locale(locale)
+    cache_key = _make_note_cache_key("slug", slug, user_id, normalized_locale)
+    cached_payload, is_stale = _get_cached_note_payload(cache_key)
+    if cached_payload:
+        if is_stale:
+            background_tasks.add_task(
+                _refresh_cached_note_by_slug,
+                cache_key,
+                slug,
+                user_id,
+                normalized_locale,
+            )
+        return PublicNoteDetailResponse(**cached_payload)
 
-    response = (
-        supabase
-        .table("notes")
-        .select("*, users(username)")
-        .eq("slug", slug)
-        .eq("status", "published")
-        .eq("visibility", "public")
-        .single()
-        .execute()
-    )
-
-    if not response.data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
-
-    note = response.data
-    user = note.get("users") or {}
-    salon_ids = _fetch_note_salon_ids(supabase, note["id"])
-    requires_login = bool(note.get("requires_login", False))
-    editor_type = _normalize_editor_type(note.get("editor_type"))
-
-    has_access = False
-    if requires_login and not user_id:
-        has_access = False
-    elif not note.get("is_paid"):
-        has_access = True
-    elif user_id:
-        if note.get("author_id") == user_id:
-            has_access = True
-        else:
-            has_access = _user_has_purchased(supabase, note["id"], user_id)
-            if not has_access:
-                has_access = _user_has_active_salon_access(supabase, user_id, salon_ids)
-
-    content_blocks = note.get("content_blocks") or []
-    visible_blocks: List[Any] = []
-    if editor_type == "classic":
-        if requires_login and not user_id:
-            visible_blocks = []
-        else:
-            for block in content_blocks:
-                access = block.get("access", "public")
-                if access != "paid" or has_access:
-                    visible_blocks.append(block)
-        visible_blocks = augment_link_blocks(visible_blocks)
-
-    visible_rich = _build_visible_rich_content(
-        note,
-        has_access=has_access,
-        requires_login=requires_login,
-        user_id=user_id,
-    )
-
-    return PublicNoteDetailResponse(
-        id=note["id"],
-        title=note.get("title", ""),
-        slug=note.get("slug", ""),
-        author_id=note.get("author_id"),
-        author_username=user.get("username"),
-        cover_image_url=note.get("cover_image_url"),
-        excerpt=note.get("excerpt"),
-        editor_type=editor_type,
-        is_paid=bool(note.get("is_paid")),
-        price_points=int(note.get("price_points") or 0),
-        price_jpy=int(note.get("price_jpy")) if note.get("price_jpy") is not None else None,
-        allow_point_purchase=bool(note.get("allow_point_purchase", True)),
-        allow_jpy_purchase=bool(note.get("allow_jpy_purchase", False)),
-        tax_rate=_coerce_float(note.get("tax_rate")),
-        tax_inclusive=bool(note.get("tax_inclusive", True)),
-        has_access=has_access,
-        content_blocks=visible_blocks,
-        rich_content=visible_rich,
-        published_at=note.get("published_at"),
-        is_featured=bool(note.get("is_featured", False)),
-        categories=list(note.get("categories") or []),
-        allow_share_unlock=bool(note.get("allow_share_unlock", False)),
-        official_share_tweet_id=note.get("official_share_tweet_id"),
-        official_share_tweet_url=note.get("official_share_tweet_url"),
-        official_share_x_username=note.get("official_share_x_username"),
-        salon_access_ids=salon_ids,
-        requires_login=requires_login,
-    )
+    response = _fetch_public_note_detail(slug, user_id=user_id, locale=normalized_locale)
+    _store_cached_note_payload(cache_key, response.model_dump())
+    return response
 
 
 @router.get("/share/{token}", response_model=PublicNoteDetailResponse)
 async def get_note_via_share_token(
     token: str,
+    background_tasks: BackgroundTasks,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     locale: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
-    supabase = get_supabase()
     user_id = get_optional_user_id(credentials)
-    _ = normalize_locale(locale)
+    normalized_locale = normalize_locale(locale)
+    cache_key = _make_note_cache_key("share", token, user_id, normalized_locale)
+    cached_payload, is_stale = _get_cached_note_payload(cache_key)
+    if cached_payload:
+        if is_stale:
+            background_tasks.add_task(
+                _refresh_cached_note_by_share_token,
+                cache_key,
+                token,
+                user_id,
+                normalized_locale,
+            )
+        return PublicNoteDetailResponse(**cached_payload)
 
-    response = (
-        supabase
-        .table("notes")
-        .select("*, users(username)")
-        .eq("share_token", token)
-        .eq("status", "published")
-        .single()
-        .execute()
-    )
-
-    if not response.data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
-
-    note = response.data
-    if (note.get("visibility") or "private") != "limited":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
-
-    user = note.get("users") or {}
-    salon_ids = _fetch_note_salon_ids(supabase, note["id"])
-    requires_login = bool(note.get("requires_login", False)) if (note.get("visibility") == "public") else False
-    editor_type = _normalize_editor_type(note.get("editor_type"))
-
-    has_access = False
-    if not note.get("is_paid"):
-        has_access = True
-    elif user_id:
-        if note.get("author_id") == user_id:
-            has_access = True
-        else:
-            has_access = _user_has_purchased(supabase, note["id"], user_id)
-            if not has_access:
-                has_access = _user_has_active_salon_access(supabase, user_id, salon_ids)
-
-    content_blocks = note.get("content_blocks") or []
-    visible_blocks: List[Any] = []
-    if editor_type == "classic":
-        for block in content_blocks:
-            access = block.get("access", "public")
-            if access != "paid" or has_access:
-                visible_blocks.append(block)
-        visible_blocks = augment_link_blocks(visible_blocks)
-
-    visible_rich = _build_visible_rich_content(
-        note,
-        has_access=has_access,
-        requires_login=requires_login,
-        user_id=user_id,
-    )
-
-    return PublicNoteDetailResponse(
-        id=note["id"],
-        title=note.get("title", ""),
-        slug=note.get("slug", ""),
-        author_id=note.get("author_id"),
-        author_username=user.get("username"),
-        cover_image_url=note.get("cover_image_url"),
-        excerpt=note.get("excerpt"),
-        editor_type=editor_type,
-        is_paid=bool(note.get("is_paid")),
-        price_points=int(note.get("price_points") or 0),
-        price_jpy=int(note.get("price_jpy")) if note.get("price_jpy") is not None else None,
-        allow_point_purchase=bool(note.get("allow_point_purchase", True)),
-        allow_jpy_purchase=bool(note.get("allow_jpy_purchase", False)),
-        tax_rate=_coerce_float(note.get("tax_rate")),
-        tax_inclusive=bool(note.get("tax_inclusive", True)),
-        has_access=has_access,
-        content_blocks=visible_blocks,
-        rich_content=visible_rich,
-        published_at=note.get("published_at"),
-        is_featured=bool(note.get("is_featured", False)),
-        categories=list(note.get("categories") or []),
-        allow_share_unlock=bool(note.get("allow_share_unlock", False)),
-        official_share_tweet_id=note.get("official_share_tweet_id"),
-        official_share_tweet_url=note.get("official_share_tweet_url"),
-        official_share_x_username=note.get("official_share_x_username"),
-        salon_access_ids=salon_ids,
-        requires_login=requires_login,
-    )
+    response = _fetch_share_note_detail(token, user_id=user_id, locale=normalized_locale)
+    _store_cached_note_payload(cache_key, response.model_dump())
+    return response
 
 
 @router.get("/{note_id}", response_model=NoteDetailResponse)
