@@ -392,16 +392,30 @@ async def one_lat_webhook(request: Request):
     - PAYMENT_ORDER.REJECTED: 拒否
     - PAYMENT_ORDER.REFUNDED: 返金
     """
+    payload: Optional[Dict[str, Any]] = None
     try:
-        # Webhookペイロード取得
         payload = await request.json()
-        logger.info(f"📩 ONE.lat Webhook received: {payload}")
-        
-        event_type = payload.get("event_type")
-        entity_type = payload.get("entity_type")
-        entity_id = payload.get("entity_id")
-        webhook_id = payload.get("id")
-        
+    except Exception:
+        logger.exception("❌ Failed to parse ONE.lat webhook payload")
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
+
+    payload_dict = payload if isinstance(payload, dict) else {}
+    event_type = payload_dict.get("event_type")
+    entity_type = payload_dict.get("entity_type")
+    entity_id = payload_dict.get("entity_id")
+    webhook_id = payload_dict.get("id")
+
+    logger.info(
+        "📩 ONE.lat Webhook received",
+        extra={
+            "event_type": event_type,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "webhook_id": webhook_id,
+        },
+    )
+
+    try:
         if entity_type == "PAYMENT_ORDER":
             # Payment Order詳細を取得
             payment_order = await one_lat_client.get_payment_order(entity_id)
@@ -464,12 +478,26 @@ async def one_lat_webhook(request: Request):
             await handle_recurrent_payment_event(payload, recurrent_payment)
             return {"status": "success"}
 
-        logger.warning(f"⚠️ Unsupported entity_type: {entity_type}")
+        logger.warning(
+            "⚠️ Unsupported ONE.lat entity type",
+            extra={"entity_type": entity_type, "payload": payload_dict},
+        )
         return {"status": "ignored"}
-        
-    except Exception as e:
-        logger.error(f"❌ Webhook processing error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "❌ Webhook processing error",
+            extra={
+                "event_type": event_type,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "webhook_id": webhook_id,
+                "payload": payload_dict,
+            },
+        )
+        raise HTTPException(status_code=500, detail="Webhook processing error") from exc
 
 
 async def handle_payment_success(transaction: dict, payment_order: dict):
