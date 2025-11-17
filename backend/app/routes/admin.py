@@ -15,6 +15,7 @@ from app.models.platform_settings import (
     PlatformPaymentSettingsUpdateRequest,
 )
 from app.services.risk_scoring import calculate_note_risk, calculate_salon_risk
+from app.services.payouts import _get_effective_exchange_rate_decimal
 from app.services.platform_settings import (
     get_platform_settings as load_platform_settings,
     update_platform_settings as persist_platform_settings,
@@ -408,6 +409,76 @@ class PointAnalyticsResponse(BaseModel):
     totals: PointAnalyticsTotalsSchema
     daily: List[PointAnalyticsBreakdownSchema]
     monthly: List[PointAnalyticsBreakdownSchema]
+
+
+class RevenueSummarySchema(BaseModel):
+    total_revenue_jpy: float
+    total_revenue_usdt: float
+    total_orders: int
+    average_order_value_jpy: float
+    last_seven_days_jpy: float
+    last_thirty_days_jpy: float
+    generated_at: str
+
+
+class RevenueDailySeriesSchema(BaseModel):
+    date: str
+    revenue_jpy: float
+    revenue_usdt: float
+    orders: int
+
+
+class RevenueMonthlySeriesSchema(BaseModel):
+    month: str
+    revenue_jpy: float
+    revenue_usdt: float
+    orders: int
+
+
+class SettlementBucketSchema(BaseModel):
+    key: str
+    label: str
+    order_count: int
+    amount_jpy: float
+    amount_usdt: float
+    average_wait_days: float
+
+
+class SettlementSummarySchema(BaseModel):
+    buckets: List[SettlementBucketSchema]
+
+
+class PointCategoryBreakdownSchema(BaseModel):
+    category: str
+    total_points: int
+    transaction_count: int
+    last_seven_days: int
+    last_thirty_days: int
+
+
+class PointNetSummarySchema(BaseModel):
+    net_points: int
+    total_granted: int
+    total_spent: int
+
+
+class RevenuePointSeriesSchema(BaseModel):
+    date: str
+    granted: int
+    spent: int
+    purchased: int
+    bonus: int
+    other: int
+
+
+class RevenueAnalyticsResponse(BaseModel):
+    summary: RevenueSummarySchema
+    daily: List[RevenueDailySeriesSchema]
+    monthly: List[RevenueMonthlySeriesSchema]
+    settlements: SettlementSummarySchema
+    point_categories: List[PointCategoryBreakdownSchema]
+    point_series: List[RevenuePointSeriesSchema]
+    point_net: PointNetSummarySchema
 
 
 class ModerationEventSchema(BaseModel):
@@ -2793,6 +2864,246 @@ async def get_point_analytics(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"ポイント分析の取得に失敗しました: {exc}",
+        )
+
+
+@router.get("/analytics/revenue", response_model=RevenueAnalyticsResponse)
+async def get_revenue_analytics(
+    limit_days: int = Query(120, ge=7, le=365, description="集計対象の日数"),
+    admin: dict = Depends(require_admin),
+):
+    try:
+        supabase = get_supabase()
+        reference_time = datetime.now(timezone.utc)
+        cutoff = reference_time - timedelta(days=limit_days)
+        seven_days_ago = reference_time - timedelta(days=7)
+        thirty_days_ago = reference_time - timedelta(days=30)
+
+        exchange_rate_decimal = _get_effective_exchange_rate_decimal()
+        exchange_rate = float(exchange_rate_decimal) if exchange_rate_decimal else 0.0
+
+        orders_response = (
+            supabase
+            .table("payment_orders")
+            .select(
+                "id, amount_jpy, status, created_at, completed_at, ready_for_payout_at, reserve_released_at, clearing_state"
+            )
+            .eq("status", "COMPLETED")
+            .order("completed_at", desc=True)
+            .limit(10000)
+            .execute()
+        )
+        order_rows = orders_response.data or []
+
+        total_revenue_jpy = 0.0
+        total_orders = 0
+        revenue_last_seven = 0.0
+        revenue_last_thirty = 0.0
+        daily_buckets: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"amount": 0.0, "orders": 0})
+        monthly_buckets: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"amount": 0.0, "orders": 0})
+
+        settlement_buckets: Dict[str, Dict[str, Any]] = {
+            "pending": {"label": "入金待ち", "amount": 0.0, "orders": 0, "wait_total": 0.0},
+            "ready": {"label": "支払い可能", "amount": 0.0, "orders": 0, "wait_total": 0.0},
+            "released": {"label": "支払い完了", "amount": 0.0, "orders": 0, "wait_total": 0.0},
+        }
+
+        for row in order_rows:
+            amount_jpy = float(row.get("amount_jpy") or 0)
+            completed_at = parse_iso_datetime(row.get("completed_at"))
+            if amount_jpy <= 0 or not completed_at:
+                continue
+
+            total_revenue_jpy += amount_jpy
+            total_orders += 1
+
+            if completed_at >= seven_days_ago:
+                revenue_last_seven += amount_jpy
+            if completed_at >= thirty_days_ago:
+                revenue_last_thirty += amount_jpy
+
+            date_key = completed_at.date().isoformat()
+            month_key = completed_at.strftime("%Y-%m")
+            daily_bucket = daily_buckets[date_key]
+            daily_bucket["amount"] += amount_jpy
+            daily_bucket["orders"] += 1
+            monthly_bucket = monthly_buckets[month_key]
+            monthly_bucket["amount"] += amount_jpy
+            monthly_bucket["orders"] += 1
+
+            clearing_state = (row.get("clearing_state") or "").lower()
+            ready_at = parse_iso_datetime(row.get("ready_for_payout_at"))
+            released_at = parse_iso_datetime(row.get("reserve_released_at"))
+            completed_wait_days = 0.0
+            if ready_at and completed_at:
+                completed_wait_days = max((ready_at - completed_at).total_seconds() / 86400, 0)
+
+            if released_at:
+                bucket = settlement_buckets["released"]
+            elif ready_at and ready_at <= reference_time:
+                bucket = settlement_buckets["ready"]
+            elif clearing_state in {"pending", "clearing"}:
+                bucket = settlement_buckets["pending"]
+            else:
+                bucket = settlement_buckets["pending"]
+
+            bucket["amount"] += amount_jpy
+            bucket["orders"] += 1
+            bucket["wait_total"] += completed_wait_days
+
+        daily_series = [
+            RevenueDailySeriesSchema(
+                date=day,
+                revenue_jpy=payload["amount"],
+                revenue_usdt=(payload["amount"] / exchange_rate) if exchange_rate else 0.0,
+                orders=payload["orders"],
+            )
+            for day, payload in sorted(daily_buckets.items(), key=lambda item: item[0], reverse=True)
+            if parse_iso_datetime(f"{day}T00:00:00+00:00") and parse_iso_datetime(f"{day}T00:00:00+00:00") >= cutoff
+        ]
+
+        monthly_series = [
+            RevenueMonthlySeriesSchema(
+                month=month,
+                revenue_jpy=payload["amount"],
+                revenue_usdt=(payload["amount"] / exchange_rate) if exchange_rate else 0.0,
+                orders=payload["orders"],
+            )
+            for month, payload in sorted(monthly_buckets.items(), key=lambda item: item[0], reverse=True)
+        ]
+
+        settlement_summary = SettlementSummarySchema(
+            buckets=[
+                SettlementBucketSchema(
+                    key=key,
+                    label=bucket_payload["label"],
+                    order_count=bucket_payload["orders"],
+                    amount_jpy=bucket_payload["amount"],
+                    amount_usdt=(bucket_payload["amount"] / exchange_rate) if exchange_rate else 0.0,
+                    average_wait_days=(bucket_payload["wait_total"] / bucket_payload["orders"]) if bucket_payload["orders"] else 0.0,
+                )
+                for key, bucket_payload in settlement_buckets.items()
+            ]
+        )
+
+        point_response = (
+            supabase
+            .table("point_transactions")
+            .select("transaction_type, amount, created_at")
+            .order("created_at", desc=True)
+            .limit(10000)
+            .execute()
+        )
+        point_rows = point_response.data or []
+
+        point_category_alias = {
+            "purchase": "purchase",
+            "admin_grant": "admin_grant",
+            "manual_adjust": "admin_grant",
+            "bonus": "bonus",
+            "note_share_reward": "note_share_reward",
+            "product_purchase": "spent",
+        }
+
+        point_category_buckets: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"total": 0, "count": 0, "seven": 0, "thirty": 0})
+        point_series_buckets: Dict[str, Dict[str, int]] = defaultdict(lambda: {"granted": 0, "spent": 0, "purchased": 0, "bonus": 0, "other": 0})
+
+        total_granted = 0
+        total_spent = 0
+
+        for point in point_rows:
+            amount = int(point.get("amount") or 0)
+            tx_type = point.get("transaction_type")
+            created_at = parse_iso_datetime(point.get("created_at"))
+            if not created_at:
+                continue
+
+            category_key = point_category_alias.get(tx_type, "other")
+            category_bucket = point_category_buckets[category_key]
+            category_bucket["total"] += amount
+            category_bucket["count"] += 1
+            if created_at >= seven_days_ago:
+                category_bucket["seven"] += amount
+            if created_at >= thirty_days_ago:
+                category_bucket["thirty"] += amount
+
+            date_key = created_at.date().isoformat()
+            series_bucket = point_series_buckets[date_key]
+
+            if tx_type == "purchase":
+                series_bucket["purchased"] += amount
+            elif tx_type in {"admin_grant", "manual_adjust"}:
+                series_bucket["granted"] += amount
+                total_granted += amount
+            elif tx_type == "bonus":
+                series_bucket["bonus"] += amount
+                total_granted += amount
+            elif tx_type == "note_share_reward":
+                series_bucket["granted"] += amount
+                total_granted += amount
+            elif tx_type == "product_purchase":
+                spent_amount = abs(amount)
+                series_bucket["spent"] += spent_amount
+                total_spent += spent_amount
+            else:
+                series_bucket["other"] += amount
+
+        point_series = [
+            RevenuePointSeriesSchema(
+                date=date_key,
+                granted=payload["granted"],
+                spent=payload["spent"],
+                purchased=payload["purchased"],
+                bonus=payload["bonus"],
+                other=payload["other"],
+            )
+            for date_key, payload in sorted(point_series_buckets.items(), key=lambda item: item[0], reverse=True)
+            if parse_iso_datetime(f"{date_key}T00:00:00+00:00") and parse_iso_datetime(f"{date_key}T00:00:00+00:00") >= cutoff
+        ]
+
+        point_category_breakdown = [
+            PointCategoryBreakdownSchema(
+                category=category,
+                total_points=payload["total"],
+                transaction_count=payload["count"],
+                last_seven_days=payload["seven"],
+                last_thirty_days=payload["thirty"],
+            )
+            for category, payload in point_category_buckets.items()
+        ]
+
+        summary = RevenueSummarySchema(
+            total_revenue_jpy=total_revenue_jpy,
+            total_revenue_usdt=(total_revenue_jpy / exchange_rate) if exchange_rate else 0.0,
+            total_orders=total_orders,
+            average_order_value_jpy=(total_revenue_jpy / total_orders) if total_orders else 0.0,
+            last_seven_days_jpy=revenue_last_seven,
+            last_thirty_days_jpy=revenue_last_thirty,
+            generated_at=reference_time.isoformat(),
+        )
+
+        point_net = PointNetSummarySchema(
+            net_points=total_granted - total_spent,
+            total_granted=total_granted,
+            total_spent=total_spent,
+        )
+
+        return RevenueAnalyticsResponse(
+            summary=summary,
+            daily=daily_series,
+            monthly=monthly_series,
+            settlements=settlement_summary,
+            point_categories=point_category_breakdown,
+            point_series=point_series,
+            point_net=point_net,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to build revenue analytics")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"売上ダッシュボードの取得に失敗しました: {exc}",
         )
 
 
