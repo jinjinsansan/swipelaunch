@@ -710,7 +710,7 @@ async def get_public_lp(
     slug: str,
     track_view: bool = Query(False, description="閲覧数をトラッキングし、ビューイベントを記録するか"),
     session_id: Optional[str] = Query(None, description="ビューイベントに紐づけるセッションID"),
-    background_tasks: BackgroundTasks,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     公開LP取得（認証不要）
@@ -789,7 +789,7 @@ async def get_public_lp_via_share_token(
     token: str,
     track_view: bool = Query(False, description="閲覧数をトラッキングし、ビューイベントを記録するか"),
     session_id: Optional[str] = Query(None, description="ビューイベントに紐づけるセッションID"),
-    background_tasks: BackgroundTasks,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     try:
         cache_key = f"share:{token}"
