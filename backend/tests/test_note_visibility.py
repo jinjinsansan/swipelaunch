@@ -198,7 +198,7 @@ def test_rotate_share_token_generates_new_value(monkeypatch):
     assert fake_supabase.note["share_token"] != "old-token"
 
 
-def test_get_note_via_share_token_returns_note(monkeypatch):
+def test_get_note_via_share_token_returns_note_for_limited(monkeypatch):
     note = {
         "id": "note-1",
         "author_id": "user-1",
@@ -232,7 +232,7 @@ def test_get_note_via_share_token_returns_note(monkeypatch):
     assert body["author_username"] == "author"
 
 
-def test_get_note_via_share_token_rejects_non_limited(monkeypatch):
+def test_get_note_via_share_token_allows_public(monkeypatch):
     note = {
         "id": "note-1",
         "author_id": "user-1",
@@ -260,7 +260,76 @@ def test_get_note_via_share_token_rejects_non_limited(monkeypatch):
 
     response = client.get("/api/notes/share/public-token")
 
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == "note-1"
+    assert body["author_username"] == "author"
+
+
+def test_get_note_via_share_token_rejects_private(monkeypatch):
+    note = {
+        "id": "note-1",
+        "author_id": "user-1",
+        "title": "Private note",
+        "slug": "private-note",
+        "visibility": "private",
+        "share_token": "private-token",
+        "status": "published",
+        "editor_type": "classic",
+        "content_blocks": [],
+        "is_paid": False,
+        "price_points": 0,
+        "allow_point_purchase": False,
+        "allow_jpy_purchase": False,
+        "tax_inclusive": True,
+        "updated_at": "2025-01-01T00:00:00Z",
+        "categories": [],
+        "users": {"username": "author"},
+        "published_at": "2025-01-01T00:00:00Z",
+    }
+
+    fake_supabase = FakeSupabase(note)
+    monkeypatch.setattr(notes, "get_supabase", lambda: fake_supabase)
+    monkeypatch.setattr(notes, "_fetch_note_salon_ids", lambda _supabase, _note_id: [])
+
+    response = client.get("/api/notes/share/private-token")
+
     assert response.status_code == 404
+
+
+def test_update_note_keeps_share_token_when_switching_to_public(monkeypatch):
+    note = {
+        "id": "note-1",
+        "author_id": "user-1",
+        "title": "Limited Note",
+        "slug": "limited-note",
+        "visibility": "limited",
+        "share_token": "shared-token",
+        "status": "draft",
+        "editor_type": "classic",
+        "content_blocks": [{"type": "paragraph", "data": {}}],
+        "is_paid": False,
+        "price_points": 0,
+        "allow_point_purchase": False,
+        "allow_jpy_purchase": False,
+        "tax_inclusive": True,
+        "updated_at": "2025-01-01T00:00:00Z",
+        "categories": [],
+        "requires_login": False,
+    }
+
+    fake_supabase = FakeSupabase(note)
+    monkeypatch.setattr(notes, "get_supabase", lambda: fake_supabase)
+    monkeypatch.setattr(notes, "get_current_user_id", lambda _cred: "user-1")
+    monkeypatch.setattr(notes, "_fetch_note_salon_ids", lambda _supabase, _note_id: [])
+
+    response = client.put("/api/notes/note-1", json={"visibility": "public"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["visibility"] == "public"
+    assert payload.get("share_url", "").endswith("shared-token")
+    assert fake_supabase.note["share_token"] == "shared-token"
 
 
 def test_get_public_note_filters_paid_rich_content(monkeypatch):

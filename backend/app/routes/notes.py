@@ -283,10 +283,11 @@ def _fetch_share_note_detail(
     if not note:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
 
-    if (note.get("visibility") or "private") != "limited":
+    visibility = (note.get("visibility") or "private").lower()
+    if visibility not in {"limited", "public"}:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
 
-    requires_login = bool(note.get("requires_login", False)) if note.get("visibility") == "public" else False
+    requires_login = bool(note.get("requires_login", False)) if visibility == "public" else False
     assemble_start = time.perf_counter()
     detail = _assemble_public_note_detail(
         supabase,
@@ -460,7 +461,8 @@ def _build_visible_rich_content(
 def map_note_summary(record: Dict[str, Any], *, locale: Optional[str] = None) -> NoteSummaryResponse:
     visibility = record.get("visibility") or ("public" if record.get("status") == "published" else "private")
     visibility = visibility if visibility in {"public", "limited", "private"} else "private"
-    share_token = record.get("share_token") if visibility == "limited" else None
+    share_token_value = record.get("share_token")
+    share_token = share_token_value if visibility in {"limited", "public"} else None
     editor_type = _normalize_editor_type(record.get("editor_type"))
     return NoteSummaryResponse(
         id=record["id"],
@@ -1246,7 +1248,7 @@ async def update_note(
         if new_visibility == "limited":
             update_data.setdefault("share_token", note.get("share_token") or _generate_share_token())
             update_data.setdefault("share_token_rotated_at", datetime.utcnow().isoformat())
-        else:
+        elif new_visibility == "private":
             update_data["share_token"] = None
             update_data["share_token_rotated_at"] = None
         current_visibility = new_visibility

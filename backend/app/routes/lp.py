@@ -301,7 +301,7 @@ async def create_lp(
                     if not existing_lp.get("share_token"):
                         update_payload["share_token"] = share_token or _generate_share_token()
                         update_payload["share_token_rotated_at"] = datetime.utcnow().isoformat()
-                elif existing_visibility == "limited":
+                elif visibility == "private" and existing_visibility == "limited":
                     update_payload["share_token"] = None
                     update_payload["share_token_rotated_at"] = None
 
@@ -535,7 +535,7 @@ async def update_lp(
                 if not lp_response.data.get("share_token"):
                     update_data["share_token"] = _generate_share_token()
                     update_data["share_token_rotated_at"] = datetime.utcnow().isoformat()
-            elif current_visibility == "limited":
+            elif new_visibility == "private" and current_visibility == "limited":
                 update_data["share_token"] = None
                 update_data["share_token_rotated_at"] = None
 

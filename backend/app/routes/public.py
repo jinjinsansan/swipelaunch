@@ -554,7 +554,7 @@ def _fetch_lp_by_share_token(token: str) -> LPDetailResponse:
     visibility = raw_visibility if raw_visibility in {"public", "limited", "private"} else (
         "public" if lp_data.get("status") == "published" else "private"
     )
-    if visibility != "limited":
+    if visibility not in {"limited", "public"}:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="LPが見つかりません。URLが間違っている可能性があります。"
