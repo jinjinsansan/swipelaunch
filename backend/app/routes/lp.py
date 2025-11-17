@@ -45,6 +45,7 @@ FOOTER_CTA_ALLOWED_KEYS = {
     "textColor",
     "buttonBackgroundColor",
     "buttonTextColor",
+    "showOnHero",
 }
 
 
