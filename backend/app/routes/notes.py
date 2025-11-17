@@ -222,7 +222,7 @@ def _fetch_public_note_detail(
         .eq("slug", slug)
         .eq("status", "published")
         .eq("visibility", "public")
-        .single()
+        .maybe_single()
         .execute()
     )
 
@@ -252,7 +252,7 @@ def _fetch_share_note_detail(
         .select("*, users(username)")
         .eq("share_token", token)
         .eq("status", "published")
-        .single()
+        .maybe_single()
         .execute()
     )
 
