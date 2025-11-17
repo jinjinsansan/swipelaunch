@@ -242,10 +242,11 @@ def _fetch_public_note_detail(
     )
     _log_note_timing("fetch_public_note_record", query_start, {"slug": slug})
 
-    if not response.data:
+    note = response.data if response else None
+
+    if not note:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
 
-    note = response.data
     requires_login = bool(note.get("requires_login", False))
     assemble_start = time.perf_counter()
     detail = _assemble_public_note_detail(
@@ -277,10 +278,11 @@ def _fetch_share_note_detail(
     )
     _log_note_timing("fetch_note_via_share_token", query_start, {"token": token})
 
-    if not response.data:
+    note = response.data if response else None
+
+    if not note:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
 
-    note = response.data
     if (note.get("visibility") or "private") != "limited":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="記事が見つかりません")
 
