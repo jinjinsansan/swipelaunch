@@ -1047,21 +1047,41 @@ async def get_public_note(
 ):
     user_id = get_optional_user_id(credentials)
     normalized_locale = normalize_locale(locale)
-    cache_key = _make_note_cache_key("slug", slug, user_id, normalized_locale)
-    cached_payload, is_stale = _get_cached_note_payload(cache_key)
+
+    cache_key: Optional[str] = None
+    cached_payload: Optional[Dict[str, Any]] = None
+    is_stale = False
+
+    try:
+        cache_key = _make_note_cache_key("slug", slug, user_id, normalized_locale)
+        cached_payload, is_stale = _get_cached_note_payload(cache_key)
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Failed to read note cache", extra={"slug": slug, "user_id": user_id})
+        cached_payload = None
+        is_stale = False
+
     if cached_payload:
-        if is_stale:
-            background_tasks.add_task(
-                _refresh_cached_note_by_slug,
-                cache_key,
-                slug,
-                user_id,
-                normalized_locale,
-            )
+        try:
+            if is_stale and cache_key:
+                background_tasks.add_task(
+                    _refresh_cached_note_by_slug,
+                    cache_key,
+                    slug,
+                    user_id,
+                    normalized_locale,
+                )
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to schedule note cache refresh", extra={"slug": slug, "user_id": user_id})
         return PublicNoteDetailResponse(**cached_payload)
 
     response = _fetch_public_note_detail(slug, user_id=user_id, locale=normalized_locale)
-    _store_cached_note_payload(cache_key, response.model_dump())
+
+    if cache_key:
+        try:
+            _store_cached_note_payload(cache_key, response.model_dump())
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to store note cache", extra={"slug": slug, "user_id": user_id})
+
     return response
 
 
@@ -1074,21 +1094,41 @@ async def get_note_via_share_token(
 ):
     user_id = get_optional_user_id(credentials)
     normalized_locale = normalize_locale(locale)
-    cache_key = _make_note_cache_key("share", token, user_id, normalized_locale)
-    cached_payload, is_stale = _get_cached_note_payload(cache_key)
+
+    cache_key: Optional[str] = None
+    cached_payload: Optional[Dict[str, Any]] = None
+    is_stale = False
+
+    try:
+        cache_key = _make_note_cache_key("share", token, user_id, normalized_locale)
+        cached_payload, is_stale = _get_cached_note_payload(cache_key)
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("Failed to read share note cache", extra={"token": token, "user_id": user_id})
+        cached_payload = None
+        is_stale = False
+
     if cached_payload:
-        if is_stale:
-            background_tasks.add_task(
-                _refresh_cached_note_by_share_token,
-                cache_key,
-                token,
-                user_id,
-                normalized_locale,
-            )
+        try:
+            if is_stale and cache_key:
+                background_tasks.add_task(
+                    _refresh_cached_note_by_share_token,
+                    cache_key,
+                    token,
+                    user_id,
+                    normalized_locale,
+                )
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to schedule share note cache refresh", extra={"token": token, "user_id": user_id})
         return PublicNoteDetailResponse(**cached_payload)
 
     response = _fetch_share_note_detail(token, user_id=user_id, locale=normalized_locale)
-    _store_cached_note_payload(cache_key, response.model_dump())
+
+    if cache_key:
+        try:
+            _store_cached_note_payload(cache_key, response.model_dump())
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to store share note cache", extra={"token": token, "user_id": user_id})
+
     return response
 
 
