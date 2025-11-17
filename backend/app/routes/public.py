@@ -1,6 +1,9 @@
 import logging
+import threading
+import time
+from copy import deepcopy
 
-from fastapi import APIRouter, HTTPException, status, Query, Header
+from fastapi import APIRouter, HTTPException, status, Query, Header, BackgroundTasks
 from supabase import create_client, Client
 from app.config import settings
 from app.models.landing_page import LPDetailResponse, LPStepResponse, CTAResponse, LinkedSalonInfo
@@ -12,7 +15,7 @@ from app.models.required_actions import (
     RequiredActionsStatusResponse
 )
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 
 from app.constants.subscription_plans import SUBSCRIPTION_PLANS, get_subscription_plan, get_subscription_plan_by_id
@@ -27,6 +30,40 @@ from app.utils.auth import decode_access_token
 from app.services.platform_settings import get_platform_settings
 
 router = APIRouter(prefix="/public", tags=["public"])
+
+CACHE_TTL_SECONDS = 15.0
+MAX_CACHE_ENTRIES = 256
+_lp_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_cache_lock = threading.Lock()
+
+
+def _get_cached_lp_payload(key: str) -> Optional[Dict[str, Any]]:
+    with _cache_lock:
+        entry = _lp_cache.get(key)
+        if not entry:
+            return None
+        timestamp, payload = entry
+        if time.time() - timestamp > CACHE_TTL_SECONDS:
+            _lp_cache.pop(key, None)
+            return None
+        return deepcopy(payload)
+
+
+def _store_cached_lp_payload(key: str, payload: Dict[str, Any]) -> None:
+    cloned = deepcopy(payload)
+    with _cache_lock:
+        if len(_lp_cache) >= MAX_CACHE_ENTRIES:
+            try:
+                oldest_key = min(_lp_cache.items(), key=lambda item: item[1][0])[0]
+                _lp_cache.pop(oldest_key, None)
+            except ValueError:
+                pass
+        _lp_cache[key] = (time.time(), cloned)
+
+
+def _invalidate_cached_lp(key: str) -> None:
+    with _cache_lock:
+        _lp_cache.pop(key, None)
 
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
@@ -255,6 +292,56 @@ def _assemble_public_lp_response(
         public_url=public_url,
         linked_salon=linked_salon,
     )
+
+
+def _record_lp_view_async(lp_id: str, session_id: Optional[str]) -> None:
+    try:
+        supabase = get_supabase()
+
+        should_track_view = True
+        if session_id:
+            existing_view = (
+                supabase
+                .table("lp_event_logs")
+                .select("id")
+                .eq("lp_id", lp_id)
+                .eq("event_type", "view")
+                .eq("session_id", session_id)
+                .limit(1)
+                .execute()
+            )
+            if existing_view.data:
+                should_track_view = False
+
+        if not should_track_view:
+            return
+
+        lp_record = (
+            supabase
+            .table("landing_pages")
+            .select("total_views")
+            .eq("id", lp_id)
+            .single()
+            .execute()
+        )
+
+        current_views = 0
+        if lp_record.data:
+            current_views = lp_record.data.get("total_views", 0) or 0
+
+        supabase.table("landing_pages").update({"total_views": current_views + 1}).eq("id", lp_id).execute()
+
+        analytics_data = {
+            "lp_id": lp_id,
+            "event_type": "view",
+            "session_id": session_id,
+            "user_agent": None,
+            "ip_address": None,
+        }
+        supabase.table("lp_event_logs").insert(analytics_data).execute()
+
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to record LP view asynchronously")
 
 
 def _resolve_public_plan(
@@ -623,6 +710,7 @@ async def get_public_lp(
     slug: str,
     track_view: bool = Query(False, description="閲覧数をトラッキングし、ビューイベントを記録するか"),
     session_id: Optional[str] = Query(None, description="ビューイベントに紐づけるセッションID"),
+    background_tasks: BackgroundTasks,
 ):
     """
     公開LP取得（認証不要）
@@ -633,8 +721,16 @@ async def get_public_lp(
         LP詳細情報（ステップとCTA含む）
     """
     try:
+        cache_key = f"slug:{slug}"
+        cached_payload = _get_cached_lp_payload(cache_key)
+        if cached_payload:
+            response = LPDetailResponse(**cached_payload)
+            if track_view:
+                background_tasks.add_task(_record_lp_view_async, response.id, session_id)
+            return response
+
         supabase = get_supabase()
-        
+
         # スラッグでLP取得（公開中のみ、ユーザー情報をJOIN）
         lp_response = (
             supabase
@@ -665,13 +761,19 @@ async def get_public_lp(
 
         lp_data["visibility"] = visibility
 
-        return _assemble_public_lp_response(
+        response = _assemble_public_lp_response(
             supabase,
             lp_data,
-            track_view=track_view,
+            track_view=False,
             session_id=session_id,
             include_share_url=False,
         )
+        _store_cached_lp_payload(cache_key, response.model_dump())
+
+        if track_view:
+            background_tasks.add_task(_record_lp_view_async, response.id, session_id)
+
+        return response
         
     except HTTPException:
         raise
@@ -687,8 +789,17 @@ async def get_public_lp_via_share_token(
     token: str,
     track_view: bool = Query(False, description="閲覧数をトラッキングし、ビューイベントを記録するか"),
     session_id: Optional[str] = Query(None, description="ビューイベントに紐づけるセッションID"),
+    background_tasks: BackgroundTasks,
 ):
     try:
+        cache_key = f"share:{token}"
+        cached_payload = _get_cached_lp_payload(cache_key)
+        if cached_payload:
+            response = LPDetailResponse(**cached_payload)
+            if track_view:
+                background_tasks.add_task(_record_lp_view_async, response.id, session_id)
+            return response
+
         supabase = get_supabase()
 
         lp_response = (
@@ -721,13 +832,19 @@ async def get_public_lp_via_share_token(
 
         lp_data["visibility"] = visibility
 
-        return _assemble_public_lp_response(
+        response = _assemble_public_lp_response(
             supabase,
             lp_data,
-            track_view=track_view,
+            track_view=False,
             session_id=session_id,
             include_share_url=True,
         )
+        _store_cached_lp_payload(cache_key, response.model_dump())
+
+        if track_view:
+            background_tasks.add_task(_record_lp_view_async, response.id, session_id)
+
+        return response
 
     except HTTPException:
         raise
