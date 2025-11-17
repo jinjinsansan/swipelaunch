@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Dict
 
@@ -39,6 +40,8 @@ class FakeQuery:
         self.criteria = {}
         self.payload = None
         self.expect_single = False
+        self.ordering = None
+        self.limit_value = None
 
     def select(self, _columns: str):
         self.operation = "select"
@@ -52,6 +55,14 @@ class FakeQuery:
     def insert(self, payload):
         self.operation = "insert"
         self.payload = payload
+        return self
+
+    def order(self, column: str, desc: bool = False):  # pragma: no cover - simple ordering helper
+        self.ordering = (column, desc)
+        return self
+
+    def limit(self, value: int):  # pragma: no cover - simple limit helper
+        self.limit_value = value
         return self
 
     def eq(self, column: str, value):
@@ -75,6 +86,11 @@ class FakeQuery:
             rows = [dict(row) for row in self.parent.storage.get(self.table, [])]
             for key, value in self.criteria.items():
                 rows = [row for row in rows if row.get(key) == value]
+            if self.ordering:
+                column, desc = self.ordering
+                rows.sort(key=lambda row: row.get(column), reverse=desc)
+            if self.limit_value is not None:
+                rows = rows[: self.limit_value]
             if self.expect_single:
                 data = rows[0] if rows else None
                 return SimpleNamespace(data=data)
@@ -295,6 +311,67 @@ def test_quick_checkout_note_success(monkeypatch):
     order = supabase.storage["payment_orders"][0]
     assert order["item_id"] == "note-1"
     assert order["metadata"]["quick_checkout"] is True
+    assert order["metadata"]["checkout_url"] == "quick-note-url"
+    assert "generated_at" in order["metadata"]
+
+
+def test_quick_checkout_note_reuses_recent_order(monkeypatch):
+    supabase = FakeSupabase()
+    supabase.seed("billing_profiles", [
+        {
+            "user_id": "user-123",
+            "full_name": "John Doe",
+            "email": "john@example.com",
+            "phone_number": "PHONE_NUMBER",
+            "updated_at": "2025-01-01T00:00:00Z",
+            "created_at": "2025-01-01T00:00:00Z",
+        }
+    ])
+    supabase.seed("users", [
+        {
+            "id": "user-123",
+            "email": "john@example.com",
+            "username": "john",
+            "preferred_locale": "ja",
+        }
+    ])
+    supabase.seed("payment_orders", [
+        {
+            "user_id": "user-123",
+            "seller_id": "author-1",
+            "item_type": "note",
+            "item_id": "note-1",
+            "payment_method": "yen",
+            "status": "PENDING",
+            "external_id": "note_quick_existing",
+            "metadata": {"quick_checkout": True, "checkout_url": "reused-note-url"},
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        }
+    ])
+
+    monkeypatch.setattr(payments, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(payments, "decode_access_token", lambda token: {"sub": "user-123"})
+
+    called = {"count": 0}
+
+    async def _create_checkout_preference(**_: object) -> Dict[str, str]:  # type: ignore[override]
+        called["count"] += 1
+        return {"checkout_url": "should-not-be-used", "id": "pref_should_not"}
+
+    monkeypatch.setattr(payments.one_lat_client, "create_checkout_preference", _create_checkout_preference)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/payments/quick-checkout",
+        json={"item_type": "note", "item_id": "note-1"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["checkout_url"] == "reused-note-url"
+    assert payload["item_type"] == "note"
+    assert called["count"] == 0
+    assert len(supabase.storage["payment_orders"]) == 1
 
 
 def test_quick_checkout_product_success(monkeypatch):
@@ -351,6 +428,8 @@ def test_quick_checkout_product_success(monkeypatch):
     order = supabase.storage["payment_orders"][0]
     assert order["item_id"] == "product-1"
     assert order["metadata"]["quantity"] == 2
+    assert order["metadata"]["checkout_url"] == "quick-product-url"
+    assert "generated_at" in order["metadata"]
 
 
 def test_quick_checkout_subscription_success(monkeypatch):

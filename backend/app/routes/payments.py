@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+import logging
+import time
 import uuid
 from typing import Any, Dict, Optional
-
-import logging
 from urllib.parse import urlencode
 
 from app.constants.subscription_plans import get_subscription_plan
@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 security = HTTPBearer(auto_error=False)
+
+
+QUICK_CHECKOUT_REUSE_WINDOW = timedelta(minutes=10)
 
 
 def get_supabase() -> Client:
@@ -91,6 +94,90 @@ def _get_effective_exchange_rate() -> float:
 def _convert_jpy_to_usd(amount_jpy: float) -> float:
     rate = _get_effective_exchange_rate()
     return round(amount_jpy / rate, 2)
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_supabase_timestamp(value: object) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    return None
+
+
+def _reuse_quick_checkout_if_recent(
+    supabase: Client,
+    *,
+    user_id: str,
+    item_type: str,
+    item_id: str,
+) -> Optional[QuickCheckoutResponse]:
+    try:
+        response = (
+            supabase
+            .table("payment_orders")
+            .select("external_id, metadata, created_at")
+            .eq("user_id", user_id)
+            .eq("item_type", item_type)
+            .eq("item_id", item_id)
+            .eq("payment_method", "yen")
+            .eq("status", "PENDING")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:  # pragma: no cover - Supabase query failure
+        logger.warning(
+            "Quick checkout reuse lookup failed",
+            extra={"user_id": user_id, "item_type": item_type, "item_id": item_id, "error": str(exc)},
+        )
+        return None
+
+    rows = response.data or []
+    if not rows:
+        return None
+
+    record = rows[0]
+    metadata = record.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return None
+
+    if not metadata.get("quick_checkout"):
+        return None
+
+    checkout_url = metadata.get("checkout_url")
+    external_id = record.get("external_id")
+    if not checkout_url or not external_id:
+        return None
+
+    created_at = _parse_supabase_timestamp(record.get("created_at"))
+    if created_at and _now_utc() - created_at > QUICK_CHECKOUT_REUSE_WINDOW:
+        return None
+
+    logger.info(
+        "Reusing existing quick checkout preference",
+        extra={
+            "user_id": user_id,
+            "item_type": item_type,
+            "item_id": item_id,
+            "external_id": external_id,
+        },
+    )
+
+    return QuickCheckoutResponse(
+        checkout_url=str(checkout_url),
+        external_id=str(external_id),
+        item_type=item_type,
+    )
 
 
 @router.get("/billing-profile", response_model=BillingProfileResponse)
@@ -182,6 +269,16 @@ async def _prepare_note_checkout(
     locale: Optional[str],
     payer_details: Dict[str, Optional[str]],
 ) -> QuickCheckoutResponse:
+    reused = _reuse_quick_checkout_if_recent(
+        supabase,
+        user_id=user_id,
+        item_type="note",
+        item_id=note_id,
+    )
+    if reused:
+        return reused
+
+    start_time = time.perf_counter()
     note_response = (
         supabase
         .table("notes")
@@ -194,6 +291,7 @@ async def _prepare_note_checkout(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ノートが見つかりません")
 
     note = note_response.data
+    after_note_lookup = time.perf_counter()
     if not note.get("allow_jpy_purchase"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="このNOTEは日本円決済に対応していません")
 
@@ -229,6 +327,7 @@ async def _prepare_note_checkout(
         payer_last_name=payer_details.get("last_name"),
         payer_phone=payer_details.get("phone_number"),
     )
+    after_checkout = time.perf_counter()
 
     metadata = {
         "note_slug": slug,
@@ -237,6 +336,10 @@ async def _prepare_note_checkout(
         "locale": requested_locale,
         "quick_checkout": True,
     }
+    checkout_url = checkout_data.get("checkout_url")
+    if checkout_url:
+        metadata["checkout_url"] = checkout_url
+    metadata["generated_at"] = _now_utc().isoformat()
 
     order_payload = {
         "user_id": user_id,
@@ -258,6 +361,23 @@ async def _prepare_note_checkout(
     except Exception as exc:
         logger.exception("Failed to record payment order for note", extra={"user_id": user_id, "note_id": note_id})
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="決済情報の保存に失敗しました") from exc
+    after_insert = time.perf_counter()
+
+    logger.info(
+        "Created quick checkout preference",
+        extra={
+            "user_id": user_id,
+            "item_type": "note",
+            "item_id": note_id,
+            "external_id": external_id,
+            "latency_ms": {
+                "note_lookup": int((after_note_lookup - start_time) * 1000),
+                "one_lat": int((after_checkout - after_note_lookup) * 1000),
+                "order_insert": int((after_insert - after_checkout) * 1000),
+                "total": int((after_insert - start_time) * 1000),
+            },
+        },
+    )
 
     return QuickCheckoutResponse(
         checkout_url=checkout_data.get("checkout_url"),
@@ -274,6 +394,16 @@ async def _prepare_product_checkout(
     quantity: int,
     payer_details: Dict[str, Optional[str]],
 ) -> QuickCheckoutResponse:
+    reused = _reuse_quick_checkout_if_recent(
+        supabase,
+        user_id=user_id,
+        item_type="product",
+        item_id=product_id,
+    )
+    if reused:
+        return reused
+
+    start_time = time.perf_counter()
     product_response = (
         supabase
         .table("products")
@@ -286,6 +416,7 @@ async def _prepare_product_checkout(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="商品が見つかりません")
 
     product = product_response.data
+    after_product_lookup = time.perf_counter()
     if not product.get("allow_jpy_purchase"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="この商品は日本円決済に対応していません")
 
@@ -320,12 +451,17 @@ async def _prepare_product_checkout(
         payer_last_name=payer_details.get("last_name"),
         payer_phone=payer_details.get("phone_number"),
     )
+    after_checkout = time.perf_counter()
 
     metadata = {
         "quantity": quantity,
         "unit_price_jpy": product.get("price_jpy"),
         "quick_checkout": True,
     }
+    checkout_url = checkout_data.get("checkout_url")
+    if checkout_url:
+        metadata["checkout_url"] = checkout_url
+    metadata["generated_at"] = _now_utc().isoformat()
 
     order_payload = {
         "user_id": user_id,
@@ -347,6 +483,23 @@ async def _prepare_product_checkout(
     except Exception as exc:
         logger.exception("Failed to record payment order for product", extra={"user_id": user_id, "product_id": product_id})
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="決済情報の保存に失敗しました") from exc
+    after_insert = time.perf_counter()
+
+    logger.info(
+        "Created quick checkout preference",
+        extra={
+            "user_id": user_id,
+            "item_type": "product",
+            "item_id": product_id,
+            "external_id": external_id,
+            "latency_ms": {
+                "product_lookup": int((after_product_lookup - start_time) * 1000),
+                "one_lat": int((after_checkout - after_product_lookup) * 1000),
+                "order_insert": int((after_insert - after_checkout) * 1000),
+                "total": int((after_insert - start_time) * 1000),
+            },
+        },
+    )
 
     return QuickCheckoutResponse(
         checkout_url=checkout_data.get("checkout_url"),
