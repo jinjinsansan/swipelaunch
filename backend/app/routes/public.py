@@ -4,6 +4,8 @@ import time
 from copy import deepcopy
 
 from fastapi import APIRouter, HTTPException, status, Query, Header, BackgroundTasks
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from supabase import create_client, Client
 from app.config import settings
 from app.models.landing_page import LPDetailResponse, LPStepResponse, CTAResponse, LinkedSalonInfo
@@ -15,7 +17,7 @@ from app.models.required_actions import (
     RequiredActionsStatusResponse
 )
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any, Tuple, Set
+from typing import Optional, List, Dict, Any, Tuple, Set, Union
 from datetime import datetime
 
 from app.constants.subscription_plans import SUBSCRIPTION_PLANS, get_subscription_plan, get_subscription_plan_by_id
@@ -48,6 +50,12 @@ _step_info_lock = threading.Lock()
 _recent_step_events: Dict[str, float] = {}
 _step_event_lock = threading.Lock()
 
+LP_PUBLIC_CACHE_CONTROL = "public, max-age=60, s-maxage=60, stale-while-revalidate=300"
+LP_PUBLIC_CACHE_HEADERS = {
+    "Cache-Control": LP_PUBLIC_CACHE_CONTROL,
+    "CDN-Cache-Control": LP_PUBLIC_CACHE_CONTROL,
+}
+
 
 def _get_cached_lp_payload(key: str) -> Tuple[Optional[Dict[str, Any]], bool]:
     with _cache_lock:
@@ -79,6 +87,15 @@ def _store_cached_lp_payload(key: str, payload: Dict[str, Any]) -> None:
 def _invalidate_cached_lp(key: str) -> None:
     with _cache_lock:
         _lp_cache.pop(key, None)
+
+
+def _build_lp_cache_response(payload: Union[LPDetailResponse, Dict[str, Any]]) -> JSONResponse:
+    """LP詳細レスポンスにキャッシュ制御ヘッダーを付与したJSONレスポンスを生成する"""
+    if isinstance(payload, LPDetailResponse):
+        data = payload.model_dump()
+    else:
+        data = payload
+    return JSONResponse(content=jsonable_encoder(data), headers=LP_PUBLIC_CACHE_HEADERS)
 
 
 def _mark_refresh_start(key: str) -> bool:
@@ -1021,7 +1038,8 @@ async def get_public_lp(
                 background_tasks.add_task(_refresh_cached_lp_by_slug, cache_key, slug)
             if track_view and cached_payload.get("id"):
                 background_tasks.add_task(_record_lp_view_async, cached_payload["id"], session_id)
-            return LPDetailResponse(**cached_payload)
+            cached_model = LPDetailResponse(**cached_payload)
+            return _build_lp_cache_response(cached_model)
 
         response = _fetch_lp_by_slug(slug)
         _store_cached_lp_payload(cache_key, response.model_dump())
@@ -1029,7 +1047,7 @@ async def get_public_lp(
         if track_view:
             background_tasks.add_task(_record_lp_view_async, response.id, session_id)
 
-        return response
+        return _build_lp_cache_response(response)
         
     except HTTPException:
         raise
@@ -1055,7 +1073,8 @@ async def get_public_lp_via_share_token(
                 background_tasks.add_task(_refresh_cached_lp_by_share_token, cache_key, token)
             if track_view and cached_payload.get("id"):
                 background_tasks.add_task(_record_lp_view_async, cached_payload["id"], session_id)
-            return LPDetailResponse(**cached_payload)
+            cached_model = LPDetailResponse(**cached_payload)
+            return _build_lp_cache_response(cached_model)
 
         response = _fetch_lp_by_share_token(token)
         _store_cached_lp_payload(cache_key, response.model_dump())
@@ -1063,7 +1082,7 @@ async def get_public_lp_via_share_token(
         if track_view:
             background_tasks.add_task(_record_lp_view_async, response.id, session_id)
 
-        return response
+        return _build_lp_cache_response(response)
 
     except HTTPException:
         raise
