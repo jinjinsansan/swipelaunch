@@ -3010,6 +3010,10 @@ async def get_revenue_analytics(
 
         point_category_buckets: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"total": 0, "count": 0, "seven": 0, "thirty": 0})
         point_series_buckets: Dict[str, Dict[str, int]] = defaultdict(lambda: {"granted": 0, "spent": 0, "purchased": 0, "bonus": 0, "other": 0})
+        point_purchase_daily: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"amount": 0.0, "orders": 0})
+        point_purchase_monthly: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"amount": 0.0, "orders": 0})
+        point_purchase_total_jpy = 0.0
+        point_purchase_orders = 0
 
         total_granted = 0
         total_spent = 0
@@ -3021,6 +3025,24 @@ async def get_revenue_analytics(
             if not created_at:
                 continue
 
+            date_key = created_at.date().isoformat()
+            month_key = created_at.strftime("%Y-%m")
+
+            if tx_type == "purchase" and amount > 0:
+                amount_jpy = float(amount)
+                point_purchase_total_jpy += amount_jpy
+                point_purchase_orders += 1
+                daily_bucket = point_purchase_daily[date_key]
+                daily_bucket["amount"] += amount_jpy
+                daily_bucket["orders"] += 1
+                monthly_bucket = point_purchase_monthly[month_key]
+                monthly_bucket["amount"] += amount_jpy
+                monthly_bucket["orders"] += 1
+                if created_at >= seven_days_ago:
+                    revenue_last_seven += amount_jpy
+                if created_at >= thirty_days_ago:
+                    revenue_last_thirty += amount_jpy
+
             category_key = point_category_alias.get(tx_type, "other")
             category_bucket = point_category_buckets[category_key]
             category_bucket["total"] += amount
@@ -3030,7 +3052,6 @@ async def get_revenue_analytics(
             if created_at >= thirty_days_ago:
                 category_bucket["thirty"] += amount
 
-            date_key = created_at.date().isoformat()
             series_bucket = point_series_buckets[date_key]
 
             if tx_type == "purchase":
@@ -3050,6 +3071,20 @@ async def get_revenue_analytics(
                 total_spent += spent_amount
             else:
                 series_bucket["other"] += amount
+
+        if point_purchase_total_jpy:
+            total_revenue_jpy += point_purchase_total_jpy
+            total_orders += point_purchase_orders
+
+            for day_key, payload in point_purchase_daily.items():
+                bucket = daily_buckets[day_key]
+                bucket["amount"] += payload["amount"]
+                bucket["orders"] += payload["orders"]
+
+            for month_key, payload in point_purchase_monthly.items():
+                bucket = monthly_buckets[month_key]
+                bucket["amount"] += payload["amount"]
+                bucket["orders"] += payload["orders"]
 
         point_series = [
             RevenuePointSeriesSchema(

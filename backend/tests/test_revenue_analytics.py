@@ -193,12 +193,12 @@ async def test_get_revenue_analytics(monkeypatch):
 
     result = await admin.get_revenue_analytics(limit_days=120, admin={"id": "admin-user"})
 
-    assert result.summary.total_orders == 5
-    assert result.summary.total_revenue_jpy == pytest.approx(24500.0)
-    assert result.summary.average_order_value_jpy == pytest.approx(4900.0)
-    assert result.summary.last_seven_days_jpy == pytest.approx(17500.0)
-    assert result.summary.last_thirty_days_jpy == pytest.approx(20500.0)
-    assert result.summary.total_revenue_usdt == pytest.approx(163.3333, rel=1e-4)
+    assert result.summary.total_orders == 6
+    assert result.summary.total_revenue_jpy == pytest.approx(25000.0)
+    assert result.summary.average_order_value_jpy == pytest.approx(4166.6667, rel=1e-4)
+    assert result.summary.last_seven_days_jpy == pytest.approx(18000.0)
+    assert result.summary.last_thirty_days_jpy == pytest.approx(21000.0)
+    assert result.summary.total_revenue_usdt == pytest.approx(166.6667, rel=1e-4)
 
     ready_bucket = next(bucket for bucket in result.settlements.buckets if bucket.key == "ready")
     assert ready_bucket.order_count == 2
