@@ -10,9 +10,11 @@ import uuid
 from collections import Counter, defaultdict
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any, Literal, Set, Tuple
+from typing import Optional, List, Dict, Any, Literal, Set, Tuple, Union
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query, Request, BackgroundTasks
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from supabase import create_client, Client
 from postgrest.exceptions import APIError
@@ -59,6 +61,17 @@ NOTE_TIMING_LOG_THRESHOLD_SECONDS = 0.5
 _note_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _note_refresh_in_progress: Set[str] = set()
 _note_cache_lock = threading.Lock()
+
+NOTE_PUBLIC_CACHE_CONTROL = "public, max-age=60, s-maxage=60, stale-while-revalidate=300"
+NOTE_PRIVATE_CACHE_CONTROL = "private, no-store, max-age=0"
+NOTE_PUBLIC_CACHE_HEADERS = {
+    "Cache-Control": NOTE_PUBLIC_CACHE_CONTROL,
+    "CDN-Cache-Control": NOTE_PUBLIC_CACHE_CONTROL,
+}
+NOTE_PRIVATE_CACHE_HEADERS = {
+    "Cache-Control": NOTE_PRIVATE_CACHE_CONTROL,
+    "CDN-Cache-Control": NOTE_PRIVATE_CACHE_CONTROL,
+}
 
 
 def _log_note_timing(stage: str, start_time: float, extra: Optional[Dict[str, Any]] = None) -> float:
@@ -109,6 +122,19 @@ def _store_cached_note_payload(key: str, payload: Dict[str, Any]) -> None:
 def _invalidate_cached_note_payload(key: str) -> None:
     with _note_cache_lock:
         _note_cache.pop(key, None)
+
+
+def _build_public_note_response(
+    payload: Union[PublicNoteDetailResponse, Dict[str, Any]],
+    *,
+    user_id: Optional[str],
+) -> JSONResponse:
+    headers = NOTE_PUBLIC_CACHE_HEADERS if not user_id else NOTE_PRIVATE_CACHE_HEADERS
+    if isinstance(payload, PublicNoteDetailResponse):
+        data = payload.model_dump()
+    else:
+        data = payload
+    return JSONResponse(content=jsonable_encoder(data), headers=headers)
 
 
 def _mark_note_refresh_start(key: str) -> bool:
@@ -1110,7 +1136,8 @@ async def get_public_note(
             overall_start,
             {"slug": slug, "user_id": user_id, "is_stale": is_stale},
         )
-        return PublicNoteDetailResponse(**cached_payload)
+        cached_model = PublicNoteDetailResponse(**cached_payload)
+        return _build_public_note_response(cached_model, user_id=user_id)
 
     response = _fetch_public_note_detail(slug, user_id=user_id, locale=normalized_locale)
 
@@ -1122,7 +1149,7 @@ async def get_public_note(
 
     _log_note_timing("public_note_cache_miss", overall_start, {"slug": slug, "user_id": user_id})
 
-    return response
+    return _build_public_note_response(response, user_id=user_id)
 
 
 @router.get("/share/{token}", response_model=PublicNoteDetailResponse)
@@ -1165,7 +1192,8 @@ async def get_note_via_share_token(
             overall_start,
             {"token": token, "user_id": user_id, "is_stale": is_stale},
         )
-        return PublicNoteDetailResponse(**cached_payload)
+        cached_model = PublicNoteDetailResponse(**cached_payload)
+        return _build_public_note_response(cached_model, user_id=user_id)
 
     response = _fetch_share_note_detail(token, user_id=user_id, locale=normalized_locale)
 
@@ -1177,7 +1205,7 @@ async def get_note_via_share_token(
 
     _log_note_timing("share_note_cache_miss", overall_start, {"token": token, "user_id": user_id})
 
-    return response
+    return _build_public_note_response(response, user_id=user_id)
 
 
 @router.get("/{note_id}", response_model=NoteDetailResponse)
