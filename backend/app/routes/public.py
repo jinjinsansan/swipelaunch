@@ -55,6 +55,11 @@ LP_PUBLIC_CACHE_HEADERS = {
     "Cache-Control": LP_PUBLIC_CACHE_CONTROL,
     "CDN-Cache-Control": LP_PUBLIC_CACHE_CONTROL,
 }
+PRIVATE_CACHE_CONTROL = "private, no-store, max-age=0"
+PRIVATE_CACHE_HEADERS = {
+    "Cache-Control": PRIVATE_CACHE_CONTROL,
+    "CDN-Cache-Control": PRIVATE_CACHE_CONTROL,
+}
 
 
 def _get_cached_lp_payload(key: str) -> Tuple[Optional[Dict[str, Any]], bool]:
@@ -89,13 +94,33 @@ def _invalidate_cached_lp(key: str) -> None:
         _lp_cache.pop(key, None)
 
 
-def _build_lp_cache_response(payload: Union[LPDetailResponse, Dict[str, Any]]) -> JSONResponse:
-    """LP詳細レスポンスにキャッシュ制御ヘッダーを付与したJSONレスポンスを生成する"""
-    if isinstance(payload, LPDetailResponse):
+def _build_json_response(
+    payload: Union[BaseModel, Dict[str, Any]],
+    headers: Dict[str, str],
+) -> JSONResponse:
+    if isinstance(payload, BaseModel):
         data = payload.model_dump()
     else:
         data = payload
-    return JSONResponse(content=jsonable_encoder(data), headers=LP_PUBLIC_CACHE_HEADERS)
+    return JSONResponse(content=jsonable_encoder(data), headers=headers)
+
+
+def _build_lp_cache_response(payload: Union[LPDetailResponse, Dict[str, Any]]) -> JSONResponse:
+    """LP詳細レスポンスにキャッシュ制御ヘッダーを付与したJSONレスポンスを生成する"""
+    return _build_json_response(payload, LP_PUBLIC_CACHE_HEADERS)
+
+
+def _build_salon_public_response(
+    payload: Union[SalonPublicResponse, Dict[str, Any]],
+    *,
+    viewer_id: Optional[str],
+) -> JSONResponse:
+    headers = PRIVATE_CACHE_HEADERS if viewer_id else LP_PUBLIC_CACHE_HEADERS
+    return _build_json_response(payload, headers)
+
+
+def _build_salon_list_response(payload: Union[SalonPublicListResponse, Dict[str, Any]]) -> JSONResponse:
+    return _build_json_response(payload, LP_PUBLIC_CACHE_HEADERS)
 
 
 def _mark_refresh_start(key: str) -> bool:
@@ -828,8 +853,7 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         display_name=owner_record.get("display_name"),
         profile_image_url=owner_record.get("profile_image_url"),
     )
-
-    return SalonPublicResponse(
+    response_payload = SalonPublicResponse(
         id=salon_record.get("id"),
         title=salon_record.get("title", ""),
         description=salon_record.get("description"),
@@ -848,6 +872,8 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         introductory_offer_enabled=bool(salon_record.get("introductory_offer_enabled", False)),
         introductory_offer_type=salon_record.get("introductory_offer_type"),
     )
+
+    return _build_salon_public_response(response_payload, viewer_id=viewer_id)
 
 
 @router.get("/salons", response_model=SalonPublicListResponse)
@@ -887,7 +913,8 @@ async def list_public_salons(
         )
         owner_id = owner_resp.data.get("id") if owner_resp.data else None
         if not owner_id:
-            return SalonPublicListResponse(data=[], total=0, limit=limit, offset=offset)
+            empty_payload = SalonPublicListResponse(data=[], total=0, limit=limit, offset=offset)
+            return _build_salon_list_response(empty_payload)
         query = query.eq("owner_id", owner_id)
 
     if price_range:
@@ -903,7 +930,8 @@ async def list_public_salons(
             if allowed_ids:
                 query = query.in_("subscription_plan_id", allowed_ids)
             else:
-                return SalonPublicListResponse(data=[], total=0, limit=limit, offset=offset)
+                empty_payload = SalonPublicListResponse(data=[], total=0, limit=limit, offset=offset)
+                return _build_salon_list_response(empty_payload)
 
     response = query.execute()
     rows = response.data or []
@@ -981,7 +1009,8 @@ async def list_public_salons(
     total = len(items)
     paged_items = items[offset : offset + limit]
 
-    return SalonPublicListResponse(data=paged_items, total=total, limit=limit, offset=offset)
+    response_payload = SalonPublicListResponse(data=paged_items, total=total, limit=limit, offset=offset)
+    return _build_salon_list_response(response_payload)
 
 
 @router.get("/users/{username}", response_model=PublicUserProfileResponse)
