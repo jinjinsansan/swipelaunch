@@ -36,9 +36,17 @@ logger = logging.getLogger(__name__)
 CACHE_TTL_SECONDS = 60.0
 CACHE_MAX_STALE_SECONDS = 300.0
 MAX_CACHE_ENTRIES = 256
+STEP_INFO_TTL_SECONDS = 300.0
+MAX_STEP_INFO_ENTRIES = 512
+STEP_EVENT_DEDUP_SECONDS = 30.0
+MAX_RECENT_STEP_EVENTS = 10000
 _lp_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _refresh_in_progress: Set[str] = set()
 _cache_lock = threading.Lock()
+_step_info_cache: Dict[str, Tuple[float, str, Set[str]]] = {}
+_step_info_lock = threading.Lock()
+_recent_step_events: Dict[str, float] = {}
+_step_event_lock = threading.Lock()
 
 
 def _get_cached_lp_payload(key: str) -> Tuple[Optional[Dict[str, Any]], bool]:
@@ -57,6 +65,7 @@ def _get_cached_lp_payload(key: str) -> Tuple[Optional[Dict[str, Any]], bool]:
 
 def _store_cached_lp_payload(key: str, payload: Dict[str, Any]) -> None:
     cloned = deepcopy(payload)
+    _cache_step_info_from_payload(cloned)
     with _cache_lock:
         if len(_lp_cache) >= MAX_CACHE_ENTRIES:
             try:
@@ -84,9 +93,158 @@ def _mark_refresh_end(key: str) -> None:
     with _cache_lock:
         _refresh_in_progress.discard(key)
 
+
+def _cache_step_info_from_payload(payload: Dict[str, Any]) -> None:
+    slug = payload.get("slug")
+    lp_id = payload.get("id")
+    steps = payload.get("steps") or []
+    if not slug or not lp_id or not isinstance(steps, list):
+        return
+    step_ids = {step.get("id") for step in steps if isinstance(step, dict) and step.get("id")}
+    if not step_ids:
+        return
+    _store_step_info(slug, lp_id, step_ids)
+
+
+def _store_step_info(slug: str, lp_id: str, step_ids: Set[str]) -> None:
+    now = time.time()
+    with _step_info_lock:
+        if len(_step_info_cache) >= MAX_STEP_INFO_ENTRIES:
+            cutoff = now - STEP_INFO_TTL_SECONDS
+            stale_keys = [key for key, (timestamp, *_rest) in _step_info_cache.items() if timestamp < cutoff]
+            for key in stale_keys:
+                _step_info_cache.pop(key, None)
+            if len(_step_info_cache) >= MAX_STEP_INFO_ENTRIES:
+                _step_info_cache.pop(next(iter(_step_info_cache)), None)
+        _step_info_cache[slug] = (now, lp_id, set(step_ids))
+
+
+def _get_cached_step_info(slug: str) -> Optional[Tuple[str, Set[str]]]:
+    now = time.time()
+    with _step_info_lock:
+        entry = _step_info_cache.get(slug)
+        if not entry:
+            return None
+        timestamp, lp_id, step_ids = entry
+        if now - timestamp > STEP_INFO_TTL_SECONDS:
+            _step_info_cache.pop(slug, None)
+            return None
+        return lp_id, set(step_ids)
+
+
+def _load_lp_step_info(slug: str) -> Tuple[str, Set[str]]:
+    supabase = get_supabase()
+    lp_response = (
+        supabase
+        .table("landing_pages")
+        .select("id")
+        .eq("slug", slug)
+        .eq("status", "published")
+        .single()
+        .execute()
+    )
+    if not lp_response.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="LPが見つかりません")
+
+    lp_id = lp_response.data["id"]
+    steps_response = (
+        supabase
+        .table("lp_steps")
+        .select("id")
+        .eq("lp_id", lp_id)
+        .execute()
+    )
+    step_ids = {step["id"] for step in (steps_response.data or []) if step.get("id")}
+    if not step_ids:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ステップが見つかりません")
+
+    _store_step_info(slug, lp_id, step_ids)
+    return lp_id, step_ids
+
+
+def _resolve_lp_step_info(slug: str) -> Tuple[str, Set[str]]:
+    cached = _get_cached_step_info(slug)
+    if cached:
+        return cached
+    return _load_lp_step_info(slug)
+
+
+def _should_process_step_event(lp_id: str, step_id: str, event_type: str, session_id: Optional[str]) -> bool:
+    if not session_id:
+        return True
+    key = f"{lp_id}:{step_id}:{event_type}:{session_id}"
+    now = time.time()
+    with _step_event_lock:
+        last_seen = _recent_step_events.get(key)
+        if last_seen and now - last_seen < STEP_EVENT_DEDUP_SECONDS:
+            return False
+        _recent_step_events[key] = now
+        if len(_recent_step_events) > MAX_RECENT_STEP_EVENTS:
+            cutoff = now - STEP_EVENT_DEDUP_SECONDS
+            obsolete = [k for k, ts in _recent_step_events.items() if ts < cutoff]
+            for stale_key in obsolete:
+                _recent_step_events.pop(stale_key, None)
+            if len(_recent_step_events) > MAX_RECENT_STEP_EVENTS:
+                _recent_step_events.pop(next(iter(_recent_step_events)), None)
+    return True
+
 def get_supabase() -> Client:
     """Supabaseクライアント取得"""
     return create_client(settings.supabase_url, settings.supabase_key)
+
+
+def _record_step_event_async(lp_id: str, step_id: str, event_type: str, session_id: Optional[str]) -> None:
+    try:
+        supabase = get_supabase()
+
+        counter_column = "step_views" if event_type == "step_view" else "step_exits"
+
+        if session_id:
+            existing_event = (
+                supabase
+                .table("lp_event_logs")
+                .select("id")
+                .eq("lp_id", lp_id)
+                .eq("step_id", step_id)
+                .eq("event_type", event_type)
+                .eq("session_id", session_id)
+                .limit(1)
+                .execute()
+            )
+            if existing_event.data:
+                return
+
+        step_response = (
+            supabase
+            .table("lp_steps")
+            .select(counter_column)
+            .eq("id", step_id)
+            .eq("lp_id", lp_id)
+            .single()
+            .execute()
+        )
+
+        if not step_response.data:
+            return
+
+        current_value = step_response.data.get(counter_column, 0) or 0
+        supabase.table("lp_steps").update({counter_column: current_value + 1}).eq("id", step_id).execute()
+
+        analytics_data = {
+            "lp_id": lp_id,
+            "step_id": step_id,
+            "event_type": event_type,
+            "session_id": session_id,
+        }
+        supabase.table("lp_event_logs").insert(analytics_data).execute()
+
+    except Exception:
+        logger.exception(
+            "Failed to record step event asynchronously (lp_id=%s, step_id=%s, event_type=%s)",
+            lp_id,
+            step_id,
+            event_type,
+        )
 
 
 def _build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Optional[LinkedSalonInfo]:
@@ -301,6 +459,11 @@ def _assemble_public_lp_response(
     payload = dict(lp_data)
     payload.pop("share_token", None)
     payload["share_url"] = share_url
+
+    try:
+        _store_step_info(lp_data["slug"], lp_id, {step.id for step in steps})
+    except Exception:
+        logger.exception("Failed to cache step info for LP slug=%s", lp_data.get("slug"))
 
     linked_salon = _build_linked_salon_info(supabase, lp_data.get("salon_id"))
 
@@ -911,7 +1074,7 @@ async def get_public_lp_via_share_token(
         )
 
 @router.post("/{slug}/step-view", status_code=status.HTTP_204_NO_CONTENT)
-async def record_step_view(slug: str, data: StepViewRequest):
+async def record_step_view(slug: str, data: StepViewRequest, background_tasks: BackgroundTasks):
     """
     ステップ閲覧を記録
     
@@ -920,58 +1083,20 @@ async def record_step_view(slug: str, data: StepViewRequest):
     - **session_id**: セッションID（オプション）
     """
     try:
-        supabase = get_supabase()
-        
-        # LP存在確認
-        lp_response = supabase.table("landing_pages").select("id").eq("slug", slug).eq("status", "published").single().execute()
-        
-        if not lp_response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="LPが見つかりません"
-            )
-        
-        lp_id = lp_response.data["id"]
-        
-        # ステップ存在確認
-        step_response = supabase.table("lp_steps").select("step_views").eq("id", data.step_id).eq("lp_id", lp_id).single().execute()
-        
-        if not step_response.data:
+        lp_id, step_ids = _resolve_lp_step_info(slug)
+
+        if data.step_id not in step_ids:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="ステップが見つかりません"
             )
-        
-        if data.session_id:
-            existing_event = (
-                supabase
-                .table("lp_event_logs")
-                .select("id")
-                .eq("lp_id", lp_id)
-                .eq("step_id", data.step_id)
-                .eq("event_type", "step_view")
-                .eq("session_id", data.session_id)
-                .limit(1)
-                .execute()
-            )
-            if existing_event.data:
-                return None
 
-        # ステップの閲覧数を+1
-        current_views = step_response.data.get("step_views", 0)
-        supabase.table("lp_steps").update({"step_views": current_views + 1}).eq("id", data.step_id).execute()
-        
-        # lp_event_logsテーブルに記録
-        analytics_data = {
-            "lp_id": lp_id,
-            "step_id": data.step_id,
-            "event_type": "step_view",
-            "session_id": data.session_id,
-        }
-        supabase.table("lp_event_logs").insert(analytics_data).execute()
-        
+        if not _should_process_step_event(lp_id, data.step_id, "step_view", data.session_id):
+            return None
+
+        background_tasks.add_task(_record_step_event_async, lp_id, data.step_id, "step_view", data.session_id)
         return None
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -981,7 +1106,7 @@ async def record_step_view(slug: str, data: StepViewRequest):
         )
 
 @router.post("/{slug}/step-exit", status_code=status.HTTP_204_NO_CONTENT)
-async def record_step_exit(slug: str, data: StepViewRequest):
+async def record_step_exit(slug: str, data: StepViewRequest, background_tasks: BackgroundTasks):
     """
     ステップ離脱を記録
     
@@ -990,56 +1115,18 @@ async def record_step_exit(slug: str, data: StepViewRequest):
     - **session_id**: セッションID（オプション）
     """
     try:
-        supabase = get_supabase()
-        
-        # LP存在確認
-        lp_response = supabase.table("landing_pages").select("id").eq("slug", slug).eq("status", "published").single().execute()
-        
-        if not lp_response.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="LPが見つかりません"
-            )
-        
-        lp_id = lp_response.data["id"]
-        
-        # ステップ存在確認
-        step_response = supabase.table("lp_steps").select("step_exits").eq("id", data.step_id).eq("lp_id", lp_id).single().execute()
-        
-        if not step_response.data:
+        lp_id, step_ids = _resolve_lp_step_info(slug)
+
+        if data.step_id not in step_ids:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="ステップが見つかりません"
             )
-        
-        if data.session_id:
-            existing_event = (
-                supabase
-                .table("lp_event_logs")
-                .select("id")
-                .eq("lp_id", lp_id)
-                .eq("step_id", data.step_id)
-                .eq("event_type", "step_exit")
-                .eq("session_id", data.session_id)
-                .limit(1)
-                .execute()
-            )
-            if existing_event.data:
-                return None
 
-        # ステップの離脱数を+1
-        current_exits = step_response.data.get("step_exits", 0)
-        supabase.table("lp_steps").update({"step_exits": current_exits + 1}).eq("id", data.step_id).execute()
-        
-        # lp_event_logsテーブルに記録
-        analytics_data = {
-            "lp_id": lp_id,
-            "step_id": data.step_id,
-            "event_type": "step_exit",
-            "session_id": data.session_id,
-        }
-        supabase.table("lp_event_logs").insert(analytics_data).execute()
-        
+        if not _should_process_step_event(lp_id, data.step_id, "step_exit", data.session_id):
+            return None
+
+        background_tasks.add_task(_record_step_event_async, lp_id, data.step_id, "step_exit", data.session_id)
         return None
         
     except HTTPException:
