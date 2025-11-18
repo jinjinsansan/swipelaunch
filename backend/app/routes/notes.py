@@ -10,6 +10,7 @@ import uuid
 from collections import Counter, defaultdict
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict, Any, Literal, Set, Tuple, Union
 
 from fastapi import APIRouter, HTTPException, status, Depends, Query, Request, BackgroundTasks
@@ -47,6 +48,7 @@ from app.services.purchase_notifications import (
 from app.services import note_notifications
 from app.services.note_content import augment_link_blocks, filter_rich_content
 from app.utils.locale import normalize_locale, locale_path_prefix, DEFAULT_LOCALE
+from app.utils.dates import parse_iso_datetime
 
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -61,6 +63,7 @@ NOTE_TIMING_LOG_THRESHOLD_SECONDS = 0.5
 _note_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _note_refresh_in_progress: Set[str] = set()
 _note_cache_lock = threading.Lock()
+JST = ZoneInfo("Asia/Tokyo")
 
 NOTE_PUBLIC_CACHE_CONTROL = "public, max-age=60, s-maxage=60, stale-while-revalidate=300"
 NOTE_PRIVATE_CACHE_CONTROL = "private, no-store, max-age=0"
@@ -149,6 +152,27 @@ def _mark_note_refresh_end(key: str) -> None:
     with _note_cache_lock:
         _note_refresh_in_progress.discard(key)
 
+
+def _convert_timestamp_for_locale(value: Optional[Any], locale: str) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        dt = parse_iso_datetime(value)
+        if not dt:
+            return None
+    else:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    if locale == "ja":
+        return dt.astimezone(JST)
+
+    return dt.astimezone(timezone.utc)
+
 def _ensure_metadata_dict(raw: Optional[Any]) -> Dict[str, Any]:
     if isinstance(raw, dict):
         return dict(raw)
@@ -180,6 +204,7 @@ def _assemble_public_note_detail(
     *,
     user_id: Optional[str],
     requires_login: bool,
+    locale: str,
 ) -> PublicNoteDetailResponse:
     user = note.get("users") or {}
     salon_ids = _fetch_note_salon_ids(supabase, note["id"])
@@ -236,7 +261,7 @@ def _assemble_public_note_detail(
         has_access=has_access,
         content_blocks=visible_blocks,
         rich_content=visible_rich,
-        published_at=note.get("published_at"),
+        published_at=_convert_timestamp_for_locale(note.get("published_at"), locale),
         is_featured=bool(note.get("is_featured", False)),
         categories=list(note.get("categories") or []),
         allow_share_unlock=bool(note.get("allow_share_unlock", False)),
@@ -280,6 +305,7 @@ def _fetch_public_note_detail(
         note,
         user_id=user_id,
         requires_login=requires_login,
+        locale=locale,
     )
     _log_note_timing("assemble_public_note_detail", assemble_start, {"slug": slug})
     return detail
@@ -320,6 +346,7 @@ def _fetch_share_note_detail(
         note,
         user_id=user_id,
         requires_login=requires_login,
+        locale=locale,
     )
     _log_note_timing("assemble_share_note_detail", assemble_start, {"token": token})
     return detail
@@ -1019,7 +1046,7 @@ async def list_public_notes(
     locale: Optional[str] = Query(None, min_length=2, max_length=5),
 ):
     supabase = get_supabase()
-    _ = normalize_locale(locale)
+    normalized_locale = normalize_locale(locale)
 
     target_author_id: Optional[str] = None
     if author_username:
@@ -1081,7 +1108,7 @@ async def list_public_notes(
                 tax_rate=_coerce_float(record.get("tax_rate")),
                 tax_inclusive=bool(record.get("tax_inclusive", True)),
                 author_username=user.get("username"),
-                published_at=record.get("published_at"),
+                published_at=_convert_timestamp_for_locale(record.get("published_at"), normalized_locale),
                 categories=list(record.get("categories") or []),
                 allow_share_unlock=bool(record.get("allow_share_unlock", False)),
                 official_share_tweet_id=record.get("official_share_tweet_id"),
