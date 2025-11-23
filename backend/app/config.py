@@ -40,6 +40,7 @@ class Settings(BaseSettings):
         ],
         env="OPERATOR_MESSAGE_SUPER_ADMIN_EMAILS",
     )
+    secret_memo_password: str = Field(default="kusano", env="SECRET_MEMO_PASSWORD")
 
     # Mailgun
     mailgun_api_key: Optional[str] = Field(default=None, env="MAILGUN_API_KEY")

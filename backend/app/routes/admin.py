@@ -20,6 +20,12 @@ from app.services.platform_settings import (
     get_platform_settings as load_platform_settings,
     update_platform_settings as persist_platform_settings,
 )
+from app.services.secret_memo import (
+    SecretMemoRecord,
+    get_secret_memo_record,
+    save_secret_memo,
+    verify_secret_memo_password,
+)
 from app.utils.auth import decode_access_token
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -113,6 +119,22 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="管理者権限が必要です",
+        )
+    return user
+
+
+def require_secret_memo_admin(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="認証情報が必要です",
+        )
+    user = get_current_user(credentials)
+    email = (user.get("email") or "").lower()
+    if email not in ADMIN_EMAILS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="極秘メモへのアクセス権限がありません",
         )
     return user
 
@@ -369,6 +391,53 @@ class FeaturedSalonSummary(BaseModel):
 class FeaturedSalonListResponse(BaseModel):
     data: List[FeaturedSalonSummary]
     total: int
+
+
+class SecretMemoAccessRequest(BaseModel):
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class SecretMemoUpdateRequest(SecretMemoAccessRequest):
+    content: str = Field(default="", max_length=10000)
+
+
+class SecretMemoResponse(BaseModel):
+    content: str
+    updated_at: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+def build_secret_memo_response(record: SecretMemoRecord) -> SecretMemoResponse:
+    return SecretMemoResponse(
+        content=record.content,
+        updated_at=record.updated_at,
+        updated_by=record.updated_by,
+    )
+
+
+# ========================================
+# Secret Memo
+# ========================================
+
+
+@router.post("/secret-memo/view", response_model=SecretMemoResponse)
+async def view_secret_memo(
+    payload: SecretMemoAccessRequest,
+    admin: dict = Depends(require_secret_memo_admin),
+):
+    verify_secret_memo_password(payload.password)
+    record = get_secret_memo_record()
+    return build_secret_memo_response(record)
+
+
+@router.put("/secret-memo", response_model=SecretMemoResponse)
+async def update_secret_memo(
+    payload: SecretMemoUpdateRequest,
+    admin: dict = Depends(require_secret_memo_admin),
+):
+    verify_secret_memo_password(payload.password)
+    record = save_secret_memo(payload.content, admin.get("id"))
+    return build_secret_memo_response(record)
 
 
 class AdminMarketplaceItemSchema(BaseModel):
