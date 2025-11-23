@@ -25,6 +25,7 @@ from app.services.secret_memo import (
     SecretMemoFile,
     add_secret_memo_file,
     get_secret_memo_file,
+    remove_secret_memo_file,
     get_secret_memo_record,
     save_secret_memo,
     verify_secret_memo_password,
@@ -504,6 +505,17 @@ async def get_secret_memo_file_detail(
     verify_secret_memo_password(payload.password)
     file = get_secret_memo_file(file_id)
     return build_secret_memo_file_detail(file)
+
+
+@router.post("/secret-memo/files/{file_id}/delete", response_model=SecretMemoResponse)
+async def delete_secret_memo_file(
+    file_id: str,
+    payload: SecretMemoAccessRequest,
+    admin: dict = Depends(require_secret_memo_admin),
+):
+    verify_secret_memo_password(payload.password)
+    record = remove_secret_memo_file(file_id=file_id, actor_id=admin.get("id"))
+    return build_secret_memo_response(record)
 
 
 class AdminMarketplaceItemSchema(BaseModel):

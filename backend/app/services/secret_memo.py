@@ -233,3 +233,21 @@ def get_secret_memo_file(file_id: str, client: Optional[Client] = None) -> Secre
         status_code=status.HTTP_404_NOT_FOUND,
         detail="指定されたファイルが見つかりません",
     )
+
+
+def remove_secret_memo_file(
+    file_id: str,
+    actor_id: Optional[str],
+    client: Optional[Client] = None,
+) -> SecretMemoRecord:
+    client = _ensure_table_client(client)
+    record = get_secret_memo_record(client)
+    index = next((idx for idx, file in enumerate(record.files) if file.id == file_id), None)
+    if index is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="指定されたファイルが見つかりません",
+        )
+    record.files.pop(index)
+    _persist_secret_memo(record, actor_id, client)
+    return get_secret_memo_record(client=client)

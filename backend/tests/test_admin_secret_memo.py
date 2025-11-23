@@ -134,3 +134,38 @@ def test_add_secret_memo_file_rejects_large_payload(monkeypatch):
             client=client,
         )
     assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+
+def test_remove_secret_memo_file_deletes_entry(monkeypatch):
+    rows = [
+        {
+            "key": secret_memo.SECRET_MEMO_KEY,
+            "value": {
+                "content": "top secret",
+                "files": [
+                    {
+                        "id": "file-1",
+                        "filename": "memo.pdf",
+                        "mime_type": "application/pdf",
+                        "size": 100,
+                        "data_base64": base64.b64encode(b"PDF").decode(),
+                        "uploaded_at": "2025-11-23T10:00:00+00:00",
+                    }
+                ],
+            },
+            "updated_by": "admin-1",
+        }
+    ]
+    client = SecretMemoSupabaseStub(rows=rows)
+
+    record = secret_memo.remove_secret_memo_file(file_id="file-1", actor_id="admin-2", client=client)
+
+    assert len(record.files) == 0
+    assert record.content == "top secret"
+
+
+def test_remove_secret_memo_file_raises_when_missing():
+    client = SecretMemoSupabaseStub()
+    with pytest.raises(HTTPException) as exc:
+        secret_memo.remove_secret_memo_file(file_id="missing", actor_id="admin", client=client)
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
