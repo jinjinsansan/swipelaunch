@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from types import SimpleNamespace
+import base64
 
 import pytest
 from fastapi import HTTPException, status
@@ -92,7 +93,44 @@ def test_get_secret_memo_record_returns_empty_when_absent():
 
 def test_save_secret_memo_persists_content():
     client = SecretMemoSupabaseStub()
-    record = secret_memo.save_secret_memo("極秘", actor_id="admin-1", client=client)
-    assert record.content == "極秘"
+    record = secret_memo.save_secret_memo("メモ", actor_id="admin-1", client=client)
+    assert record.content == "メモ"
     assert record.updated_by == "admin-1"
     assert record.updated_at == client.timestamp
+
+
+def test_add_secret_memo_file_appends_entry(monkeypatch):
+    client = SecretMemoSupabaseStub()
+    monkeypatch.setattr(secret_memo, "uuid4", lambda: "file-1")
+    monkeypatch.setattr(secret_memo, "_now_iso", lambda: "2025-11-23T12:00:00+00:00")
+
+    result = secret_memo.add_secret_memo_file(
+        filename="evidence.txt",
+        mime_type="text/plain",
+        data_base64="aGVsbG8gd29ybGQ=",
+        actor_id="admin-1",
+        client=client,
+    )
+
+    assert result.id == "file-1"
+    assert result.size == 11
+
+    record = secret_memo.get_secret_memo_record(client)
+    assert len(record.files) == 1
+    stored = record.files[0]
+    assert stored.filename == "evidence.txt"
+    assert stored.data_base64 == "aGVsbG8gd29ybGQ="
+
+
+def test_add_secret_memo_file_rejects_large_payload(monkeypatch):
+    client = SecretMemoSupabaseStub()
+    large_payload = base64.b64encode(b"x" * (secret_memo.SECRET_MEMO_MAX_FILE_SIZE + 1)).decode()
+    with pytest.raises(HTTPException) as exc:
+        secret_memo.add_secret_memo_file(
+            filename="huge.bin",
+            mime_type="application/octet-stream",
+            data_base64=large_payload,
+            actor_id="admin",
+            client=client,
+        )
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST

@@ -22,6 +22,9 @@ from app.services.platform_settings import (
 )
 from app.services.secret_memo import (
     SecretMemoRecord,
+    SecretMemoFile,
+    add_secret_memo_file,
+    get_secret_memo_file,
     get_secret_memo_record,
     save_secret_memo,
     verify_secret_memo_password,
@@ -401,10 +404,29 @@ class SecretMemoUpdateRequest(SecretMemoAccessRequest):
     content: str = Field(default="", max_length=10000)
 
 
+class SecretMemoFileMetadata(BaseModel):
+    id: str
+    filename: str
+    mime_type: str
+    size: int
+    uploaded_at: str
+
+
+class SecretMemoFileDetailResponse(SecretMemoFileMetadata):
+    data_base64: str
+
+
+class SecretMemoFileUploadRequest(SecretMemoAccessRequest):
+    filename: str = Field(..., max_length=255)
+    mime_type: str = Field(default="application/octet-stream", max_length=255)
+    data_base64: str = Field(..., min_length=8)
+
+
 class SecretMemoResponse(BaseModel):
     content: str
     updated_at: Optional[str] = None
     updated_by: Optional[str] = None
+    files: List[SecretMemoFileMetadata] = Field(default_factory=list)
 
 
 def build_secret_memo_response(record: SecretMemoRecord) -> SecretMemoResponse:
@@ -412,6 +434,24 @@ def build_secret_memo_response(record: SecretMemoRecord) -> SecretMemoResponse:
         content=record.content,
         updated_at=record.updated_at,
         updated_by=record.updated_by,
+        files=[build_secret_memo_file_metadata(f) for f in record.files],
+    )
+
+
+def build_secret_memo_file_metadata(file: SecretMemoFile) -> SecretMemoFileMetadata:
+    return SecretMemoFileMetadata(
+        id=file.id,
+        filename=file.filename,
+        mime_type=file.mime_type,
+        size=file.size,
+        uploaded_at=file.uploaded_at,
+    )
+
+
+def build_secret_memo_file_detail(file: SecretMemoFile) -> SecretMemoFileDetailResponse:
+    return SecretMemoFileDetailResponse(
+        **build_secret_memo_file_metadata(file).model_dump(),
+        data_base64=file.data_base64,
     )
 
 
@@ -438,6 +478,32 @@ async def update_secret_memo(
     verify_secret_memo_password(payload.password)
     record = save_secret_memo(payload.content, admin.get("id"))
     return build_secret_memo_response(record)
+
+
+@router.post("/secret-memo/files", response_model=SecretMemoFileMetadata)
+async def upload_secret_memo_file(
+    payload: SecretMemoFileUploadRequest,
+    admin: dict = Depends(require_secret_memo_admin),
+):
+    verify_secret_memo_password(payload.password)
+    file = add_secret_memo_file(
+        filename=payload.filename,
+        mime_type=payload.mime_type,
+        data_base64=payload.data_base64,
+        actor_id=admin.get("id"),
+    )
+    return build_secret_memo_file_metadata(file)
+
+
+@router.post("/secret-memo/files/{file_id}", response_model=SecretMemoFileDetailResponse)
+async def get_secret_memo_file_detail(
+    file_id: str,
+    payload: SecretMemoAccessRequest,
+    admin: dict = Depends(require_secret_memo_admin),
+):
+    verify_secret_memo_password(payload.password)
+    file = get_secret_memo_file(file_id)
+    return build_secret_memo_file_detail(file)
 
 
 class AdminMarketplaceItemSchema(BaseModel):
