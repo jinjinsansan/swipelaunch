@@ -320,6 +320,11 @@ def handle_note_published(client: Client, note_row: Dict[str, object]) -> None:
 
 
 def _handle_note_published(client: Client, note_row: Dict[str, object]) -> None:
+    visibility = str(note_row.get("visibility") or "private").lower()
+    if visibility != "public":
+        # 限定公開（limited）や非公開の記事はフォロワー通知の対象外
+        return
+
     note_id = note_row.get("id")
     creator_id = note_row.get("author_id")
     slug = note_row.get("slug")
