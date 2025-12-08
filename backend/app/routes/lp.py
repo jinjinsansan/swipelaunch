@@ -240,6 +240,15 @@ def build_linked_salon_info(supabase: Client, salon_id: Optional[str]) -> Option
         public_path=f"/salons/{salon_data.get('id')}/public",
     )
 
+
+def _prepare_lp_record(record: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not record:
+        return {}
+    prepared = dict(record)
+    if prepared.get("show_total_views_public") is None:
+        prepared["show_total_views_public"] = True
+    return prepared
+
 @router.post("", response_model=LPResponse, status_code=status.HTTP_201_CREATED)
 async def create_lp(
     data: LPCreateRequest,
@@ -294,6 +303,7 @@ async def create_lp(
                     "custom_theme_hex": data.custom_theme_hex,
                     "custom_theme_shades": data.custom_theme_shades,
                     "visibility": visibility,
+                    "show_total_views_public": data.show_total_views_public,
                 }
 
                 existing_visibility = existing_lp.get("visibility") or "private"
@@ -311,7 +321,7 @@ async def create_lp(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail="既存LPの更新に失敗しました"
                     )
-                updated_lp = updated.data[0]
+                updated_lp = _prepare_lp_record(updated.data[0])
                 updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
                 return LPResponse(**updated_lp)
             normalized_slug = generate_unique_slug(supabase, normalized_slug)
@@ -341,6 +351,7 @@ async def create_lp(
             "visibility": visibility,
             "share_token": share_token,
             "share_token_rotated_at": share_token_rotated_at,
+            "show_total_views_public": data.show_total_views_public,
         }
         
         response = supabase.table("landing_pages").insert(lp_data).execute()
@@ -351,7 +362,7 @@ async def create_lp(
                 detail="LP作成に失敗しました"
             )
         
-        created_lp = response.data[0]
+        created_lp = _prepare_lp_record(response.data[0])
         created_lp["share_url"] = _build_share_url(created_lp.get("share_token"))
 
         return LPResponse(**created_lp)
@@ -402,7 +413,7 @@ async def get_lps(
                 lp_with_share = dict(lp)
                 lp_with_share["share_url"] = _build_share_url(lp_with_share.get("share_token"))
                 lp_with_share.pop("share_token", None)
-                lps.append(LPResponse(**lp_with_share))
+                lps.append(LPResponse(**_prepare_lp_record(lp_with_share)))
         
         return LPListResponse(
             data=lps,
@@ -462,6 +473,7 @@ async def get_lp(
         lp_payload = dict(lp_data)
         lp_payload.pop("share_token", None)
         lp_payload["share_url"] = share_url
+        lp_payload = _prepare_lp_record(lp_payload)
 
         linked_salon = build_linked_salon_info(supabase, lp_data.get("salon_id"))
         
@@ -548,7 +560,7 @@ async def update_lp(
                 detail="LP更新に失敗しました"
             )
 
-        updated_lp = response.data[0]
+        updated_lp = _prepare_lp_record(response.data[0])
         updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
         updated_lp.pop("share_token", None)
         
@@ -618,7 +630,7 @@ async def rotate_lp_share_token(
                 detail="共有URLの再発行に失敗しました"
             )
 
-        updated_lp = response.data[0]
+        updated_lp = _prepare_lp_record(response.data[0])
         updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
         updated_lp.pop("share_token", None)
 
@@ -709,7 +721,7 @@ async def publish_lp(
                 continue
             note_notifications.handle_lp_product_listed(supabase, product)
 
-        updated_lp = response.data[0]
+        updated_lp = _prepare_lp_record(response.data[0])
         updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
         updated_lp.pop("share_token", None)
 
@@ -769,7 +781,7 @@ async def unpublish_lp(
             .execute()
         )
 
-        updated_lp = response.data[0]
+        updated_lp = _prepare_lp_record(response.data[0])
         updated_lp["share_url"] = _build_share_url(updated_lp.get("share_token"))
         updated_lp.pop("share_token", None)
 
@@ -840,6 +852,7 @@ async def duplicate_lp(
             "visibility": "private",
             "share_token": None,
             "share_token_rotated_at": None,
+            "show_total_views_public": bool(original_lp.get("show_total_views_public", True)),
         }
 
         insert_response = supabase.table("landing_pages").insert(new_lp_data).execute()
@@ -935,7 +948,7 @@ async def duplicate_lp(
         public_url = _build_public_url(latest_lp.get("slug", new_slug))
         share_url = _build_share_url(latest_lp.get("share_token"))
 
-        latest_lp_payload = dict(latest_lp)
+        latest_lp_payload = _prepare_lp_record(dict(latest_lp))
         latest_lp_payload.pop("share_token", None)
         latest_lp_payload["share_url"] = share_url
 

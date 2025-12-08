@@ -23,6 +23,7 @@ class LPCreateRequest(BaseModel):
     visibility: Optional[Literal["public", "limited", "private"]] = Field(
         None, description="公開範囲（未指定時は private）"
     )
+    show_total_views_public: bool = Field(True, description="公開ページで総閲覧数を表示するか")
 
 # LP更新リクエスト
 class LPUpdateRequest(BaseModel):
@@ -43,6 +44,7 @@ class LPUpdateRequest(BaseModel):
     custom_theme_hex: Optional[str] = None
     custom_theme_shades: Optional[dict] = None
     footer_cta_config: Optional[Dict[str, Any]] = None
+    show_total_views_public: Optional[bool] = None
 
 # LPステップモデル
 class LPStepResponse(BaseModel):
@@ -118,6 +120,7 @@ class LPResponse(BaseModel):
     custom_theme_hex: Optional[str] = None
     custom_theme_shades: Optional[dict] = None
     footer_cta_config: Optional[Dict[str, Any]] = None
+    show_total_views_public: bool = True
     owner: Optional[OwnerInfo] = None  # seller情報（JOINで取得）
     created_at: datetime
     updated_at: datetime
@@ -140,7 +143,7 @@ class LPDetailResponse(BaseModel):
     show_swipe_hint: bool = False
     fullscreen_media: bool = False
     floating_cta: bool = False
-    total_views: int = 0
+    total_views: Optional[int] = 0
     total_cta_clicks: int = 0
     product_id: Optional[str] = None
     salon_id: Optional[str] = None
@@ -160,6 +163,7 @@ class LPDetailResponse(BaseModel):
     linked_salon: Optional[LinkedSalonInfo] = None
     share_url: Optional[str] = None
     share_token_rotated_at: Optional[datetime] = None
+    show_total_views_public: bool = True
     
     class Config:
         from_attributes = True

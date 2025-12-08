@@ -139,6 +139,42 @@ def test_get_public_salon_returns_details(monkeypatch, app_client):
     assert payload["owner"]["username"] == "spider-master"
 
 
+def test_public_salon_hides_member_count_when_disabled(monkeypatch, app_client):
+    plan = SUBSCRIPTION_PLANS[0]
+    fake_db = {
+        "salons": [
+            {
+                "id": "salon-hidden",
+                "owner_id": "owner-1",
+                "title": "シークレットサロン",
+                "description": "",
+                "thumbnail_url": None,
+                "subscription_plan_id": plan.subscription_plan_id,
+                "is_active": True,
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-02T00:00:00Z",
+                "show_member_count_public": False,
+            }
+        ],
+        "users": [
+            {"id": "owner-1", "username": "owner", "display_name": None, "profile_image_url": None}
+        ],
+        "salon_memberships": [
+            {"id": "mem-1", "salon_id": "salon-hidden", "user_id": "member-1", "status": "ACTIVE"},
+            {"id": "mem-2", "salon_id": "salon-hidden", "user_id": "member-2", "status": "ACTIVE"},
+        ],
+    }
+
+    monkeypatch.setattr(public, "get_supabase", lambda: FakeSupabase(fake_db))
+
+    response = app_client.get("/api/public/salons/salon-hidden")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["member_count"] is None
+    assert payload["member_count_visible"] is False
+
+
 def test_get_public_salon_marks_member(monkeypatch, app_client):
     plan = SUBSCRIPTION_PLANS[0]
     fake_db = {
@@ -300,6 +336,54 @@ def test_get_public_lp_includes_linked_salon(monkeypatch, app_client):
         "owner_username": "ownername",
         "thumbnail_url": "https://example.com/thumb.png",
     }
+
+
+def test_public_lp_hides_total_views_when_disabled(monkeypatch, app_client):
+    fake_db = {
+        "landing_pages": [
+            {
+                "id": "lp-privacy",
+                "seller_id": "owner-1",
+                "title": "閲覧数非公開LP",
+                "slug": "privacy-lp",
+                "status": "published",
+                "swipe_direction": "vertical",
+                "is_fullscreen": False,
+                "show_swipe_hint": False,
+                "fullscreen_media": False,
+                "floating_cta": False,
+                "total_views": 99,
+                "total_cta_clicks": 0,
+                "product_id": None,
+                "salon_id": None,
+                "meta_title": None,
+                "meta_description": None,
+                "meta_image_url": None,
+                "meta_site_name": None,
+                "custom_theme_hex": None,
+                "custom_theme_shades": None,
+                "owner": {"username": "owner", "email": "owner@example.com"},
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-02T00:00:00Z",
+                "show_total_views_public": False,
+            }
+        ],
+        "lp_steps": [],
+        "lp_ctas": [],
+        "salons": [],
+        "users": [
+            {"id": "owner-1", "username": "owner"}
+        ],
+    }
+
+    monkeypatch.setattr(public, "get_supabase", lambda: FakeSupabase(fake_db))
+
+    response = app_client.get("/api/public/privacy-lp")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["total_views"] is None
+    assert payload["show_total_views_public"] is False
 
 
 def test_list_public_salons_filters(monkeypatch, app_client):

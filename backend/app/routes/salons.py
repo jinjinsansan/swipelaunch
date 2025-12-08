@@ -153,6 +153,7 @@ def _map_salon(record: Dict[str, Any], member_count: int = 0) -> SalonResponse:
         updated_at=record.get("updated_at"),
         introductory_offer_enabled=bool(record.get("introductory_offer_enabled", False)),
         introductory_offer_type=record.get("introductory_offer_type"),
+        show_member_count_public=bool(record.get("show_member_count_public", True)),
     )
 
 
@@ -199,6 +200,7 @@ async def create_salon(
         "is_active": True,
         "introductory_offer_enabled": introductory_offer_enabled,
         "introductory_offer_type": introductory_offer_type,
+        "show_member_count_public": payload.show_member_count_public,
     }
 
     response = supabase.table("salons").insert(salon_data).execute()
@@ -361,6 +363,8 @@ async def update_salon(
         update_data["tax_rate"] = payload.tax_rate
     if payload.tax_inclusive is not None:
         update_data["tax_inclusive"] = payload.tax_inclusive
+    if payload.show_member_count_public is not None:
+        update_data["show_member_count_public"] = payload.show_member_count_public
 
     supabase = get_supabase_client()
 

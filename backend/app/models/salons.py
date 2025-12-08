@@ -24,6 +24,7 @@ class SalonCreateRequest(BaseModel):
         None,
         description="イントロオファーの種類 (現在は初月無料ダイレクト決済のみ)",
     )
+    show_member_count_public: bool = Field(True, description="公開ページで会員数を表示するか")
 
 
 class SalonUpdateRequest(BaseModel):
@@ -39,6 +40,7 @@ class SalonUpdateRequest(BaseModel):
     tax_inclusive: Optional[bool] = None
     introductory_offer_enabled: Optional[bool] = None
     introductory_offer_type: Optional[Literal["first_month_free_direct"]] = None
+    show_member_count_public: Optional[bool] = None
 
 
 class SalonResponse(BaseModel):
@@ -62,6 +64,7 @@ class SalonResponse(BaseModel):
     is_featured: bool = False
     introductory_offer_enabled: bool = False
     introductory_offer_type: Optional[Literal["first_month_free_direct"]] = None
+    show_member_count_public: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -125,7 +128,8 @@ class SalonPublicResponse(BaseModel):
     is_active: bool
     owner: SalonPublicOwner
     plan: SalonPublicPlan
-    member_count: int
+    member_count: Optional[int]
+    member_count_visible: bool = True
     is_member: bool
     membership_status: Optional[str] = None
     allow_point_subscription: bool

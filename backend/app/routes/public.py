@@ -405,6 +405,12 @@ def _build_share_lp_url(token: Optional[str]) -> Optional[str]:
     return f"{base_url}/view/share/{token}"
 
 
+def _ensure_lp_public_defaults(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if payload.get("show_total_views_public") is None:
+        payload["show_total_views_public"] = True
+    return payload
+
+
 def _assemble_public_lp_response(
     supabase: Client,
     lp_data: Dict[str, Any],
@@ -497,6 +503,11 @@ def _assemble_public_lp_response(
 
     public_url = _build_public_lp_url(lp_data["slug"])
     share_url = _build_share_lp_url(lp_data.get("share_token")) if include_share_url else None
+
+    show_total_views_public = bool(lp_data.get("show_total_views_public", True))
+    if not show_total_views_public:
+        lp_data["total_views"] = None
+    lp_data["show_total_views_public"] = show_total_views_public
 
     payload = dict(lp_data)
     payload.pop("share_token", None)
@@ -787,7 +798,8 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         .select(
             "id, owner_id, title, description, thumbnail_url, subscription_plan_id, "
             "monthly_price_jpy, allow_point_subscription, allow_jpy_subscription, tax_rate, tax_inclusive, "
-            "is_active, created_at, updated_at, is_featured, introductory_offer_enabled, introductory_offer_type"
+            "is_active, created_at, updated_at, is_featured, introductory_offer_enabled, introductory_offer_type, "
+            "show_member_count_public"
         )
         .eq("id", salon_id)
         .single()
@@ -821,6 +833,8 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         .execute()
     )
     member_count = getattr(member_count_resp, "count", 0) or 0
+    show_member_count_public = bool(salon_record.get("show_member_count_public", True))
+    public_member_count = member_count if show_member_count_public else None
 
     viewer_id = _extract_user_id(authorization)
     is_member = False
@@ -861,7 +875,8 @@ async def get_public_salon_detail(salon_id: str, authorization: Optional[str] = 
         is_active=bool(salon_record.get("is_active", False)),
         owner=owner,
         plan=plan_payload,
-        member_count=member_count,
+        member_count=public_member_count,
+        member_count_visible=show_member_count_public,
         is_member=is_member,
         membership_status=membership_status,
         allow_point_subscription=bool(salon_record.get("allow_point_subscription", True)),
@@ -1067,7 +1082,7 @@ async def get_public_lp(
                 background_tasks.add_task(_refresh_cached_lp_by_slug, cache_key, slug)
             if track_view and cached_payload.get("id"):
                 background_tasks.add_task(_record_lp_view_async, cached_payload["id"], session_id)
-            cached_model = LPDetailResponse(**cached_payload)
+            cached_model = LPDetailResponse(**_ensure_lp_public_defaults(dict(cached_payload)))
             return _build_lp_cache_response(cached_model)
 
         response = _fetch_lp_by_slug(slug)
@@ -1102,7 +1117,7 @@ async def get_public_lp_via_share_token(
                 background_tasks.add_task(_refresh_cached_lp_by_share_token, cache_key, token)
             if track_view and cached_payload.get("id"):
                 background_tasks.add_task(_record_lp_view_async, cached_payload["id"], session_id)
-            cached_model = LPDetailResponse(**cached_payload)
+            cached_model = LPDetailResponse(**_ensure_lp_public_defaults(dict(cached_payload)))
             return _build_lp_cache_response(cached_model)
 
         response = _fetch_lp_by_share_token(token)
