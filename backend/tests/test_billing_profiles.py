@@ -486,4 +486,5 @@ def test_quick_checkout_subscription_success(monkeypatch):
     assert payload["item_type"] == "subscription"
     session = supabase.storage["one_lat_subscription_sessions"][0]
     assert session["plan_key"] == "test_plan"
+    assert session["subscription_plan_id"] == "plan_test"
     assert session["metadata"]["quick_checkout"] is True

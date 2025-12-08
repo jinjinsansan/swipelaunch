@@ -600,6 +600,7 @@ async def _prepare_subscription_checkout(
     session_record = {
         "user_id": user_id,
         "plan_key": plan.key,
+        "subscription_plan_id": plan.subscription_plan_id,
         "external_id": external_id,
         "checkout_preference_id": checkout_data.get("id"),
         "status": "PENDING",
