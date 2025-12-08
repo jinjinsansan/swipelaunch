@@ -451,7 +451,7 @@ def test_quick_checkout_subscription_success(monkeypatch):
             "preferred_locale": "ja",
         }
     ])
-    supabase.seed("subscription_sessions", [])
+    supabase.seed("one_lat_subscription_sessions", [])
 
     async def _create_checkout_preference(**_: object) -> Dict[str, str]:  # type: ignore[override]
         return {"checkout_url": "quick-subscription-url", "id": "pref_test_3"}
@@ -484,6 +484,6 @@ def test_quick_checkout_subscription_success(monkeypatch):
     payload = response.json()
     assert payload["checkout_url"] == "quick-subscription-url"
     assert payload["item_type"] == "subscription"
-    session = supabase.storage["subscription_sessions"][0]
+    session = supabase.storage["one_lat_subscription_sessions"][0]
     assert session["plan_key"] == "test_plan"
     assert session["metadata"]["quick_checkout"] is True

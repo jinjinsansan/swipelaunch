@@ -608,7 +608,7 @@ async def _prepare_subscription_checkout(
     }
 
     try:
-        supabase.table("subscription_sessions").insert(session_record).execute()
+        supabase.table("one_lat_subscription_sessions").insert(session_record).execute()
     except Exception as exc:
         logger.exception("Failed to create subscription session", extra={"user_id": user_id, "plan_key": plan.key})
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="サブスク決済の準備に失敗しました") from exc
