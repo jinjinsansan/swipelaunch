@@ -601,6 +601,8 @@ async def _prepare_subscription_checkout(
         "user_id": user_id,
         "plan_key": plan.key,
         "subscription_plan_id": plan.subscription_plan_id,
+        "points_per_cycle": plan.points,
+        "usd_amount": plan.usd_amount,
         "external_id": external_id,
         "checkout_preference_id": checkout_data.get("id"),
         "status": "PENDING",
