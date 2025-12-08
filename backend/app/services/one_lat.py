@@ -101,6 +101,16 @@ class OneLatClient:
                 payer_data["phone_number"] = payer_phone
             payload["payer"] = payer_data
         
+        logger.info(
+            "Creating ONE.lat checkout preference",
+            extra={
+                "preference_type": preference_type,
+                "payment_link_id": payment_link_id if preference_type.upper() == "SUBSCRIPTION" else None,
+                "amount": amount if preference_type.upper() != "SUBSCRIPTION" else None,
+                "external_id": external_id,
+            },
+        )
+        
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -116,7 +126,14 @@ class OneLatClient:
                 return data
                 
         except httpx.HTTPStatusError as e:
-            logger.error(f"❌ ONE.lat API Error: {e.response.status_code} - {e.response.text}")
+            logger.error(
+                "❌ ONE.lat API Error",
+                extra={
+                    "status_code": e.response.status_code,
+                    "response_body": e.response.text,
+                    "request_payload": payload,
+                },
+            )
             raise Exception(f"ONE.lat API Error: {e.response.text}")
         except Exception as e:
             logger.error(f"❌ Failed to create checkout preference: {str(e)}")
