@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -10,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_supabase_client
 from app.models.salons import (
+    ManualSalonMemberRequest,
     NoteSalonAccessRequest,
     NoteSalonAccessResponse,
     SalonCreateRequest,
@@ -27,6 +29,86 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/salons", tags=["salons"])
 security = HTTPBearer()
+
+MANUAL_INVITE_SOURCE = "manual_invite"
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_email(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _normalize_username(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _build_manual_metadata(
+    existing_metadata: Optional[Dict[str, Any]],
+    memo: Optional[str],
+    actor_id: str,
+    timestamp: str,
+) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = existing_metadata.copy() if isinstance(existing_metadata, dict) else {}
+    metadata["source"] = MANUAL_INVITE_SOURCE
+    metadata["manual_invite"] = {
+        "memo": memo,
+        "updated_by": actor_id,
+        "updated_at": timestamp,
+    }
+    return metadata
+
+
+def _upsert_manual_subscription(
+    supabase,
+    salon: Dict[str, Any],
+    user_id: str,
+    status: str,
+    memo: Optional[str],
+    actor_id: str,
+    timestamp: str,
+) -> None:
+    response = (
+        supabase
+        .table("user_subscriptions")
+        .select("id,metadata")
+        .eq("user_id", user_id)
+        .eq("salon_id", salon.get("id"))
+        .eq("plan_key", MANUAL_INVITE_SOURCE)
+        .limit(1)
+        .execute()
+    )
+    existing = response.data[0] if response.data else None
+    metadata = _build_manual_metadata(existing.get("metadata") if existing else None, memo, actor_id, timestamp)
+
+    if existing and existing.get("id"):
+        supabase.table("user_subscriptions").update({
+            "status": status,
+            "metadata": metadata,
+            "updated_at": timestamp,
+        }).eq("id", existing["id"]).execute()
+        return
+
+    supabase.table("user_subscriptions").insert({
+        "user_id": user_id,
+        "plan_key": MANUAL_INVITE_SOURCE,
+        "subscription_plan_id": salon.get("subscription_plan_id") or "manual_invite",
+        "points_per_cycle": 0,
+        "usd_amount": 0,
+        "status": status,
+        "metadata": metadata,
+        "seller_id": salon.get("owner_id"),
+        "seller_username": salon.get("owner_username"),
+        "salon_id": salon.get("id"),
+    }).execute()
 
 
 def _get_current_user(credentials: HTTPAuthorizationCredentials) -> Dict[str, str]:
@@ -428,6 +510,7 @@ async def list_salon_members(
             last_charged_at=row.get("last_charged_at"),
             next_charge_at=row.get("next_charge_at"),
             canceled_at=row.get("canceled_at"),
+            metadata=row.get("metadata"),
         )
         for row in response.data or []
     ]
@@ -489,3 +572,106 @@ async def set_note_salon_access(
         supabase.table("note_salon_access").insert(records).execute()
 
     return NoteSalonAccessResponse(salon_ids=salon_ids)
+
+
+@router.post("/{salon_id}/members/manual", response_model=SalonMemberResponse, status_code=status.HTTP_201_CREATED)
+async def add_manual_salon_member(
+    salon_id: str,
+    payload: ManualSalonMemberRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> SalonMemberResponse:
+    user = _get_current_user(credentials)
+    _ensure_seller(user)
+
+    salon = _get_salon_owned_by_user(salon_id, user["id"])
+
+    supabase = get_supabase_client()
+
+    email = _normalize_email(payload.email)
+    username = _normalize_username(payload.username)
+
+    user_query = supabase.table("users").select("id,username,email").limit(1)
+    if email and username:
+        user_query = user_query.or_(f"email.ilike.{email},username.eq.{username}")
+    elif email:
+        user_query = user_query.ilike("email", email)
+    else:
+        user_query = user_query.eq("username", username)
+
+    user_response = user_query.execute()
+    target_user = user_response.data[0] if user_response.data else None
+    target_user_id = target_user.get("id") if target_user else None
+    if not target_user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="対象ユーザーが見つかりません")
+
+    membership_response = (
+        supabase
+        .table("salon_memberships")
+        .select("*")
+        .eq("salon_id", salon_id)
+        .eq("user_id", target_user_id)
+        .limit(1)
+        .execute()
+    )
+    existing_membership = membership_response.data[0] if membership_response.data else None
+
+    now_iso = _now_utc_iso()
+    normalized_status = payload.status.upper()
+    manual_metadata = _build_manual_metadata(
+        existing_membership.get("metadata") if existing_membership else None,
+        payload.memo,
+        user["id"],
+        now_iso,
+    )
+
+    membership_row: Dict[str, Any]
+    if existing_membership and existing_membership.get("id"):
+        existing_status = (existing_membership.get("status") or "").upper()
+        if existing_status not in {"CANCELED", "CANCELLED"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="このユーザーは既に会員です")
+
+        update_payload: Dict[str, Any] = {
+            "status": normalized_status,
+            "metadata": manual_metadata,
+            "updated_at": now_iso,
+        }
+        if normalized_status == "ACTIVE" and not existing_membership.get("joined_at"):
+            update_payload["joined_at"] = now_iso
+        if normalized_status == "CANCELED":
+            update_payload["canceled_at"] = now_iso
+        else:
+            update_payload["canceled_at"] = None
+
+        update_response = (
+            supabase
+            .table("salon_memberships")
+            .update(update_payload)
+            .eq("id", existing_membership["id"])
+            .execute()
+        )
+        membership_row = update_response.data[0] if update_response.data else {**existing_membership, **update_payload}
+    else:
+        insert_payload: Dict[str, Any] = {
+            "salon_id": salon_id,
+            "user_id": target_user_id,
+            "status": normalized_status,
+            "metadata": manual_metadata,
+            "joined_at": now_iso,
+        }
+        if normalized_status == "CANCELED":
+            insert_payload["canceled_at"] = now_iso
+
+        insert_response = supabase.table("salon_memberships").insert(insert_payload).execute()
+        membership_row = insert_response.data[0] if insert_response.data else insert_payload
+
+    _upsert_manual_subscription(
+        supabase,
+        salon,
+        target_user_id,
+        normalized_status,
+        payload.memo,
+        user["id"],
+        now_iso,
+    )
+
+    return SalonMemberResponse(**membership_row)

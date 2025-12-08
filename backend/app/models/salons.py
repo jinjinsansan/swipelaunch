@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SalonCreateRequest(BaseModel):
@@ -142,13 +142,14 @@ class SalonMemberResponse(BaseModel):
     salon_id: str
     user_id: str
     status: str
-    recurrent_payment_id: Optional[str]
-    subscription_session_external_id: Optional[str]
-    last_event_type: Optional[str]
+    recurrent_payment_id: Optional[str] = None
+    subscription_session_external_id: Optional[str] = None
+    last_event_type: Optional[str] = None
     joined_at: datetime
-    last_charged_at: Optional[datetime]
-    next_charge_at: Optional[datetime]
-    canceled_at: Optional[datetime]
+    last_charged_at: Optional[datetime] = None
+    next_charge_at: Optional[datetime] = None
+    canceled_at: Optional[datetime] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class SalonMemberListResponse(BaseModel):
@@ -164,3 +165,16 @@ class NoteSalonAccessRequest(BaseModel):
 
 class NoteSalonAccessResponse(BaseModel):
     salon_ids: List[str] = Field(default_factory=list)
+
+
+class ManualSalonMemberRequest(BaseModel):
+    email: Optional[str] = Field(None, max_length=320)
+    username: Optional[str] = Field(None, min_length=2, max_length=64)
+    memo: Optional[str] = Field(None, max_length=500)
+    status: Literal["ACTIVE", "PENDING", "CANCELED"] = "ACTIVE"
+
+    @model_validator(mode="after")
+    def _ensure_identifier(self) -> "ManualSalonMemberRequest":
+        if not self.email and not self.username:
+            raise ValueError("emailまたはusernameを指定してください")
+        return self
