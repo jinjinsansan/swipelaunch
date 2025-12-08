@@ -37,7 +37,7 @@ SUBSCRIPTION_PLANS: List[SubscriptionPlan] = [
     _build_plan("points_1980", 1980, 13.66, settings.one_lat_plan_1980_id),
     _build_plan("points_2980", 2980, 20.55, settings.one_lat_plan_2980_id),
     _build_plan("points_4980", 4980, 34.34, settings.one_lat_plan_4980_id),
-    _build_plan("points_9980", 9980, 68.83, settings.one_lat_plan_9980_id),
+    _build_plan("points_9980", 9800, 65.33, settings.one_lat_plan_9980_id),
 ]
 
 SUBSCRIPTION_PLAN_MAP: Dict[str, SubscriptionPlan] = {plan.key: plan for plan in SUBSCRIPTION_PLANS}
