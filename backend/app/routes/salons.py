@@ -18,6 +18,7 @@ from app.models.salons import (
     SalonListResponse,
     SalonMemberListResponse,
     SalonMemberResponse,
+    SalonMemberUpdateRequest,
     SalonResponse,
     SalonUpdateRequest,
 )
@@ -51,19 +52,52 @@ def _normalize_username(value: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+def _to_iso_string(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    normalized = value
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
 def _build_manual_metadata(
     existing_metadata: Optional[Dict[str, Any]],
     memo: Optional[str],
     actor_id: str,
     timestamp: str,
+    *,
+    expires_at: Optional[str] = None,
+    clear_expires: bool = False,
 ) -> Dict[str, Any]:
     metadata: Dict[str, Any] = existing_metadata.copy() if isinstance(existing_metadata, dict) else {}
+    manual_block = metadata.get("manual_invite") if isinstance(metadata.get("manual_invite"), dict) else {}
+    manual_block = manual_block.copy()
+    manual_block["updated_by"] = actor_id
+    manual_block["updated_at"] = timestamp
+    if memo is not None:
+        manual_block["memo"] = memo
+    elif "memo" not in manual_block:
+        manual_block["memo"] = None
+
+    if expires_at is not None:
+        manual_block["expires_at"] = expires_at
+    elif clear_expires:
+        manual_block.pop("expires_at", None)
+
     metadata["source"] = MANUAL_INVITE_SOURCE
-    metadata["manual_invite"] = {
-        "memo": memo,
-        "updated_by": actor_id,
-        "updated_at": timestamp,
-    }
+    metadata["manual_invite"] = manual_block
     return metadata
 
 
@@ -75,6 +109,9 @@ def _upsert_manual_subscription(
     memo: Optional[str],
     actor_id: str,
     timestamp: str,
+    *,
+    expires_at: Optional[str] = None,
+    clear_expires: bool = False,
 ) -> None:
     response = (
         supabase
@@ -87,7 +124,14 @@ def _upsert_manual_subscription(
         .execute()
     )
     existing = response.data[0] if response.data else None
-    metadata = _build_manual_metadata(existing.get("metadata") if existing else None, memo, actor_id, timestamp)
+    metadata = _build_manual_metadata(
+        existing.get("metadata") if existing else None,
+        memo,
+        actor_id,
+        timestamp,
+        expires_at=expires_at,
+        clear_expires=clear_expires,
+    )
 
     if existing and existing.get("id"):
         supabase.table("user_subscriptions").update({
@@ -109,6 +153,44 @@ def _upsert_manual_subscription(
         "seller_username": salon.get("owner_username"),
         "salon_id": salon.get("id"),
     }).execute()
+
+
+def _extract_user_payload(user_value: Any) -> Dict[str, Any]:
+    if isinstance(user_value, dict):
+        return user_value
+    if isinstance(user_value, list) and user_value:
+        first = user_value[0]
+        if isinstance(first, dict):
+            return first
+    return {}
+
+
+def _serialize_member(row: Dict[str, Any], user_override: Optional[Dict[str, Any]] = None) -> SalonMemberResponse:
+    raw_metadata = row.get("metadata")
+    metadata = raw_metadata.copy() if isinstance(raw_metadata, dict) else None
+    manual_block = metadata.get("manual_invite") if isinstance(metadata, dict) and isinstance(metadata.get("manual_invite"), dict) else None
+    manual_expires_at = _parse_iso_datetime(manual_block.get("expires_at")) if manual_block else None
+
+    user_payload = user_override or _extract_user_payload(row.get("user"))
+
+    return SalonMemberResponse(
+        id=row.get("id"),
+        salon_id=row.get("salon_id"),
+        user_id=row.get("user_id"),
+        status=row.get("status", ""),
+        recurrent_payment_id=row.get("recurrent_payment_id"),
+        subscription_session_external_id=row.get("subscription_session_external_id"),
+        last_event_type=row.get("last_event_type"),
+        joined_at=row.get("joined_at"),
+        last_charged_at=row.get("last_charged_at"),
+        next_charge_at=row.get("next_charge_at"),
+        canceled_at=row.get("canceled_at"),
+        metadata=metadata,
+        user_email=user_payload.get("email"),
+        user_username=user_payload.get("username"),
+        user_display_name=user_payload.get("display_name"),
+        manual_expires_at=manual_expires_at,
+    )
 
 
 def _get_current_user(credentials: HTTPAuthorizationCredentials) -> Dict[str, str]:
@@ -491,7 +573,10 @@ async def list_salon_members(
     supabase = get_supabase_client()
     query = (
         supabase.table("salon_memberships")
-        .select("*", count="exact")
+        .select(
+            "*, user:users!salon_memberships_user_id_fkey(id,username,display_name,email)",
+            count="exact",
+        )
         .eq("salon_id", salon_id)
         .order("joined_at", desc=True)
         .range(offset, offset + limit - 1)
@@ -500,26 +585,10 @@ async def list_salon_members(
         query = query.eq("status", status_filter)
 
     response = query.execute()
+    rows = response.data or []
+    members = [_serialize_member(row) for row in rows]
+    total = getattr(response, "count", len(rows)) or 0
 
-    members = [
-        SalonMemberResponse(
-            id=row.get("id"),
-            salon_id=row.get("salon_id"),
-            user_id=row.get("user_id"),
-            status=row.get("status", ""),
-            recurrent_payment_id=row.get("recurrent_payment_id"),
-            subscription_session_external_id=row.get("subscription_session_external_id"),
-            last_event_type=row.get("last_event_type"),
-            joined_at=row.get("joined_at"),
-            last_charged_at=row.get("last_charged_at"),
-            next_charge_at=row.get("next_charge_at"),
-            canceled_at=row.get("canceled_at"),
-            metadata=row.get("metadata"),
-        )
-        for row in response.data or []
-    ]
-
-    total = getattr(response, "count", None) or len(members)
     return SalonMemberListResponse(data=members, total=total, limit=limit, offset=offset)
 
 
@@ -621,11 +690,13 @@ async def add_manual_salon_member(
 
     now_iso = _now_utc_iso()
     normalized_status = payload.status.upper()
+    expires_iso = _to_iso_string(payload.expires_at)
     manual_metadata = _build_manual_metadata(
         existing_membership.get("metadata") if existing_membership else None,
         payload.memo,
         user["id"],
         now_iso,
+        expires_at=expires_iso,
     )
 
     membership_row: Dict[str, Any]
@@ -676,6 +747,100 @@ async def add_manual_salon_member(
         payload.memo,
         user["id"],
         now_iso,
+        expires_at=expires_iso,
     )
 
-    return SalonMemberResponse(**membership_row)
+    return _serialize_member(membership_row, user_override=target_user)
+
+
+@router.patch("/{salon_id}/members/{member_id}", response_model=SalonMemberResponse)
+async def update_manual_salon_member(
+    salon_id: str,
+    member_id: str,
+    payload: SalonMemberUpdateRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> SalonMemberResponse:
+    user = _get_current_user(credentials)
+    _ensure_seller(user)
+
+    salon = _get_salon_owned_by_user(salon_id, user["id"])
+    supabase = get_supabase_client()
+
+    membership_response = (
+        supabase
+        .table("salon_memberships")
+        .select("*, user:users!salon_memberships_user_id_fkey(id,username,display_name,email)")
+        .eq("id", member_id)
+        .eq("salon_id", salon_id)
+        .limit(1)
+        .execute()
+    )
+    membership_row = membership_response.data[0] if membership_response.data else None
+    if not membership_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会員が見つかりません")
+
+    metadata = membership_row.get("metadata") if isinstance(membership_row.get("metadata"), dict) else {}
+    if metadata.get("source") != MANUAL_INVITE_SOURCE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="手動で追加した会員のみ編集できます")
+
+    status_requested = payload.status.upper() if payload.status else None
+    expires_iso = _to_iso_string(payload.expires_at)
+    has_metadata_update = (
+        payload.memo is not None
+        or payload.expires_at is not None
+        or payload.clear_expires_at
+    )
+
+    if not status_requested and not has_metadata_update:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="更新する項目を指定してください")
+
+    now_iso = _now_utc_iso()
+    update_payload: Dict[str, Any] = {"updated_at": now_iso}
+    current_status = (membership_row.get("status") or "").upper()
+    status_changed = False
+
+    if status_requested:
+        update_payload["status"] = status_requested
+        status_changed = status_requested != current_status
+        if status_requested == "CANCELED":
+            update_payload["canceled_at"] = now_iso
+        else:
+            update_payload["canceled_at"] = None
+            if status_requested == "ACTIVE" and not membership_row.get("joined_at"):
+                update_payload["joined_at"] = now_iso
+
+    if has_metadata_update:
+        update_payload["metadata"] = _build_manual_metadata(
+            membership_row.get("metadata"),
+            payload.memo,
+            user["id"],
+            now_iso,
+            expires_at=expires_iso,
+            clear_expires=payload.clear_expires_at,
+        )
+
+    update_response = (
+        supabase
+        .table("salon_memberships")
+        .update(update_payload)
+        .eq("id", member_id)
+        .execute()
+    )
+    updated_row = update_response.data[0] if update_response.data else {**membership_row, **update_payload}
+    updated_row["user"] = membership_row.get("user")
+
+    if status_changed or has_metadata_update:
+        _upsert_manual_subscription(
+            supabase,
+            salon,
+            membership_row.get("user_id"),
+            update_payload.get("status", current_status),
+            payload.memo,
+            user["id"],
+            now_iso,
+            expires_at=expires_iso,
+            clear_expires=payload.clear_expires_at,
+        )
+
+    user_payload = _extract_user_payload(membership_row.get("user"))
+    return _serialize_member(updated_row, user_override=user_payload)

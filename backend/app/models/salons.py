@@ -154,6 +154,10 @@ class SalonMemberResponse(BaseModel):
     next_charge_at: Optional[datetime] = None
     canceled_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
+    user_email: Optional[str] = None
+    user_username: Optional[str] = None
+    user_display_name: Optional[str] = None
+    manual_expires_at: Optional[datetime] = None
 
 
 class SalonMemberListResponse(BaseModel):
@@ -176,9 +180,17 @@ class ManualSalonMemberRequest(BaseModel):
     username: Optional[str] = Field(None, min_length=2, max_length=64)
     memo: Optional[str] = Field(None, max_length=500)
     status: Literal["ACTIVE", "PENDING", "CANCELED"] = "ACTIVE"
+    expires_at: Optional[datetime] = None
 
     @model_validator(mode="after")
     def _ensure_identifier(self) -> "ManualSalonMemberRequest":
         if not self.email and not self.username:
             raise ValueError("emailまたはusernameを指定してください")
         return self
+
+
+class SalonMemberUpdateRequest(BaseModel):
+    status: Optional[Literal["ACTIVE", "PENDING", "CANCELED"]] = None
+    memo: Optional[str] = Field(None, max_length=500)
+    expires_at: Optional[datetime] = None
+    clear_expires_at: bool = False

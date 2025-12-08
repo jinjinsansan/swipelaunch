@@ -29,11 +29,15 @@ class StubTable:
         self._limit: Optional[int] = None
         self._updates: Optional[Dict[str, Any]] = None
         self._insert_payload: Optional[Any] = None
+        self._order: Optional[tuple[str, bool]] = None
+        self._range: Optional[tuple[int, int]] = None
 
     def select(self, *_args, **kwargs):
         self._operation = "select"
         self._count_mode = kwargs.get("count")
         self._limit = None
+        self._order = None
+        self._range = None
         return self
 
     def delete(self):
@@ -71,6 +75,14 @@ class StubTable:
         self._limit = value
         return self
 
+    def order(self, field: str, desc: bool = False):
+        self._order = (field, desc)
+        return self
+
+    def range(self, start: int, end: int):
+        self._range = (start, end)
+        return self
+
     def execute(self):
         rows = self.supabase.tables[self.name]
         def _matches(row: Dict[str, Any]) -> bool:
@@ -94,6 +106,14 @@ class StubTable:
             return True
 
         matches = [row for row in rows if _matches(row)] if self._filters else list(rows)
+
+        if self._order:
+            field, desc = self._order
+            matches.sort(key=lambda row: row.get(field), reverse=desc)
+
+        if self._range:
+            start, end = self._range
+            matches = matches[start:end + 1]
 
         if self._operation == "delete":
             self.supabase.tables[self.name] = [row for row in rows if row not in matches]
@@ -247,3 +267,112 @@ def test_manual_member_invite_missing_user(monkeypatch):
     )
 
     assert response.status_code == 404
+
+
+def test_list_salon_members_includes_user_fields(monkeypatch):
+    stub = StubSupabase(
+        tables={
+            "salons": [{"id": "salon-1", "owner_id": "seller-1"}],
+            "salon_memberships": [
+                {
+                    "id": "membership-1",
+                    "salon_id": "salon-1",
+                    "user_id": "user-1",
+                    "status": "ACTIVE",
+                    "joined_at": "2025-12-01T00:00:00Z",
+                    "metadata": {
+                        "source": "manual_invite",
+                        "manual_invite": {"expires_at": "2025-12-31T00:00:00Z"},
+                    },
+                    "user": {
+                        "email": "friend@example.com",
+                        "username": "friend",
+                        "display_name": "Friend",
+                    },
+                }
+            ],
+        }
+    )
+    client = _setup_app(stub, monkeypatch)
+
+    response = client.get(
+        "/api/salons/salon-1/members",
+        headers={"Authorization": "Bearer token"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    row = payload["data"][0]
+    assert row["user_email"] == "friend@example.com"
+    assert row["user_username"] == "friend"
+    assert row["manual_expires_at"].startswith("2025-12-31")
+
+
+def test_update_manual_member_allows_status_and_expiry(monkeypatch):
+    stub = StubSupabase(
+        tables={
+            "salons": [{"id": "salon-1", "owner_id": "seller-1", "subscription_plan_id": "plan-1"}],
+            "salon_memberships": [
+                {
+                    "id": "membership-1",
+                    "salon_id": "salon-1",
+                    "user_id": "user-1",
+                    "status": "ACTIVE",
+                    "joined_at": "2025-11-01T00:00:00Z",
+                    "metadata": {"source": "manual_invite", "manual_invite": {"memo": "wire"}},
+                    "user": {
+                        "email": "friend@example.com",
+                        "username": "friend",
+                        "display_name": "Friend",
+                    },
+                }
+            ],
+            "user_subscriptions": [],
+        }
+    )
+    client = _setup_app(stub, monkeypatch)
+
+    response = client.patch(
+        "/api/salons/salon-1/members/membership-1",
+        headers={"Authorization": "Bearer token"},
+        json={
+            "status": "CANCELED",
+            "memo": "refund",
+            "expires_at": "2025-12-31T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "CANCELED"
+    assert payload["manual_expires_at"].startswith("2025-12-31")
+    assert payload["user_email"] == "friend@example.com"
+    assert stub.tables["salon_memberships"][0]["status"] == "CANCELED"
+
+
+def test_update_manual_member_rejects_non_manual(monkeypatch):
+    stub = StubSupabase(
+        tables={
+            "salons": [{"id": "salon-1", "owner_id": "seller-1"}],
+            "salon_memberships": [
+                {
+                    "id": "membership-1",
+                    "salon_id": "salon-1",
+                    "user_id": "user-1",
+                    "status": "ACTIVE",
+                    "joined_at": "2025-11-01T00:00:00Z",
+                    "metadata": {"source": "one_lat"},
+                }
+            ],
+        }
+    )
+    client = _setup_app(stub, monkeypatch)
+
+    response = client.patch(
+        "/api/salons/salon-1/members/membership-1",
+        headers={"Authorization": "Bearer token"},
+        json={"status": "CANCELED"},
+    )
+
+    assert response.status_code == 400
