@@ -707,23 +707,25 @@ def _resolve_public_plan(
 def _fetch_lp_by_slug(slug: str) -> LPDetailResponse:
     supabase = get_supabase()
 
+    # .single() は0件で例外を投げ汎用500になるため .limit(1) で取得して404を返す
     lp_response = (
         supabase
         .table("landing_pages")
         .select("*, owner:users!seller_id(username, email)")
         .eq("slug", slug)
         .eq("status", "published")
-        .single()
+        .limit(1)
         .execute()
     )
 
-    if not lp_response.data:
+    records = lp_response.data or []
+    if not records:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="LPが見つかりません。まだ公開されていないか、URLが間違っています。"
         )
 
-    lp_data = lp_response.data
+    lp_data = records[0]
     raw_visibility = lp_data.get("visibility")
     visibility = raw_visibility if raw_visibility in {"public", "limited", "private"} else (
         "public" if lp_data.get("status") == "published" else "private"
