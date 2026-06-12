@@ -46,18 +46,24 @@ FOOTER_CTA_ALLOWED_KEYS = {
     "buttonBackgroundColor",
     "buttonTextColor",
     "showOnHero",
+    "alwaysVisible",
+    "footerEnabled",
+}
+HEADER_BAR_ALLOWED_KEYS = {
+    "enabled",
+    "title",
+    "buttonLabel",
+    "buttonUrl",
+    "backgroundColor",
+    "textColor",
+    "buttonBackgroundColor",
+    "buttonTextColor",
 }
 
 
-def _normalize_footer_cta_config(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        return None
-
+def _normalize_flat_config(raw: Dict[str, Any], allowed_keys: set) -> Dict[str, Any]:
     normalized: Dict[str, Any] = {}
-
-    for key in FOOTER_CTA_ALLOWED_KEYS:
+    for key in allowed_keys:
         if key not in raw:
             continue
         value = raw.get(key)
@@ -67,6 +73,23 @@ def _normalize_footer_cta_config(raw: Optional[Dict[str, Any]]) -> Optional[Dict
                 normalized[key] = trimmed
         elif value is not None:
             normalized[key] = value
+    return normalized
+
+
+def _normalize_footer_cta_config(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    normalized = _normalize_flat_config(raw, FOOTER_CTA_ALLOWED_KEYS)
+
+    # ヘッダー帯(headerBar)はネスト構造で同居させる
+    header_raw = raw.get("headerBar")
+    if isinstance(header_raw, dict):
+        header_normalized = _normalize_flat_config(header_raw, HEADER_BAR_ALLOWED_KEYS)
+        if header_normalized:
+            normalized["headerBar"] = header_normalized
 
     return normalized or None
 
